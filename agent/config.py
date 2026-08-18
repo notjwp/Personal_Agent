@@ -36,11 +36,21 @@ EFFORT = "medium"        # low | medium | high | xhigh | max — swept in Phase 
 # and the spec forbids parsing calls out of free text, so there is no fallback if it
 # turns out to be poor. Probe before trusting it.
 OPENAI_BASE_URL = os.environ.get("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
-# llama-3.3-70b was the first choice and passed the tool-calling probe, but its
-# hosted endpoint later stopped responding entirely (POST /chat/completions times
-# out while GET /models returns 200 in 0.6s — an NVIDIA-side capacity problem, not
-# an auth or quota one). 3.1-70b answers in ~1.3s with well-formed tool calls.
-OPENAI_MODEL = os.environ.get("NIM_MODEL", "meta/llama-3.1-70b-instruct")
+# Chosen by probe, not reputation. The history matters:
+#   llama-3.3-70b  passed the probe, then its endpoint stopped responding
+#                  entirely (POST times out while GET /models returns 200 in
+#                  0.6s - an NVIDIA-side capacity fault). Still down later.
+#   llama-3.1-70b  produced the 4/15 baseline. It reads well and acts badly:
+#                  9 of 15 runs never called read_file, and one case invented
+#                  two files that do not exist in the project.
+#   nemotron-3-super-120b  sustains multi-turn tool calling at 0.8-3.8s per
+#                  turn (5-10x faster) and opens with run_shell pytest then
+#                  read_file on the failing test - the read-before-edit
+#                  behaviour the previous model skipped.
+#
+# Changing this invalidates any existing baseline: it is a different
+# measurement, not a tuning delta. Every trace row records provider and model.
+OPENAI_MODEL = os.environ.get("NIM_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 
 MAX_TOKENS = 16_000      # on Anthropic this caps thinking AND response text together
 

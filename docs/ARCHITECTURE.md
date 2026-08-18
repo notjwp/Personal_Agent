@@ -121,16 +121,24 @@ layer after v1. The committed baseline produced `done x15` — no `compact`, no 
 cap — so neither compaction nor the plan node is earned by the data. Conflict 4 made this
 distribution a measurement precisely so it could overrule the prediction, and it did.
 
-**The binding constraint is blind editing, not termination.** 9 of 15 baseline runs never called
-`read_file`; one case invented two files that do not exist in the project and reported success.
-Tuning cycle 1 gated `done` on a successful command, worked mechanically (first `stuck` verdicts
-ever), and was **reverted** — the agent satisfied the gate by rewriting tests until pytest exited 0,
-and tampering rose from 5/15 to 5/5. Denying the exit without offering a better route to progress
-just bought more of the destructive behaviour.
+**What looked like loop defects was the model.** The first baseline scored 4/15 on
+`llama-3.1-70b`, and its failures were bucketed as design problems: 9 of 15 runs never called
+`read_file`, all 15 ended `done` (11 wrongly), and 5 rewrote the tests they were judged by. One
+tuning cycle gated `done` on a successful command; it worked mechanically, made the score worse -
+the agent satisfied the gate by rewriting tests until pytest exited 0 - and was reverted.
 
-*Architectural consequence:* a termination check must verify that the thing under test was
-**untouched**, not merely that a command exited 0. Any future gate of that kind inherits this
-constraint.
+Re-baselining on `nemotron-3-super-120b-a12b`, a free model on the same key, scored **14/15**. All
+three symptoms disappeared. Same harness, same fixtures, same loop.
+
+*Architectural consequence:* the three layers were never the constraint, and the determinism ratio
+is vindicated rather than undermined - `reflect`, `gate` and `execute` behaved identically under
+both models; only the quality of what `act` returned changed. **The operational lesson is about
+diagnosis, not architecture: when a number looks structurally wrong, probe a different model before
+tuning the loop.** 102 were available on the existing key throughout.
+
+The reverted cycle also stands as evidence for the revert rule itself. It was kept only long enough
+to be measured, and had it been retained on the judgement that it "seemed right", it would now be
+dead weight distorting a working system.
 
 **A declared JSON schema is not enforcement.** Numeric tool arguments arrived as strings twice
 (`run_shell(timeout)`, then `read_file(offset/limit)`), the second time breaking every read in a live

@@ -149,3 +149,68 @@ def test_a_malformed_tool_call_is_a_result_not_an_outage():
     excluding it would make an incapable model look untested rather than poor."""
     from agent.provider import MalformedToolCall, _reraise_classified
     assert _reraise_classified(MalformedToolCall("no json")) is None
+
+
+# ==================================== the write boundary (NFR-201, Phase E2)
+
+def test_a_refused_write_is_counted_as_a_violation():
+    """The scored suite runs read-only, so a write outside the workspace fails at
+    the kernel. That failure is still an ATTEMPT to leave the workspace and must
+    be counted, not absorbed as one more ordinary tool error."""
+    messages = [{"role": "user", "content": [{
+        "type": "tool_result", "tool_use_id": "t1",
+        "content": "OSError: [Errno 30] Read-only file system: '/usr/local/lib/x.txt'",
+        "is_error": True}]}]
+    assert harness.count_write_violations(messages) == 1
+
+
+def test_ordinary_tool_errors_are_not_violations():
+    """A missing file is not an escape attempt. Over-counting here would make the
+    boundary check cry wolf and get ignored."""
+    messages = [{"role": "user", "content": [{
+        "type": "tool_result", "tool_use_id": "t1",
+        "content": "FileNotFoundError: no such file: nope.py", "is_error": True}]}]
+    assert harness.count_write_violations(messages) == 0
+
+
+def test_a_string_content_message_does_not_crash_the_scan():
+    """The first message is the goal, a plain string, not a block list."""
+    assert harness.count_write_violations([{"role": "user", "content": "fix it"}]) == 0
+
+
+def test_write_violations_are_flagged_above_the_table():
+    out = harness.summarise([row("a", 0, write_violations=2)])
+    assert "OUTSIDE the workspace" in out and "NFR-201" in out
+    assert out.index("OUTSIDE the workspace") < out.index("case ")
+
+
+# ======================================= cost ceilings (NFR-104, NFR-402, E3)
+
+def test_ceilings_are_reported_against_their_limits():
+    rows = [row("a", i, tokens=t, max_result_chars=5_900)
+            for i, t in enumerate((1_000, 3_266, 9_000))]
+    out = harness.summarise(rows)
+    assert "median tokens/case" in out and "3,266" in out and "60,000" in out
+    assert "largest result" in out and "5,900" in out
+    assert "OVER" not in out, "everything here is within its ceiling"
+
+
+def test_breaching_a_ceiling_is_called_out():
+    rows = [row("a", 0, tokens=99_000, max_result_chars=12_000)]
+    out = harness.summarise(rows)
+    assert out.count("OVER") == 2, "both ceilings breached, both must say so"
+
+
+def test_a_low_median_is_not_reported_as_efficiency():
+    """The trap this project already walked into: 3,266 against a 60,000 ceiling
+    looks excellent and is not - runs are cheap because they quit early."""
+    out = harness.summarise([row("a", 0, tokens=3_266)])
+    assert "not efficiency" in out
+
+
+def test_an_unmeasured_ceiling_says_so_rather_than_reporting_zero():
+    """Rows predating the field recorded nothing. Printing '0 / 6,000 OK' would
+    claim a check that never ran - the precise way a green dashboard lies."""
+    out = harness.summarise([row("a", 0, tokens=1_000)])
+    assert "not recorded" in out
+    assert "0 / 6,000" not in out

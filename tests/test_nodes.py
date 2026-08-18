@@ -634,3 +634,98 @@ def test_read_file_tolerates_numeric_arguments_sent_as_strings(
 
 def test_run_shell_tolerates_a_string_timeout(tmp_workspace):
     assert "exit code: 0" in run_shell("echo hi", timeout="30")
+
+
+# ================================================ crash and resume (NFR-302)
+#
+# The existing checkpoint test proves state survives a CLEAN completion. This is
+# the harder claim the checkpointer exists for: a process that dies mid-run must
+# lose at most one node of work and must never re-execute a completed turn.
+#
+# A KeyboardInterrupt is used to simulate the death because it is a BaseException:
+# `execute` catches Exception, so an ordinary error would be converted into an
+# observation and the run would continue. This propagates straight out of invoke(),
+# which is what a killed process looks like from the graph's point of view.
+
+def test_a_crash_mid_run_never_re_executes_completed_work(
+        fresh_app, tmp_workspace, monkeypatch):
+    """NFR-302 / CE-07 across process death rather than an approval pause."""
+    ran = []
+
+    def counting_shell(**kw):
+        ran.append(kw["command"])
+        if kw["command"] == "boom":
+            raise KeyboardInterrupt("simulated kill -9")
+        return "exit code: 0\n--- stdout ---\n--- stderr ---\n"
+
+    monkeypatch.setitem(TOOLS["run_shell"], "fn", counting_shell)
+    use_fake(monkeypatch, [
+        tool_turn("run_shell", cid="t1", command="first"),
+        tool_turn("run_shell", cid="t2", command="boom"),
+        text_turn("Done."),
+    ])
+    cfg_ = {"configurable": {"thread_id": "crashed", "autonomous": True, "trace": []}}
+
+    with pytest.raises(KeyboardInterrupt):
+        fresh_app.invoke(state(), cfg_)
+
+    assert ran == ["first", "boom"], "the run reached the crash"
+    checkpointed = fresh_app.get_state(cfg_).values
+    assert checkpointed["turns"] == 1, "turn 1 was committed before the crash"
+
+    # Let the retry succeed. The CRASHED node genuinely does re-run on resume -
+    # its work never committed, so retrying it is correct and is precisely what
+    # "at most one node of work lost" means. The claim under test is narrower and
+    # stronger: turn 1, which DID commit, must not run a second time.
+    ran_after_crash = len(ran)
+    def retry_ok(**kw):
+        ran.append(kw["command"])
+        return "exit code: 0\n--- stdout ---\n--- stderr ---\n"
+
+    monkeypatch.setitem(TOOLS["run_shell"], "fn", retry_ok)
+
+    # Resume: same thread id, None payload. Re-invocation, not a restart.
+    fresh_app.invoke(None, cfg_)
+
+    assert ran[ran_after_crash:] == ["boom"], (
+        f"resume re-ran {ran[ran_after_crash:]}; only the uncommitted turn may retry")
+
+    assert ran.count("first") == 1, (
+        f"completed work re-executed: {ran}. This is exactly the duplication the "
+        f"gate/execute split exists to prevent.")
+
+
+def test_resume_after_a_crash_preserves_history_and_continues(
+        fresh_app, tmp_workspace, monkeypatch):
+    """At most one node of work is lost: the crashed turn re-runs, everything
+    before it is read from the checkpoint rather than recomputed."""
+    def flaky_shell(**kw):
+        if kw["command"] == "boom":
+            raise KeyboardInterrupt("simulated kill -9")
+        return "exit code: 0\n--- stdout ---\n--- stderr ---\n"
+
+    monkeypatch.setitem(TOOLS["run_shell"], "fn", flaky_shell)
+    seen = use_fake(monkeypatch, [
+        tool_turn("run_shell", cid="t1", command="first"),
+        tool_turn("run_shell", cid="t2", command="boom"),
+        text_turn("Done."),
+    ])
+    cfg_ = {"configurable": {"thread_id": "crash-history", "autonomous": True, "trace": []}}
+
+    with pytest.raises(KeyboardInterrupt):
+        fresh_app.invoke(state(), cfg_)
+    before = len(fresh_app.get_state(cfg_).values["messages"])
+    model_calls_before = len(seen)
+
+    monkeypatch.setitem(TOOLS["run_shell"], "fn",
+                        lambda **kw: "exit code: 0\n--- stdout ---\n--- stderr ---\n")
+    final = fresh_app.invoke(None, cfg_)
+
+    assert final["messages"][0]["content"] == "fix it", "the original goal survived"
+    assert len(final["messages"]) > before, "the run continued rather than restarting"
+    assert final["turns"] >= 2, "the crashed turn was retried, not skipped"
+    # The model is not re-asked for turns it already answered - that is what makes
+    # "at most one node of work lost" true rather than "the whole run replayed".
+    assert len(seen) - model_calls_before <= 1, (
+        f"resume re-called the model {len(seen) - model_calls_before} times; "
+        f"completed act nodes must come from the checkpoint")

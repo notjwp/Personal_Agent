@@ -516,7 +516,7 @@ All tests run without an API key and without network access (NFR-602).
 | `test_cli.py` | approval prompt, live display | Every `allow`/`deny` spelling · unrecognised input re-prompts rather than guessing · `EOFError` → deny (silence is not consent) · quit is distinct from deny · arguments shown unabbreviated · a resumed session continues the turn count |
 | `test_harness.py` | scoring arithmetic, error taxonomy | **Blocked runs leave the denominator** · **last row wins for a retried case-run** · 1-of-3 reports `1/3` · tampering flagged above the table · mixed providers flagged · each SDK exception name lands in the right bucket · **our own bugs are never excused as infrastructure** |
 
-**150 tests, all offline.** Provider suspend/resume is exercised end to end against a stand-in model,
+**160 tests, all offline.** Provider suspend/resume is exercised end to end against a stand-in model,
 including the CE-07 proof: an approved tool fires **exactly once** across a suspend and resume, which
 had been asserted on paper since Phase B and never executed until the CLI existed.
 
@@ -553,9 +553,9 @@ Implementation follows §9 strictly — it is the only build order.
 | A | Fixtures, `reset.sh`, harness, null agent | **DONE** — `pass 0/5`, isolation proven directly |
 | B | `policy` → `context` → `tools` → `graph` → `provider` → tracing | **DONE** — `pass 1/5`, verified genuine |
 | C | CLI, approval, `--list`/`--resume` | **DONE** — approved tool fires exactly once; quit/resume survives a container boundary |
-| D | Baseline at 3 runs per case | **DONE** — committed **4/15**, 0 blocked, all four passes legitimate |
-| E | SIGKILL/resume, NFR-201 and NFR-402 assertions, egress | **NEXT** — closes DoD items and needs almost no model quota |
-| F | Tuning cycles | Cycle 1 **reverted**; the binding constraint is blind editing, not termination |
+| D | Baseline at 3 runs per case | **DONE** — **14/15** on nemotron (4/15 on the earlier model), 0 blocked, no tampering |
+| E | SIGKILL/resume, NFR-201, NFR-402, egress | **DONE** — 0 duplicated calls across a real `docker kill`; write boundary kernel-enforced |
+| F | Tuning cycles | Cycle 1 **reverted**. The constraint turned out to be the model: re-baselining took 4/15 to **14/15** |
 | G | Ten held-out cases | Dev ≥4/5 across 3 runs; held-out scored once and recorded |
 
 The null agent in Phase A exists so that a `0/5` in Phase D is unambiguous between "the agent failed"

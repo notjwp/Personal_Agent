@@ -27,10 +27,31 @@ RUN printf '[global]\nno-index = true\nfind-links = /wheels\n' > /etc/pip.conf
 ENV AGENT_WORKSPACE=/workspace \
     AGENT_HOME=/app/.agent \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_USER=1 \
+    PYTHONUSERBASE=/tmp/pyuser
 
 RUN mkdir -p /workspace /app/.agent
 WORKDIR /app
+
+# Why PIP_USER + PYTHONUSERBASE (Phase E2, measured before adopting):
+#
+# The scored suite runs --read-only, which makes site-packages immutable. That
+# would make `missing-dep` UNSOLVABLE, because its fix is a plain `pip install`.
+# Measured on this image:
+#   plain pip install under --read-only -> OSError: Read-only file system,
+#     /root/.local -- pip already falls back to a user install, but /root is
+#     read-only too, so the fallback fails as well
+#   with these two vars + --tmpfs /tmp  -> installs and imports from
+#     /tmp/pyuser/lib/python3.12/site-packages
+#   pre-installed packages              -> still import; the user site is
+#     ADDITIVE, not a replacement
+#
+# A tmpfs mounted OVER site-packages would have masked pytest/flask/langgraph
+# and broken all five cases instead of fixing one. Measured, not assumed.
+#
+# They live in the image, not in the harness `docker run`, so the CLI, a manual
+# run and the harness all get the same environment.
 
 # No COPY: the project is bind-mounted during Phase A for fast iteration.
 # Phase E adds COPY + .dockerignore for the sealed image used in scored runs.

@@ -4,22 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Phases A-D are built and committed (`131fd4f`). What exists: the measurement rig, the
+Phases A-E are built. What exists: the measurement rig, the
 `act -> gate -> execute -> reflect` loop, a two-provider model adapter, the interactive CLI with
-approval and resume, and a committed baseline.
+approval and resume, kernel-enforced sandboxing, and a committed baseline.
 
-- **Baseline: 4/15**, 3 runs per dev case, on `nvidia/meta/llama-3.1-70b-instruct`. Per-case table in
-  `README.md`; conditions and trust checks in `eval/CHANGELOG.md`.
-- **150 unit tests**, green with no API key and no network.
-- **Tuning cycle 1 is reverted.** Gating `done` on a successful command worked mechanically - it
-  produced the first `stuck` verdicts in the project's history - but made the score worse: the agent
-  satisfied the gate by rewriting tests until pytest exited 0, and tampering went 5/15 to 5/5. **The
-  binding constraint is blind editing, not termination.** 9 of 15 baseline runs never called
-  `read_file` at all.
-- Still deferred and unearned: compaction, plan node, memory, web, worker. The baseline's verdict
-  distribution (`done x15`) earns none of them.
-- **The next phase is E (durability and safety)**, chosen because it closes Definition-of-Done items
-  and needs almost no model quota, while the model-capability question stays open.
+- **Baseline: 14/15**, 3 runs per dev case, 0 blocked, on `nvidia/nemotron-3-super-120b-a12b`.
+  Per-case table in `README.md`; conditions and trust checks in `eval/CHANGELOG.md`.
+- **160 unit tests**, green with no API key, no network, and a read-only root filesystem.
+- **The model was the constraint, not the loop.** An earlier baseline of 4/15 on
+  `llama-3.1-70b` was diagnosed as loop defects - 9 of 15 runs never called `read_file`, all 15
+  ended `done` (11 wrongly), 5 rewrote their own tests. **All three vanished on a stronger model
+  from the same free key.** One tuning cycle was spent and reverted before that was tried. When a
+  number looks structurally wrong here, **probe a different model before tuning the loop** - 102 are
+  available on the existing key.
+- Still deferred and unearned: compaction, plan node, memory, web, worker. The verdict distribution
+  (`done 13, stuck 2`) earns none of them.
+- **Next is Phase G**: ten held-out cases, scored once. Five dev cases means one flip is a 20% swing,
+  so 14/15 is not yet evidence of generalisation.
+
+### Standing lessons, each paid for once
+
+- **A declared JSON schema is not enforcement.** Numeric tool arguments arrive as strings; coerce at
+  the tool boundary. This broke a live session twice before it was fixed.
+- **Infrastructure failure is not a score.** A rate-limited run must be excluded and retried, never
+  counted as a failed case.
+- **Never pipe the harness through `tail`** - it buffers until exit, so a hang is indistinguishable
+  from progress.
+- **Verify the rig before believing a number**, in both directions: that passes are untampered, and
+  that untouched fixtures still fail.
 
 ## CONTEXT.md is the authority
 
@@ -110,7 +122,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3        # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's known state (idempotent)
-pytest                            # 150 unit tests, no API key, no network
+pytest                            # 160 unit tests, no API key, no network
 pytest tests/test_policy.py -k escape   # single test
 ```
 

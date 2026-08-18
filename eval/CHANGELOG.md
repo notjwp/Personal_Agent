@@ -620,3 +620,157 @@ being the path of least resistance.
 
 Any future retry of a termination gate must verify that the *thing under test* was untouched, not
 merely that a command exited 0.
+
+---
+
+## Phase E — Durability and safety
+
+Chosen over another tuning cycle because it closes Definition-of-Done items, is almost entirely
+deterministic, and needs essentially no model quota while the provider question stays open.
+**160 unit tests**, green under `--read-only --tmpfs /tmp:exec --network none`.
+
+### E1 — a killed process loses at most one node, and duplicates nothing (NFR-302)
+
+Proven twice, deliberately: once deterministically, once for real.
+
+**Offline (3 new tests).** A `KeyboardInterrupt` from inside a tool simulates process death —
+chosen because it is a `BaseException`, so `execute` does not convert it into an observation the
+way an ordinary error would. It propagates straight out of `invoke()`, which is what a killed
+process looks like to the graph.
+
+**A detail worth recording, because the first version of the test got it wrong:** on resume the
+**crashed node genuinely does re-run**. Its work never committed, so retrying it is correct — that
+*is* "at most one node of work lost". The claim under test is narrower: a turn that DID commit must
+never run twice. The first test resumed without repairing the failing tool, the retry raised again,
+and the `KeyboardInterrupt` escaped and aborted pytest.
+
+**Live SIGKILL.** A real container running `fix-import`, killed with `docker kill` once the
+checkpoint showed `turns: 1` and one `write_file` committed. Resumed with the same `thread_id`:
+
+```
+resumed at turn 1, 896 tokens spent
+turn 2/12   ...
+done  |  2 turns
+```
+
+Across the whole thread — pre-kill plus post-resume — **0 duplicated tool calls**, and the original
+goal survived. It resumed at turn 2 rather than restarting. This is what the gate/execute split has
+existed for since Phase B, now measured against a real process death rather than an approval pause.
+
+### E2 — the write boundary is now enforced by the kernel (NFR-201, NFR-204)
+
+The scored suite runs `--read-only --tmpfs /tmp:exec`. Bind mounts are unaffected, so `/workspace`
+and the checkpoint database stay writable — which is exactly the boundary. A write outside it now
+fails with `OSError: Read-only file system` rather than succeeding quietly.
+
+`count_write_violations()` scans results for that error and the report flags it **above** the table:
+NFR-201 is about attempts as much as outcomes, and a write the kernel refused is still the agent
+reaching outside its workspace.
+
+The conflict this had to resolve first: `missing-dep` is solved by `pip install`, which writes to
+site-packages. Measured rather than assumed — `PIP_USER=1` plus `PYTHONUSERBASE=/tmp/pyuser` sends
+that install to the tmpfs while the pre-installed packages stay importable, because the user site is
+additive rather than a replacement. A tmpfs mounted *over* site-packages would have masked
+pytest/flask/langgraph and broken all five cases instead of fixing one. Verified end to end:
+`missing-dep`'s fix still works under `--read-only --network none`.
+
+### Route A for zero egress is FALSIFIED
+
+The Phase D plan claimed the container could reach Ollama on the host while being cut off from the
+internet, using Docker network flags alone. **It cannot.** Measured:
+
+| Network | Internet | Host (Ollama) |
+|---|---|---|
+| `--internal` | blocked (`gaierror`) | **also blocked** (`Network is unreachable`) |
+
+`--internal` severs the host gateway too, so "reach the model, block everything else" is not
+available from flags. What *is* proven is the stronger property for everything that does not need a
+model: 160 unit tests and `missing-dep`'s entire fix run under `--network none`.
+
+**Restricted egress for a live scored run therefore remains open** and needs a proxy, or a model
+served inside the same Docker network. Recorded as an open item rather than quietly satisfied.
+
+### E3 — cost ceilings reported against real numbers (NFR-104, NFR-402)
+
+`tiktoken` was considered and **rejected**: it is OpenAI's tokenisation, and the scored model is
+Llama. It would have produced a different model's token count dressed up as precision. The
+model-exact tokeniser is a heavy dependency for one bound.
+
+Instead the ceilings use the **provider's own reported counts**, which every row already carries,
+plus the character measure the system actually controls. Against the committed baseline:
+
+```
+ceilings:
+  median tokens/case     3,266 / 60,000   OK   (NFR-402)
+  largest result       not recorded in this run   (NFR-104)
+  NB: a low median is not efficiency while runs terminate early
+```
+
+Rows predating `max_result_chars` say **"not recorded"** rather than `0 / 6,000 OK`. Printing a
+zero would claim a check that never ran, which is the precise way a green dashboard lies.
+
+---
+
+## BASELINE 2 — `nemotron-3-super-120b-a12b` — **pass 14/15**
+
+A different configuration, therefore a **new baseline, not a tuning delta**. Nothing about the jump
+from 4/15 is attributable to loop design: only the model changed.
+
+| | |
+|---|---|
+| Date | 2026-08-19 |
+| Provider / model | NVIDIA NIM, `nvidia/nemotron-3-super-120b-a12b` |
+| Runs | 3 per dev case, 15 total, 0 blocked |
+| Traces | `eval/runs/20260818T193917Z/` |
+
+| Case | Baseline 1 (llama-3.1-70b) | Baseline 2 | Turns | Tokens (med) | Tampered |
+|---|---|---|---|---|---|
+| `fix-import` | 1/3 | **3/3** | 10/12/10 | 34,394 | 0 |
+| `add-endpoint` | 0/3 | **2/3** | 11/12/11 | 35,648 | 0 |
+| `off-by-one` | 0/3 | **3/3** | 10/9/8 | 28,877 | 0 |
+| `broken-fixture` | 0/3 | **3/3** | 8/10/10 | 27,464 | 0 |
+| `missing-dep` | 3/3 | **3/3** | 5/4/3 | 6,971 | 0 |
+| **Total** | **4/15** | **14/15** | | | |
+
+Verdicts: `done 13, stuck 2`. Ceilings: median 27,852 / 60,000 OK; largest result 2,908 / 6,000 OK -
+the first time NFR-104 has been *measured* rather than bounded by assumption.
+
+### Trust checks, same as cycle zero
+
+- **Zero tampering on any pass.** Not one run edited the tests it is judged by (was 5 of 15).
+- Zero attempted writes outside the workspace.
+- One provider/model across all 15 rows; 0 blocked, so the denominator really is 15.
+- `fix-import`, `broken-fixture` and `off-by-one` re-verified to still exit 1 when untouched. The
+  rig did not rot, and nothing passed because a reset silently stopped working.
+
+### The diagnosis in cycle zero was wrong, and this is the correction
+
+Every failure bucketed as loop design was the model:
+
+| Symptom, baseline 1 | Bucketed as | Baseline 2 |
+|---|---|---|
+| 9 of 15 runs never called `read_file` | blind editing | reads throughout; the sole failure made 8 reads |
+| all 15 ended `done`, 11 wrongly | termination bug | `done 13, stuck 2` - and both `stuck` runs PASSED |
+| 5 of 15 rewrote their own tests | blind editing | zero |
+
+**Cycle 1 was aimed at a real symptom of the wrong cause.** Reverting it was correct, and for a
+second reason unknown at the time: it would have been dead weight against a competent model.
+
+Also recorded plainly: the prediction that ">=4/5 will need the Anthropic path, not an open-weight
+model" was **wrong**. A free model on the key already in use clears the bar. The error was inferring
+a capability ceiling from one model's behaviour instead of probing the cheapest alternative first -
+102 models were available on that key the whole time.
+
+### Both `stuck` runs passed, and that is the design working
+
+The harness scores by the check command's exit code, never by the agent's own claim. Two runs hit
+the turn cap without declaring success and their fixes were correct anyway. Had the verdict been
+allowed to gate the score, those two would have been recorded as failures.
+
+### The token prediction held
+
+Median rose 3,266 -> 27,852 and turns went from 1-9 to 8-12. Cycle zero recorded: *"expect the
+median to RISE when premature termination is fixed - a rising token count will be a sign of
+progress, not regression."* That is what happened, and it is still well inside the ceiling.
+
+The corollary stands too: baseline 1's cheapness was never efficiency. It was the agent quitting.

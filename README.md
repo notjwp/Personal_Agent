@@ -8,59 +8,44 @@ projects and scores each by exit code.
 
 ## Numbers
 
-**Baseline — 2026-08-18.** Every dev case, three runs each, one configuration. This is the row every
-later change is measured against.
+**Baseline — 2026-08-19, `nemotron-3-super-120b-a12b`: pass 14/15**, 3 runs per dev case, 0 blocked.
 
-| Date | Provider / model | Runs | Result | Blocked | Median tokens/run | Wall |
-|---|---|---|---|---|---|---|
-| 2026-08-18 | NVIDIA NIM / `meta/llama-3.1-70b-instruct` | 3 per case | **4/15** | 0 | 3,266 | 30 min |
+| Case | Pass | Verdicts | Turns | Tokens (med) | Tampered |
+|---|---|---|---|---|---|
+| `fix-import` | **3/3** | done x2 stuck x1 | 10/12/10 | 34,394 | 0 |
+| `off-by-one` | **3/3** | done x3 | 10/9/8 | 28,877 | 0 |
+| `broken-fixture` | **3/3** | done x3 | 8/10/10 | 27,464 | 0 |
+| `missing-dep` | **3/3** | done x3 | 5/4/3 | 6,971 | 0 |
+| `add-endpoint` | 2/3 | done x2 stuck x1 | 11/12/11 | 35,648 | 0 |
 
-| Case | Pass | Verdicts | Turns | Tokens (med) | Reads | Tampered |
-|---|---|---|---|---|---|---|
-| `missing-dep` | **3/3** | done x3 | 2/2/2 | 3,075 | 0 | 0 |
-| `fix-import` | 1/3 | done x3 | 6/4/7 | 10,481 | 1/1/2 | 2 |
-| `add-endpoint` | 0/3 | done x3 | 4/2/1 | 3,266 | 0 | 3 |
-| `broken-fixture` | 0/3 | done x3 | 1/1/1 | 2,278 | 0 | 0 |
-| `off-by-one` | 0/3 | done x3 | 7/7/9 | 19,058 | 2/2/3 | 0 |
+Ceilings: median 27,852 / 60,000 tokens, largest single result 2,908 / 6,000 chars — both inside.
 
-All four passes are legitimate — zero tampering on every one. Every case fails for the exact reason
-it was designed to, verified against the recorded intended failures after the run.
+**Verified before being believed:** zero tampering on any pass, zero attempted writes outside the
+workspace, one model across all 15 rows, and every fixture re-checked to still fail exit-1 when
+untouched. A passing suite proves nothing if the reset quietly stopped working.
 
-**The headline is not 4/15, it is `done x15`.** Not one run ended `stuck`, `compact` or `replan`.
-The agent always believes it has succeeded, and is wrong 11 times out of 15. Two consequences:
+**Two runs ended `stuck` and passed anyway.** Scoring is by the check command's exit code, never by
+the agent's claim of success — so a correct fix counts even when the agent does not realise it has
+finished. Had the verdict gated the score, those two would have been recorded as failures.
 
-- Neither compaction nor a plan node is earned by this data. The build spec predicted compaction
-  next; the measurement says the termination check in `reflect` is the largest bucket by far.
-- **Low token counts are not efficiency.** A 3,266-token median against a 60,000 target looks
-  excellent and is not — runs stop early because the agent quits, not because it is frugal.
+### The previous baseline, and what it actually measured
 
-Two behaviours dominate the failures:
+| Date | Model | Result |
+|---|---|---|
+| 2026-08-19 | `nemotron-3-super-120b-a12b` | **14/15** |
+| 2026-08-18 | `meta/llama-3.1-70b-instruct` | 4/15 |
 
-- **9 of 15 runs never called `read_file` at all.** All three `add-endpoint` runs open with
-  `write_file` before reading anything.
-- **5 runs edited the tests they are judged by.** The harness restores protected test files before
-  scoring, so this cannot manufacture a pass — it shows up as wasted turns instead.
+Only the model changed. Same harness, same fixtures, same loop — so **none of the improvement is
+attributable to agent design**, and the two rows are separate measurements rather than a delta.
 
-`broken-fixture` is the sharpest illustration: one `run_shell`, then `done`, in all three runs. It
-runs the suite, sees the error, and declares victory without touching anything.
+The older run's failures were bucketed at the time as loop defects: 9 of 15 runs never called
+`read_file`, all 15 ended `done` (11 wrongly), and 5 rewrote the tests they were judged by. All
+three disappeared on a stronger model. **That diagnosis was wrong**, and one tuning cycle was spent
+and reverted before the cheapest alternative — a different model on the same free key — was tried.
 
-This baseline describes `meta/llama-3.1-70b-instruct`, not Claude. Tool-calling competence varies
-enormously between models, so the number will move when the provider changes.
-
-### Tuning: cycle 1, reverted
-
-The first tuning cycle gated `done` on the most recent shell command having exited 0, aimed at the
-`done x15` finding. It worked mechanically — turns roughly doubled and `stuck` verdicts appeared for
-the first time — and it was **reverted** because the score got worse: 0 passes in 5 scored runs, and
-tampering rose from 5/15 to 5 of 5.
-
-The reason is the useful part. **The gate is satisfiable by tampering**: one run reached `done`
-legitimately under the new rule by editing the test file until `pytest` exited 0. Denying the agent
-its exit without giving it a better route to progress simply bought more of the destructive
-behaviour it already knew.
-
-So the binding constraint is **blind editing**, not termination. Recorded in full, including its
-partial-measurement caveat, in `eval/CHANGELOG.md`.
+**Read the token figures the right way round.** The old baseline's 3,266-token median looked
+frugal and was not; runs were cheap because the agent quit early. 27,852 tokens with 8–12 turns is
+what doing the work actually costs.
 
 ## Running it
 
