@@ -1,0 +1,19 @@
+# Secrets. .env holds live API keys and must never be committed.
+# .env.example is the committed template and holds none.
+.env
+!.env.example
+
+# Runtime state (§12: .agent/ is runtime state and must be gitignored)
+.agent/
+
+# Eval outputs and scratch workspace
+eval/runs/
+eval/workspace/*
+!eval/workspace/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
