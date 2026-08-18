@@ -111,6 +111,39 @@ environment with an enforced workspace root.
 
 ---
 
+## 3a. What the measurement changed
+
+This document is the *why* file, so the places where evidence overruled the design's predictions
+belong here rather than in a changelog nobody re-reads.
+
+**The verdict distribution replaced §9's predicted layer order.** §9 predicts compaction as the next
+layer after v1. The committed baseline produced `done x15` — no `compact`, no `stuck` at the turn
+cap — so neither compaction nor the plan node is earned by the data. Conflict 4 made this
+distribution a measurement precisely so it could overrule the prediction, and it did.
+
+**The binding constraint is blind editing, not termination.** 9 of 15 baseline runs never called
+`read_file`; one case invented two files that do not exist in the project and reported success.
+Tuning cycle 1 gated `done` on a successful command, worked mechanically (first `stuck` verdicts
+ever), and was **reverted** — the agent satisfied the gate by rewriting tests until pytest exited 0,
+and tampering rose from 5/15 to 5/5. Denying the exit without offering a better route to progress
+just bought more of the destructive behaviour.
+
+*Architectural consequence:* a termination check must verify that the thing under test was
+**untouched**, not merely that a command exited 0. Any future gate of that kind inherits this
+constraint.
+
+**A declared JSON schema is not enforcement.** Numeric tool arguments arrived as strings twice
+(`run_shell(timeout)`, then `read_file(offset/limit)`), the second time breaking every read in a live
+session so the agent rewrote a 43-line module it had never read. Coercion belongs at the tool
+boundary, not in the schema.
+
+**Infrastructure failure is not a score.** A rate-limited run once recorded as a failed case, sitting
+in the denominator and quietly deflating the baseline every later change is compared against.
+Provider errors are now classified in `provider.py`: retryable (excluded and retried), fatal (aborts
+the suite), or a real result. Our own bugs — `BadRequestError`, a malformed tool call — stay scored.
+
+---
+
 ## 4. The determinism ratio
 
 | Node type | Count (v1) | Members |
@@ -137,7 +170,7 @@ because no edge ever separates them (CE-04). They remain distinct *stages*, merg
 
 | Rule | Constraint | Architectural effect |
 |---|---|---|
-| CE-01 | A module needs two callers OR two implementations | The model adapter is a function in `graph.py`, not `agent/llm.py` — one caller, one implementation |
+| CE-01 | A module needs two callers OR two implementations | `agent/provider.py` earned its place when a SECOND implementation arrived (Anthropic + any OpenAI-compatible endpoint). Until then it correctly lived inside `act` |
 | CE-02 | Frameworks earn their place at current scale | Hand-written tool schemas until tool six; `registry.py` only then |
 | CE-03 | Every state field must be read somewhere | No `plan`/`cursor` fields at v1 (no plan node); no `scratch` field |
 | CE-04 | Two nodes that never branch apart are one node | `execute` absorbs `observe` |

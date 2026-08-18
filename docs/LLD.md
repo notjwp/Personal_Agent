@@ -175,6 +175,12 @@ def run_shell(command: str, timeout: int = 120) -> str
 - Tools do **not** re-check paths. The gate checks declared path arguments; the container's single
   writable mount bounds everything else. Two mechanisms guarding one risk is a CE-02 violation.
 
+**Numeric arguments are coerced at the boundary, via one `_int(value, default)` helper.** A declared
+JSON schema is a hint to the model, not enforcement: `timeout` arrived as `"120"` and crashed
+`subprocess.run`, then `offset`/`limit` arrived as strings and raised on every `read_file` call in a
+live session — after which the agent rewrote a 43-line module it had never managed to read, and
+reported success. A nonsense value falls back to the default rather than raising.
+
 ### 4.2 Registry shape
 
 ```python
@@ -220,8 +226,10 @@ CE-03.
 
 ### 5.2 Node: `act`
 
-The model adapter (NFR-702) **is this function** — one caller, one implementation, so CE-01 forbids a
-separate `agent/llm.py`.
+The model call is delegated to `agent/provider.py` (§5a). `act` keeps the trace bookkeeping and the
+state update and stays ignorant of which provider answered. It was correct for the adapter to live
+inside this function until a second implementation arrived — CE-01 needs two callers OR two
+implementations, and there was one of each.
 
 ```python
 client = anthropic.Anthropic()                       # CE-05: built here, not at import
@@ -257,6 +265,49 @@ returns  messages + [{"role": "assistant", "content": content}]
 
 `block.model_dump()` preserves the thinking signature and yields JSON-serialisable dicts, which is
 what makes the state checkpointable. ⚠ Verify the round-trip on the first live call.
+
+### 5a. Module: `agent/provider.py`
+
+The only module that imports a provider SDK. Two implementations behind one seam, which is what
+earns it a file under CE-01.
+
+```python
+@dataclass(frozen=True)
+class Reply:
+    blocks: list[dict]          # Anthropic-shaped content blocks
+    billed_tokens: int
+    cache_read_tokens: int
+    stop_reason: str | None
+
+def call_model(messages, system, tools, on_text=None) -> Reply   # dispatches on settings.PROVIDER
+```
+
+**The internal message shape never changes.** Every node, test and trace speaks Anthropic-style
+content blocks, so the OpenAI-compatible path translates at its own boundary only. Four translations,
+and the third is the one that bites:
+
+| Direction | Ours | Theirs |
+|---|---|---|
+| Tool schema | `{name, description, input_schema}` | `{type: "function", function: {..., parameters}}` |
+| Assistant turn out | content blocks incl. `tool_use` | `content` string + `tool_calls[]` |
+| Tool results out | **one** user message of N `tool_result` blocks | **N** separate `role: "tool"` messages |
+| Reply in | — | `arguments` is a JSON **string**; parse into `input` |
+
+#### 5a.1 Error taxonomy — three outcomes, not two
+
+Classified by exception **name**, because both SDKs expose identical names (`RateLimitError`,
+`APITimeoutError`, `APIConnectionError`, `InternalServerError`, `AuthenticationError`,
+`PermissionDeniedError`, `BadRequestError`) — verified against the installed releases.
+
+| Class | Meaning | Harness does |
+|---|---|---|
+| `ProviderUnavailable` | rate limit / timeout / dropped connection / 5xx | row with **no score**, retried, excluded from the denominator |
+| `ProviderMisconfigured` | no key, rejected key, forbidden model | **no row**; aborts the whole suite |
+| anything else | our bug, or `MalformedToolCall` | **scored as a real result** |
+
+That third row is the load-bearing one. A `BadRequestError` is our defect and a malformed tool call
+is the model answering badly — both are results. Excusing either as "infrastructure" would drop a
+genuine failure from the denominator and hide a defect behind a run that merely looked unlucky.
 
 ### 5.3 Node: `gate`
 
@@ -357,6 +408,43 @@ verify construction.
 
 ---
 
+## 5b. Module: `agent/cli.py`
+
+```python
+class LiveTrace(list)                  # append() also renders; the whole live-output mechanism
+def ask_human(payload) -> str          # "allow" | "deny" | QUIT
+def run_session(goal, thread, app)     # one loop covers new goal, resumed thread, every pause
+def list_threads(app)                  # distinct thread ids via app.checkpointer.list(None)
+```
+
+**Subclassing the trace list is why `graph.py` needed no change.** Every node already reports through
+`trace.append(...)`, so live output needs no callback, no streaming API, and no node aware of a
+terminal. The harness keeps passing a plain list and is unaffected.
+
+**The suspend/resume contract**, verified against the installed LangGraph rather than assumed:
+
+| Question | Answer |
+|---|---|
+| How does a pause surface? | `invoke()` returns with an `__interrupt__` key; `[0].value` is the payload |
+| How to continue? | `app.invoke(Command(resume=answer), config)` |
+| Two approvals in one turn? | Two separate pauses, resumed one at a time, matched positionally |
+| Do tools fire twice on resume? | **No — measured exactly once**, despite `gate` re-running |
+
+```python
+out = app.invoke(new_state(goal) if goal is not None else None, cfg)
+while "__interrupt__" in out:
+    answer = ask_human(out["__interrupt__"][0].value)
+    if answer == QUIT: break          # already checkpointed; --resume picks it up
+    out = app.invoke(Command(resume=answer), cfg)
+```
+
+`QUIT` is a distinct sentinel, never passed to the gate: the gate treats every non-`"allow"` string
+as a rejection, so a walk-away must not read as a policy decision. Unrecognised keystrokes re-prompt
+and `EOFError` returns `"deny"` — silence is not consent. Resuming seeds the live turn/token counters
+from the checkpoint, so a continued run reads `turn 9/12` rather than restarting at 1.
+
+---
+
 ## 6. Data formats
 
 ### 6.1 Fixture case (`eval/tasks.jsonl`, one object per line)
@@ -383,6 +471,11 @@ Full final message list plus the per-call records above plus the terminal record
 unactionable without this, which is why tracing is scoped into Step 2 rather than deferred.
 
 ### 6.4 Run summary (`eval/runs/<ts>/summary.jsonl`)
+
+Since the baseline phase every row also carries `status` (`"ok"` | `"blocked"`), `provider` and
+`model`. The last two are per row, not per suite: a score whose model is unknown cannot be compared
+to anything, and the report warns loudly if one directory ever mixes two. A sibling `manifest.json`
+records the invocation (split, cases, runs, image) and is what makes `--continue` safe.
 
 One row per case per run: `id`, `run_index`, `pass`, `turns`, `tool_calls`, `tokens`, `seconds`,
 `verdict`.
@@ -420,9 +513,19 @@ All tests run without an API key and without network access (NFR-602).
 | `test_reflect.py` | verdict logic | Each of (a)–(f) in isolation · precedence: (a) beats (b) beats (c) beats (d) · **text-only reply before any tool call → `continue`, not `done`** · text-only after a tool call → `done` |
 | `test_nodes.py` | `gate`, `execute`, `finish`, tools | Mixed verdicts in one turn · **gate has no side effects across two calls** · tool exception → observation, not crash · `failures` resets to 0 on a clean turn · denied call yields a synthetic error observation · `read_file` offset/limit · `run_shell` separates stdout/stderr and honours timeout |
 
-`test_nodes.py` is a stated deviation from §12's three-file `tests/` list: §10 requires unit tests
-for *every* deterministic node, and none of the three named files covers `gate`, `execute` or
-`finish`.
+| `test_cli.py` | approval prompt, live display | Every `allow`/`deny` spelling · unrecognised input re-prompts rather than guessing · `EOFError` → deny (silence is not consent) · quit is distinct from deny · arguments shown unabbreviated · a resumed session continues the turn count |
+| `test_harness.py` | scoring arithmetic, error taxonomy | **Blocked runs leave the denominator** · **last row wins for a retried case-run** · 1-of-3 reports `1/3` · tampering flagged above the table · mixed providers flagged · each SDK exception name lands in the right bucket · **our own bugs are never excused as infrastructure** |
+
+**150 tests, all offline.** Provider suspend/resume is exercised end to end against a stand-in model,
+including the CE-07 proof: an approved tool fires **exactly once** across a suspend and resume, which
+had been asserted on paper since Phase B and never executed until the CLI existed.
+
+Three stated deviations from §12's three-file `tests/` list, each justified rather than assumed:
+`test_nodes.py` (§10 requires unit tests for *every* deterministic node, and none of the three named
+files covers `gate`, `execute` or `finish`), `test_cli.py` (the approval prompt is where consent is
+decided, and a prompt that reads a typo as approval is a security defect that manual testing finds
+only by accident), and `test_harness.py` (its functions decide the headline number, and a wrong
+denominator does not crash — it silently reports something other than the truth).
 
 ---
 
@@ -447,12 +550,12 @@ Implementation follows §9 strictly — it is the only build order.
 
 | Phase | Deliverable | Exit criterion |
 |---|---|---|
-| A | Fixtures, `reset.sh`, harness, null agent | Harness prints `pass 0/5`; every setup exits 0, every check exits non-zero; a hand-fixed case flips to pass |
-| B | `policy` → `context` → `tools` → `graph` → tracing | ≥1 dev case passes; traces readable for all five; an injected tool exception appears as an observation |
-| C | CLI | Interactive run with a working approval prompt |
-| D | Baseline at 3 runs per case | Committed baseline row: pass rate, variance, median turns, median tokens |
-| E | SIGKILL/resume, NFR-201 and NFR-402 assertions | Resume completes with no duplicated side effects |
-| F | Tuning cycles | One change per cycle, logged in `eval/CHANGELOG.md`, kept or reverted |
+| A | Fixtures, `reset.sh`, harness, null agent | **DONE** — `pass 0/5`, isolation proven directly |
+| B | `policy` → `context` → `tools` → `graph` → `provider` → tracing | **DONE** — `pass 1/5`, verified genuine |
+| C | CLI, approval, `--list`/`--resume` | **DONE** — approved tool fires exactly once; quit/resume survives a container boundary |
+| D | Baseline at 3 runs per case | **DONE** — committed **4/15**, 0 blocked, all four passes legitimate |
+| E | SIGKILL/resume, NFR-201 and NFR-402 assertions, egress | **NEXT** — closes DoD items and needs almost no model quota |
+| F | Tuning cycles | Cycle 1 **reverted**; the binding constraint is blind editing, not termination |
 | G | Ten held-out cases | Dev ≥4/5 across 3 runs; held-out scored once and recorded |
 
 The null agent in Phase A exists so that a `0/5` in Phase D is unambiguous between "the agent failed"

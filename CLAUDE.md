@@ -4,8 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Greenfield. `main` has **no commits**; the only file is `CONTEXT.md`. Nothing described below as a
-command or module exists yet — it is what the spec says to build, in the order the spec gives.
+Phases A-D are built and committed (`131fd4f`). What exists: the measurement rig, the
+`act -> gate -> execute -> reflect` loop, a two-provider model adapter, the interactive CLI with
+approval and resume, and a committed baseline.
+
+- **Baseline: 4/15**, 3 runs per dev case, on `nvidia/meta/llama-3.1-70b-instruct`. Per-case table in
+  `README.md`; conditions and trust checks in `eval/CHANGELOG.md`.
+- **150 unit tests**, green with no API key and no network.
+- **Tuning cycle 1 is reverted.** Gating `done` on a successful command worked mechanically - it
+  produced the first `stuck` verdicts in the project's history - but made the score worse: the agent
+  satisfied the gate by rewriting tests until pytest exited 0, and tampering went 5/15 to 5/5. **The
+  binding constraint is blind editing, not termination.** 9 of 15 baseline runs never called
+  `read_file` at all.
+- Still deferred and unearned: compaction, plan node, memory, web, worker. The baseline's verdict
+  distribution (`done x15`) earns none of them.
+- **The next phase is E (durability and safety)**, chosen because it closes Definition-of-Done items
+  and needs almost no model quota, while the model-capability question stays open.
 
 ## CONTEXT.md is the authority
 
@@ -18,6 +32,15 @@ precedence rules:
 - **§12 is a file allowlist.** Create the files it lists and no others. Deferred files
   (`agent/registry.py`, `memory.py`, `web.py`, `worker.py`) are created only when their layer is
   earned, with the stated trigger (e.g. the `@tool` decorator arrives at tool six, not before).
+
+  **Four stated deviations exist, each justified in writing rather than assumed:**
+  `agent/provider.py` (earned by a SECOND implementation - Anthropic plus any OpenAI-compatible
+  endpoint - which is exactly what CE-01 requires), and three extra test files beyond the allowed
+  three: `tests/test_nodes.py` (§10 demands unit tests for every deterministic node),
+  `tests/test_cli.py` (the approval prompt is where consent is decided), and
+  `tests/test_harness.py` (its functions decide the headline number, and a wrong denominator does
+  not crash - it silently reports something other than the truth). Do not add a fifth without the
+  same standard of justification.
 - **§13 (Code Economy) is binding.** A violation is a defect, not a style choice.
 - **Where §3/§4 and §13 disagree, §13 governs.** §3 is the logical flow; §13 is the code shape.
 - When a requirement and existing code disagree, the requirement wins — say so rather than
@@ -75,18 +98,31 @@ easy to reintroduce because each looks correct in isolation:
 State shape for v1 is fixed in §13: a plain `TypedDict`, no reducers, no `Annotated`, no `operator`
 import. Nodes return the full `messages` list; compaction is then an ordinary return.
 
-## Commands (per §12; create the file before expecting the command to work)
+## Commands
 
 ```bash
-python -m agent "goal"            # cli.py entrypoint — interactive run
-python eval/harness.py            # run the fixture suite, print pass N/M
+python -m agent "goal"            # interactive run; destructive calls pause for approval
+python -m agent --list            # past threads, newest first, with verdict and turn count
+python -m agent --resume <id>     # continue a thread; a task's identity IS its thread id
+
+python eval/harness.py --split dev --runs 3 --pace 20   # a baseline; --pace throttles the free tier
+python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an interrupted baseline
+python eval/harness.py --case fix-import --runs 3        # one case, repeated
+
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's known state (idempotent)
-pytest                            # all unit tests, no API key required
+pytest                            # 150 unit tests, no API key, no network
 pytest tests/test_policy.py -k escape   # single test
 ```
 
-Sandbox image is built from `Containerfile` (python:3.12-slim + git + pytest) with the workspace
-as the only bind mount (NFR-204).
+**Never pipe the harness through `tail`.** It buffers until exit, which makes a hang
+indistinguishable from progress. This project has lost time to it twice.
+
+A run that never reached the model is reported **blocked** and excluded from the score rather than
+counted as a failure - `pass 4/13, 2 blocked`, never `pass 4/15`. Blocked runs are retried
+automatically, and `--continue` re-runs exactly the case-runs with no result.
+
+Sandbox image is built from `Containerfile` (python:3.12-slim + git + pytest + flask + langgraph)
+with the workspace as the only bind mount (NFR-204).
 
 ## Evaluation discipline
 

@@ -17,7 +17,8 @@ in §9 below with the trigger that admits them.
 | C2 | Policy | `agent/policy.py` | `classify()` — the gate's entire decision logic | no |
 | C3 | Context manager | `agent/context.py` | `shrink()` — truncate, spill, instruct | no |
 | C4 | Tools | `agent/tools.py` | The three v1 tool functions and their schemas | no |
-| C5 | Orchestrator | `agent/graph.py` | State shape, five nodes, wiring, model adapter | **yes** (`act`) |
+| C5 | Orchestrator | `agent/graph.py` | State shape, five nodes, wiring, `new_state()` | **yes** (`act`) |
+| C5a | Provider adapter | `agent/provider.py` | `call_model()`, message translation, error taxonomy | **yes** (only SDK importer) |
 | C6 | Interface | `agent/cli.py` | Streamed CLI, approval prompt, thread listing/resume | no |
 | C7 | Eval harness | `eval/harness.py` | Fixture runner, scorer, tracing | no |
 | C8 | Reset | `scripts/reset.sh` | Idempotent workspace restore | no |
@@ -28,9 +29,10 @@ in §9 below with the trigger that admits them.
 config  ←  policy
 config  ←  context
 config  ←  tools
-config, policy, context, tools  ←  graph
+config  ←  provider          (the ONLY module importing a provider SDK)
+config, policy, context, tools, provider  ←  graph
 graph  ←  cli
-graph  ←  harness
+graph, provider  ←  harness   (harness needs the error taxonomy to score honestly)
 ```
 
 `config` imports nothing from the package. No cycles. Every component below `graph` is unit-testable
@@ -77,19 +79,50 @@ Three functions plus hand-written JSON schemas: `read_file` (offset/limit), `wri
 ### C5 — Orchestrator
 
 Owns `AgentState`, the five nodes, the routing functions, the compiled graph, and the model adapter.
-The adapter is a function, not a module — one caller, one implementation (CE-01).
+The model adapter now lives in `agent/provider.py`, not here: a second implementation (any
+OpenAI-compatible endpoint alongside Anthropic) is exactly what CE-01 requires before a module is
+justified. `graph.py` also owns `new_state()`, shared with the harness — its two callers.
+
+### C5a — Provider adapter
+
+`call_model(messages, system, tools, on_text) -> Reply`. Two implementations behind one seam. The
+rest of the system speaks ONE message shape (Anthropic-style content blocks); the OpenAI-compatible
+path translates at its own boundary and nowhere else, so no other file learns a second provider
+exists. Also owns the error taxonomy every scored run depends on: `ProviderUnavailable` (retryable,
+excluded from the score), `ProviderMisconfigured` (aborts the suite), `MalformedToolCall` (a real
+result — the model answered, badly).
 
 ### C6 — Interface
 
-`python -m agent "goal"` (interactive, streamed), `--list`, `--resume <thread-id>`. Renders the
-approval prompt with the exact command or argument set, unabbreviated (FR-306), resolvable in one
-keystroke (NFR-801).
+`python -m agent "goal"` (interactive), `--list`, `--resume <thread-id>`. Renders the approval prompt
+with the exact argument set, unabbreviated (FR-306), resolvable in one keystroke (NFR-801).
+
+Interactive mode is the only caller that sets `autonomous=False` — the switch that makes a `confirm`
+verdict suspend instead of becoming a refusal. Live output is a `list` subclass whose `append` also
+renders, so `graph.py` needs no callback and no knowledge that a terminal exists.
 
 ### C7 — Eval harness
 
-Per case: run `setup` (must exit 0), invoke the graph in autonomous mode, run `check`, score exit 0
-as a pass. Records pass, turns, tool calls, tokens, wall time, terminal verdict. Writes
-`eval/runs/<ts>/summary.jsonl` plus a full per-case trace.
+Per case-run: run `setup` (must exit 0), invoke the graph in autonomous mode, restore protected test
+files, run `check`, score exit 0 as a pass. One container per case-run, because `missing-dep`
+installs a package and a shared container would let later runs pass for free.
+
+Records pass, verdict, turns, tool calls, tokens, cache reads, spills, tool errors, tampering, wall
+time, provider and model. Writes `eval/runs/<ts>/summary.jsonl`, `manifest.json`, and a full
+per-case trace.
+
+Three properties the score depends on:
+
+- **Blocked runs carry no score.** A run that never reached the model is recorded `status: blocked`,
+  retried with backoff, and excluded from the denominator — `pass 4/13, 2 blocked`, never `pass 4/15`.
+- **Resumable.** `--continue` re-runs only case-runs with no result and refuses to continue a
+  directory whose manifest describes a different invocation.
+- **Last row wins.** `summary.jsonl` is append-only, so a retried case-run leaves an earlier row
+  behind; aggregation dedupes by `(id, run_index)`. Getting this wrong would not crash — it would
+  silently report a different number than reality, which is why it is unit-tested.
+
+`summarise(rows)` is pure, so the arithmetic that produces the headline number is testable without
+running anything.
 
 ### C8 — Reset
 

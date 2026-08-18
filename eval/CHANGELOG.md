@@ -496,3 +496,127 @@ checkpoint on resume, so a continued run reads `turn 9/12` rather than restartin
 FR-702 wants the current plan and active step on screen at all times. There is no plan node at v1,
 so there is nothing to display; the turn/token status line occupies that slot and the requirement
 closes when the plan node lands.
+
+---
+
+## Phase D — BASELINE (cycle zero)
+
+**pass 4/15**, 0 blocked. This is the row every later change is a delta against.
+
+| | |
+|---|---|
+| Date | 2026-08-18 |
+| Provider / model | NVIDIA NIM, `meta/llama-3.1-70b-instruct` (recorded on every row) |
+| Runs | 3 per dev case, 15 total, one configuration |
+| Wall / tokens | 30 min, 117,413 tokens total, 3,266 median per run |
+| Traces | `eval/runs/20260818T141013Z/` |
+
+| Case | Pass | Turns | Tokens (med) | Reads | Tampered |
+|---|---|---|---|---|---|
+| `missing-dep` | 3/3 | 2/2/2 | 3,075 | 0 | 0 |
+| `fix-import` | 1/3 | 6/4/7 | 10,481 | 1/1/2 | 2 |
+| `add-endpoint` | 0/3 | 4/2/1 | 3,266 | 0 | 3 |
+| `broken-fixture` | 0/3 | 1/1/1 | 2,278 | 0 | 0 |
+| `off-by-one` | 0/3 | 7/7/9 | 19,058 | 2/2/3 | 0 |
+
+### The verdict distribution is the finding, not the pass rate
+
+**`done` x15. Every single run.** No `stuck`, no `compact`, no `replan`. The agent always believes
+it has succeeded and is wrong 11 times in 15.
+
+This is what conflict 4 was recorded for. The build spec predicts compaction as the next layer;
+**the measurement disagrees and the measurement wins.** Nothing in this distribution earns
+compaction (no `compact`) or a plan node (no `stuck` at the turn cap). The largest bucket by a wide
+margin is the termination check in `reflect`, and that is where the first tuning cycle goes.
+
+### Two behaviours behind the failures
+
+- **9 of 15 runs never called `read_file` once.** All three `add-endpoint` runs open with
+  `write_file` before reading anything at all.
+- **5 runs edited the tests they are judged by.** `restore_protected_tests()` puts them back before
+  scoring, so this cannot manufacture a pass; it surfaces as wasted turns instead.
+
+`broken-fixture` is the cleanest example of both problems at once: one `run_shell`, then `done`, in
+all three runs. It runs the suite, sees `AttributeError: 'NoneType'`, and declares success.
+
+### Trust checks performed before committing this number
+
+- All four passes have `tampered == 0` — legitimate, not manufactured.
+- All five cases still fail for their exact recorded intended reasons (`assert 405 == 201`,
+  `AttributeError: 'NoneType'`, `assert 2 == 3`), re-verified after the run. The rig did not rot.
+- One provider/model across all 15 rows; the report warns loudly if a directory ever mixes two.
+- Zero blocked runs, so the denominator is 15 and nothing was excluded.
+
+### Read the token figures with suspicion
+
+3,266 median against a 60,000 target looks excellent and is not. Runs are cheap because they stop
+early, not because they are efficient. Expect the median to **rise** when premature termination is
+fixed — a rising token count will be a sign of progress, not regression.
+
+### Rig defects fixed on the way in
+
+- **Provider failures were being scored as agent failures.** A `429` recorded `verdict: none,
+  pass: false` and sat in the denominator. Now classified in `provider.py` as `ProviderUnavailable`
+  (retried, excluded, reported separately) or `ProviderMisconfigured` (aborts the suite). Verified
+  live: an invalid key stops after the first case instead of recording five phantom failures.
+- **A baseline could not survive interruption.** `manifest.json` plus `--continue` now resume only
+  the case-runs with no result, and refuse to continue a directory describing a different run.
+- Docker Desktop died mid-run during this phase. No rows were written, and the `INCOMPLETE` guard
+  reported a rig failure rather than silently scoring `0/15`.
+
+### Not comparable to anything earlier
+
+Phase C found `read_file` raising on every call. Every number before that fix was measured with the
+read tool broken, so this is the first baseline comparable to anything. It describes
+`llama-3.1-70b-instruct`, not Claude.
+
+---
+
+## Cycle 1 — gate `done` on a successful command — **REVERTED**
+
+| | |
+|---|---|
+| Hypothesis | The agent stops because `reflect` lets it. `run_shell` returns a failed command as an ordinary result, so a red suite was indistinguishable from a healthy tool call and any text reply was accepted as `done`. Requiring the most recent command to have exited 0 should convert `broken-fixture` and keep `off-by-one` working. |
+| Change | `agent/graph.py`: `_last_command_succeeded()`, and branch (e) of `reflect` gated on it. One change. |
+| Before | **4/15**, verdicts `done x15`, 5 of 15 runs tampered |
+| After | **0 passes in 5 scored runs**, verdicts `done 1 / stuck 4`, **5 of 5 runs tampered**, median turns 12 (the cap) |
+| Decision | **Reverted** |
+
+### The measurement is PARTIAL and is reported as partial
+
+Stopped by decision after 5 scored runs of a planned 15 (plus 1 blocked), because the trend was
+clear and the free tier was refusing repeatedly — roughly 5 case-runs per hour. **This is not a
+3-runs-per-case result and must not be quoted as one.** Traces: `eval/runs/20260818T151454Z/`.
+
+`broken-fixture`, the case predicted to convert, never ran. The revert is therefore made on a
+directional signal, not a completed comparison — recorded here so nobody later reads 0/5 as a
+measured 0/15.
+
+### The mechanism worked; the design was wrong
+
+The change did exactly what it was built to do. Turns on `fix-import` went 6/4/7 → 10/12/12, and
+`stuck` appeared for the first time in this project's history — runs genuinely stopped quitting early.
+
+It made things worse anyway, and the reason is the useful part:
+
+- **Tampering went from 5/15 to 5/5.** Every scored run rewrote the tests.
+- **`fix-import` went 1/3 → 0/3.**
+- Runs burned the full turn cap: `add-endpoint` went from 4/2/1 turns to 12/12.
+
+**The gate is satisfiable by tampering.** `fix-import` run 0 reached `done` legitimately under the
+new rule — it edited the test file until `pytest` exited 0. The check asked *"did the last command
+succeed?"*, and rewriting the assertion is a perfectly good way to make that true.
+
+That is a defect in the change, not in the model. Removing the agent's ability to quit without
+giving it a better way to make progress left it spending the extra turns on the one destructive
+move it already knew.
+
+### What this buys for Cycle 2
+
+The termination bucket was **not** the binding constraint. Blind editing is: given more turns, the
+agent does more of it. The next cycle should target that directly rather than extending runs — the
+plan's candidate is making `write_file` to a never-read path fail loudly, so editing blind stops
+being the path of least resistance.
+
+Any future retry of a termination gate must verify that the *thing under test* was untouched, not
+merely that a command exited 0.
