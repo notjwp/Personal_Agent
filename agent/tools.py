@@ -37,6 +37,15 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read `limit` lines starting at `offset` (0-based)."""
     offset, limit = _int(offset, 0), _int(limit, 500)
     target = config.WORKSPACE / path
+    if target.is_dir():
+        # Measured cost of NOT saying this: the only failure in the 14/15 baseline.
+        # The agent asked for a directory, got a bare "[Errno 21] Is a directory",
+        # retried the same path with a trailing slash, got the identical message,
+        # and spent 3 of its 12 turns on it. That case passes in 11 turns.
+        # An error the model cannot act on costs a turn every time it is retried.
+        raise IsADirectoryError(
+            f"{path} is a directory, not a file. "
+            f"List it with run_shell(command='ls -la {path}').")
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     window = lines[offset:offset + limit]
     body = "\n".join(f"{offset + i + 1:6d}\t{line}" for i, line in enumerate(window))

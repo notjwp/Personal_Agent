@@ -774,3 +774,130 @@ median to RISE when premature termination is fixed - a rising token count will b
 progress, not regression."* That is what happened, and it is still well inside the ceiling.
 
 The corollary stands too: baseline 1's cheapness was never efficiency. It was the agent quitting.
+
+---
+
+## Phase G — ten held-out cases (built, verified, not yet scored)
+
+Written because **14/15 is five cases the system was developed against**. Nothing yet shows it
+generalises, and the dev set is statistically saturated (1 SD ~ 1.0 run), so no tuning cycle can be
+honestly measured until harder cases exist.
+
+### The contamination that cannot be removed, stated rather than hidden
+
+**Every dev trace has been read**, so the choice of cases is informed by knowing where this agent is
+strong and weak - precisely the independence a held-out set is supposed to have.
+
+Partial mitigation: all ten are drawn from a **taxonomy of common Python defect classes**, chosen
+because they are ordinary bugs and **not** because of anything seen in a trace. None targets a known
+weakness, and none targets the directory-read defect fixed in this same phase. A genuinely
+independent set would be authored by someone who had never seen the traces. Read the number with
+that attached.
+
+### Design, per your decisions
+
+- **Six matched + four harder, to be scored and reported separately.** Merged into one number, a low
+  score would be ambiguous between "overfitted to the dev five" and "these are simply harder".
+- **Turn cap stays at 12**, same as dev, so the two sets remain directly comparable. Runs already use
+  8-12 of 12, so cap-hits are likely and will be reported as a finding rather than hidden.
+- **"Harder" means the cause is not where the symptom points** - misdirection, not volume.
+
+### The six matched cases
+
+| id | Domain | Seeded bug | Intended failure (VERIFIED) |
+|---|---|---|---|
+| `mutable-default` | task queue | `due_tasks(..., collected=[])` shared across calls | `1 failed, 8 passed` - results leak between calls |
+| `circular-import` | geometry | `shapes` and `transforms` import each other | `4 passed, 2 errors` - "most likely due to a circular import" |
+| `wrong-exception` | settings | store raises `KeyError`, loader catches `ValueError` | `2 failed, 11 passed` - `KeyError` propagates |
+| `float-division` | invoicing | `invoice_total(items) // len(items)` | `1 failed, 7 passed` - `12.0 != 12.5` |
+| `sort-key` | leaderboard | `key=lambda e: (str(e.score), ...)` | `1 failed, 4 passed` - "9" outranks "10" |
+| `missing-return` | path router | `path.rstrip("/")` computed, never assigned | `1 failed, 8 passed` - trailing slash survives |
+
+### The four harder cases
+
+| id | Domain | Seeded bug | Why the obvious fix is wrong |
+|---|---|---|---|
+| `naive-datetime` | scheduler | `Event.at` does `.replace(tzinfo=None)` | **Decoy verified**: patching the comparison site (where the TypeError points) passes one test and fails another. Only fixing the constructor passes all seven |
+| `double-encoding` | subtitles | two `open(..., encoding="ascii")` call sites | **Verified**: fixing one site leaves `1 failed`; both must be fixed |
+| `dict-mutation` | inventory | helper `del`s from the dict its caller iterates | the `RuntimeError` names the loop; the `del` is a frame deeper |
+| `stale-cache` | pricing | `@lru_cache` on a method whose object holds a mutable rate | the wrong price appears far from the decorator that causes it |
+
+### Verification performed before scoring
+
+- **All ten exit 1** through `scripts/reset.sh` plus the scored check command, each with passing
+  tests alongside the failures - so a broken fixture is still distinguishable from a broken
+  environment.
+- **All ten flip to exit 0 when hand-fixed.** A check that cannot discriminate is invisible until it
+  has already corrupted every number taken after it.
+- Both "harder" properties were tested directly rather than assumed: the `naive-datetime` decoy
+  genuinely misleads, and `double-encoding` genuinely needs both sites.
+- `--split dev` still selects exactly 5; `--split heldout` selects exactly 10; no duplicate ids.
+
+### Also in this phase: the directory-read bug fix
+
+`read_file` on a directory returned a bare `IsADirectoryError`. The agent retried the same path with
+a trailing slash, got the identical message, and burned 3 of its 12 turns - and that case passes in
+11. It now raises a message naming `run_shell` and `ls`.
+
+**No delta is claimed.** On a saturated dev set none can be measured; the dev re-run is a regression
+guard only.
+
+---
+
+## Phase G — HELD-OUT SCORED: 29/30
+
+Ten cases the system was never developed against, scored once, 3 runs each, 0 blocked.
+Traces: `eval/runs/20260819T041221Z/`.
+
+| Group | Score | The question it answers |
+|---|---|---|
+| **Matched six** | **17/18** | Was 14/15 fitted to the dev five? |
+| **Harder four** | **12/12** | How much headroom is left? |
+| **Total** | **29/30** | |
+
+Dev was 14/15 (93.3%); matched held-out is 17/18 (94.4%). **Statistically indistinguishable.**
+
+### The reading, decided before the data existed
+
+The plan pre-registered three outcome shapes. This is the "near dev" branch: **the 14/15 was real,
+not overfitted.** These domains and defect classes were never seen during development, and the
+result held.
+
+### The prediction that was wrong: "harder" was not harder
+
+The four cases built to be harder scored **12/12** - better than the matched six. The one failure in
+the entire run was `sort-key`, a *matched* case.
+
+The difficulty axis was chosen deliberately: **the cause is not where the symptom points.** Both
+mechanisms were verified to work before scoring - patching `naive-datetime` at the comparison site
+genuinely leaves a test failing, and `double-encoding` genuinely needs both call sites fixed. The
+agent handled both anyway, 3/3 each.
+
+So misdirection is not what challenges this model. Whatever its ceiling is, it is not "the traceback
+points somewhere other than the fix". That is a real finding about what a harder case would have to
+look like, and it means **this held-out set has almost no headroom either** - a future Phase F still
+lacks a set with room to measure against.
+
+### The one failure, and the cap
+
+`sort-key` run 0: `stuck` at 12 turns, 12 calls, no tampering. The other two runs passed in 7 and 8
+turns, so this was variance rather than an impossible case.
+
+**2 of 30 runs hit the turn cap, and one of them PASSED** (`naive-datetime` run 1). Scoring is by the
+check command's exit code, never the agent's own claim - had the verdict gated the score, that run
+would have been recorded as a failure. Keeping the cap at 12 rather than quietly raising it is what
+made this visible.
+
+### Trust checks
+
+- **Zero tampering on any pass**, zero attempted writes outside the workspace.
+- One provider/model across all 30 rows; 0 blocked, so the denominator really is 30.
+- `sort-key`, `naive-datetime` and `stale-cache` re-verified to still fail untouched after the run.
+- Ceilings: median 15,473 / 60,000 tokens; largest result 4,357 / 6,000 chars. Both inside.
+
+### The caveat that does not go away
+
+**Every dev trace had been read before these cases were written.** The mitigation - deriving all ten
+from a taxonomy of ordinary Python defect classes rather than from observed weaknesses - is partial.
+A genuinely independent set would be authored by someone who had never seen the traces. 29/30 should
+be read with that attached.

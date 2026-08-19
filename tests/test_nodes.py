@@ -729,3 +729,22 @@ def test_resume_after_a_crash_preserves_history_and_continues(
     assert len(seen) - model_calls_before <= 1, (
         f"resume re-called the model {len(seen) - model_calls_before} times; "
         f"completed act nodes must come from the checkpoint")
+
+
+def test_reading_a_directory_says_what_to_do_instead(tmp_workspace):
+    """The only failure in the 14/15 baseline, and it was pure tool ergonomics.
+
+    The agent asked for a directory, got `IsADirectoryError: [Errno 21]` with no
+    guidance, retried the identical path with a trailing slash, got the identical
+    message back, and burned 3 of its 12 turns learning nothing. The case passes
+    in 11 turns and the cap is 12 - so those 3 turns were the whole failure.
+
+    An error the model cannot act on costs a turn every time it is retried.
+    """
+    (tmp_workspace / "pkg").mkdir()
+    with pytest.raises(IsADirectoryError) as caught:
+        read_file("pkg")
+    message = str(caught.value)
+    assert "run_shell" in message and "ls" in message, (
+        "the error must name the tool that WOULD work")
+    assert "pkg" in message, "and the path it was asked about"

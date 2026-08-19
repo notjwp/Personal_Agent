@@ -8,7 +8,25 @@ projects and scores each by exit code.
 
 ## Numbers
 
-**Baseline — 2026-08-19, `nemotron-3-super-120b-a12b`: pass 14/15**, 3 runs per dev case, 0 blocked.
+**Held out — 2026-08-19: pass 29/30** on ten cases the system was never developed against,
+scored once, 3 runs each, 0 blocked.
+
+| Group | Score | The question it answers |
+|---|---|---|
+| Matched six | **17/18** | Was the dev score fitted to the dev cases? |
+| Harder four | **12/12** | How much headroom is left? |
+
+Dev is 14/15 (93.3%); matched held-out is 17/18 (94.4%) — **statistically indistinguishable, so the
+dev score was not overfitted.** The reading was fixed in the plan before the data existed.
+
+Two caveats stated rather than buried. **The four "harder" cases scored better than the matched
+six** — the difficulty mechanism (the cause is not where the traceback points) was verified to work
+but did not trouble the agent, so this set has little headroom either. And **every dev trace had
+been read before these cases were written**, so the selection is not fully independent; all ten were
+derived from a taxonomy of ordinary Python defects rather than from observed weaknesses, which is a
+partial mitigation, not a complete one.
+
+**Dev baseline — 2026-08-19, `nemotron-3-super-120b-a12b`: pass 14/15**, 3 runs per dev case, 0 blocked.
 
 | Case | Pass | Verdicts | Turns | Tokens (med) | Tampered |
 |---|---|---|---|---|---|
