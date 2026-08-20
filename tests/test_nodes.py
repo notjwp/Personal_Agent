@@ -17,6 +17,9 @@ import pytest
 from agent import config
 from agent.graph import execute, finish, gate
 from agent.provider import Reply
+import subprocess
+import time
+
 from agent.tools import read_file, run_shell, write_file
 
 
@@ -192,6 +195,26 @@ def test_run_shell_separates_streams_and_exit_code(tmp_workspace):
     assert "exit code: 3" in out
     assert "--- stdout ---" in out and "out" in out
     assert "--- stderr ---" in out and "err" in out
+
+
+def test_run_shell_timeout_kills_the_whole_process_tree(tmp_workspace):
+    """A timeout must actually bound the call (FR-202).
+
+    Written while chasing a 25-minute hang on a real repository. The hang turned
+    out to be in the HARNESS - its scored check command had no timeout at all -
+    and NOT in this tool, whose timeout works. The test is kept anyway: an
+    unbounded run_shell would hang a live session just as badly, and nothing else
+    covered it.
+
+    The command is COMPOUND on purpose. With a single command `sh -c "python ..."`
+    the shell execs into python, so killing the child kills everything; a forked
+    grandchild is the harder case and the one worth guarding.
+    """
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_shell("cd / && python -c 'import time; time.sleep(60)'", timeout=2)
+    elapsed = time.monotonic() - started
+    assert elapsed < 20, f"timeout did not bound the call: took {elapsed:.0f}s"
 
 
 def test_run_shell_runs_in_the_workspace(tmp_workspace):

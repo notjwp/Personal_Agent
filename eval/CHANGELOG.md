@@ -901,3 +901,565 @@ made this visible.
 from a taxonomy of ordinary Python defect classes rather than from observed weaknesses - is partial.
 A genuinely independent set would be authored by someone who had never seen the traces. 29/30 should
 be read with that attached.
+
+---
+
+## Phase H — restricted egress (NFR-205) — **the last DoD item, now met**
+
+Scored runs reach the model through an allowlisting proxy and have **no other route off the
+machine**. The agent container sits on an `--internal` Docker network whose only neighbour is the
+proxy; the proxy alone is attached to a network with an outward route.
+
+### Why no TLS interception was needed
+
+HTTPS through a forward proxy uses **CONNECT, and the destination hostname travels in that line in
+cleartext**. The proxy allowlists on the hostname without decrypting anything, so the model
+connection stays end-to-end encrypted and no CA has to be injected into the image. That is what kept
+this a configuration job rather than a security project.
+
+`httpx` runs with `trust_env=True`, so the `openai` SDK picks up `HTTPS_PROXY` on its own:
+**`agent/provider.py` needed no change at all.**
+
+### Verified with the real agent image, not asserted
+
+| Check | Result |
+|---|---|
+| Model host through the proxy | `http 200` |
+| Any other host through the proxy | `ProxyError 403 Filtered` (proxy logs "refused on filtered domain") |
+| **Raw IP, no proxy configured** | `OSError [Errno 101] Network is unreachable` |
+
+**The third row is the one that decides it.** The first attempt at that test returned "couldn't
+resolve host" - which is DNS failing, not routing blocked, and would be bypassed by dialling an IP
+directly. Re-testing by raw IP showed a genuine routing failure. A DNS-only barrier looks identical
+in a careless test and is worth nothing.
+
+### Regression: dev suite under the restriction
+
+**15/15**, against 14/15 unrestricted. **No improvement is claimed** - one run is inside noise at
+n=15, and this run's purpose was to show nothing broke. It did not. `missing-dep` still installs its
+package, because `/etc/pip.conf` resolves from `/wheels` and never touches the network.
+
+Every row now records `egress: restricted`, because whether a run was restricted is part of what the
+number describes, exactly like the model is.
+
+### Two bugs found while wiring it in
+
+- **CRLF.** Python's `write_text` translated newlines on Windows, so the Linux container read
+  `User tinyproxy\r` and died with "Syntax error on line 1". Pinned with `newline=""`. Same family
+  as the `.gitattributes` lesson from Phase A: a text file crossing an OS boundary needs its line
+  endings fixed explicitly.
+- **`ensure_egress()` reported success for a container that had already died.** `docker run -d`
+  exiting 0 only means the container was CREATED. It now polls `State.Running` and prints the
+  container log on failure. Without that, a scored run would have started with no proxy at all -
+  precisely what the preflight exists to prevent.
+
+### Design notes
+
+- The allowlist is **derived from the configured base URL**, not hardcoded, so pointing the agent at
+  a different provider moves the permitted host with it. A hand-maintained list would drift and
+  silently over-permit or break runs.
+- Each host is an **anchored regex** (`^integrate\.api\.nvidia\.com$`). A bare substring would let
+  `evil-nvidia.com` through.
+- `NO_PROXY` is set **empty** on purpose: any exemption would be a hole, and the container has no
+  other route regardless.
+- A `--split` run **refuses to start** without the proxy, naming the override. A scored number
+  produced with egress silently open would be the quiet untruth this rig exists to prevent.
+- The **interactive CLI is deliberately unrestricted**. The requirement is about the scored suite,
+  and forcing the proxy on interactive sessions adds friction with no measurement benefit.
+
+---
+
+## Phase I2 — calibration: one axis discriminates, and the reason is not the one predicted
+
+Three candidate difficulty axes, one pilot each, 3 runs each, cap raised to 25 so the budget would
+not be the limiting factor. Traces: `eval/runs/20260819T063107Z/`.
+
+| Axis | Score | Turns | Tokens | Predicted | Outcome |
+|---|---|---|---|---|---|
+| `pilot-multibug` — 4 independent bugs | **1/3** | 11/19/15 | 61,907 | discriminates | **correct** |
+| `pilot-crosscut` — 6 coordinated call-site edits | 3/3 | 10/10/11 | 34,051 | probably discriminates | **WRONG** |
+| `pilot-large` — ordinary bug among 36 modules | 3/3 | 5/8/7 | 15,325 | does NOT discriminate | **correct** |
+
+Predictions were recorded before the run. Two of three held.
+
+### The model was wrong, and the corrected one is sharper
+
+The working hypothesis was **required edits**. `pilot-crosscut` refutes it: six coordinated edits
+across three modules, and it passed 3/3 in 10-11 turns.
+
+What actually separates the axes is **the number of independent DIAGNOSES held at once**:
+
+| Case | Diagnoses | Edits | Result |
+|---|---|---|---|
+| crosscut | **1** | 6 | 3/3 |
+| large | **1** | 1 | 3/3 |
+| multibug | **4** | 4 | **1/3** |
+
+Six mechanical applications of one insight are easy. Four separate insights held simultaneously are
+not.
+
+### How it fails is the interesting part — it thrashes, it does not run out of budget
+
+Both failures ended `stuck` at **11 and 15 turns against a cap of 25**, having made **zero writes**.
+The final check output was identical to the untouched state: no progress whatsoever.
+
+```
+run 0:  ls, pytest, read averages, read counting, read normalise,
+        read averages, read averages, read search,
+        read counting, read counting, read counting   <- thrash detector fires
+```
+
+The `reflect` repeat-detector (three identical call signatures) fired correctly - the agent WAS
+looping - and terminated the run less than halfway through its budget. Given four bugs to track, it
+re-read the same files instead of editing any of them.
+
+**This is the first genuine capability limit this project has found**, and it is not a budget limit.
+
+> **RETRACTED by the Phase I4 scoring run — do not resume from this claim.** The same case, at the
+> same cap, on the same model, with no agent change in between, scored **3/3** when the full set was
+> run (15/17/15 turns, `done` every time). A 1-of-3 that reproduces at 3-of-3 is variance, not a
+> capability limit. The failure below happened and the trace is real; the *conclusion* drawn from it
+> was wrong. See "Phase I4" for what replaced it.
+
+### It also produces the first evidence-backed tuning hypothesis
+
+The thrash detector requires three *identical* signatures and then ends the run. On these traces it
+fired at turn 11 of 25. Whether the agent would have broken out on turn 12 is unknown, **because the
+detector stopped it**. That is a specific, testable question of exactly the kind Phase F has lacked:
+
+> Does the repeat-detector end runs that would have recovered?
+
+Note this cuts both ways and must be measured, not assumed: the detector exists because unbounded
+repetition burns budget for nothing, and loosening it may simply buy more thrashing.
+
+> **RETRACTED with the claim above.** This hypothesis rested on two `stuck` runs of one case; that
+> case then passed 3/3 unchanged. Its whole evidence base is a single unreproduced failure, which is
+> not enough to spend a tuning cycle on. The question remains askable — it is simply no longer
+> *evidenced*, and the distinction is the point of this file.
+
+### Verification
+
+9 scored, 0 blocked after retry (one run was rate-limited and superseded by its retry - last row
+wins), zero tampering, zero attempted writes outside the workspace, all runs egress-restricted.
+
+---
+
+## Phase I3 — the multibug set, built on the one axis that calibrated
+
+Nine new cases on the axis the pilots identified, joining `pilot-multibug` for a ten-case set. The
+pilot **stays in** rather than being dropped: it is already scored, and removing a case because you
+have seen its result is how a set gets quietly tuned.
+
+### Construction
+
+Every defect is **independent and one line to fix**, so a case's difficulty is purely the number of
+separate diagnoses it demands — the quantity the calibration showed actually discriminates. Twelve
+defect types were drawn from ordinary Python mistakes and combined without repetition within a case:
+
+`split_spaces` · `wrong_denominator` · `early_return` · `missing_lower` · `off_by_one` ·
+`int_division` · `str_sort` · `missing_return` · `wrong_comparison` · `mutable_default` ·
+`inclusive_slice` · `missing_abs`
+
+| Bugs | Cases |
+|---|---|
+| 3 | `multi-orders`, `multi-metrics`, `multi-registry` |
+| 4 | `multi-billing`, `multi-routing`, `multi-analytics`, `pilot-multibug` |
+| 5 | `multi-warehouse`, `multi-payroll`, `multi-catalogue` |
+
+The spread is deliberate. A set built entirely at one bug count would say only *whether* the limit
+exists; a spread says **where it sits**, which is the more useful measurement and costs nothing extra
+to collect.
+
+Each case keeps the Phase A shape that has been paid for once already: its own `pyproject.toml` with
+`pythonpath`, an `__init__.py` with no re-exports, a README that never hints at the bug, and one
+correct module (`shared.py`) whose two tests pass — so a healthy environment stays visibly different
+from a broken one even while several modules are failing.
+
+### Verified in both directions, which is stronger than the usual check
+
+Every case was confirmed to fail untouched **and** to flip to green when fully fixed. It was also
+confirmed to **still fail with exactly one bug remaining** — the check that matters for this axis
+specifically, because partial completion being indistinguishable from success would destroy the
+entire measurement:
+
+```
+multi-orders     3 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+multi-metrics    3 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+multi-registry   3 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+multi-billing    4 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+multi-routing    4 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+multi-analytics  4 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+multi-warehouse  5 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+multi-payroll    5 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+multi-catalogue  5 failed, 2 passed    all-fixed: exit 0    one-left: exit 1
+```
+
+Split filters re-confirmed after registration: `dev` selects 5, `heldout` selects 10, `multibug`
+selects 10, `pilot` selects the 2 rejected axes (kept for the record, not scored again).
+
+Cap is **25 turns**, matching the pilots. At the dev cap of 12 this set would measure the budget
+rather than the agent — the pilot failures thrashed to a halt at turns 11 and 15 without ever
+approaching 25.
+
+### Rig defect found mid-run: the egress proxy could not resolve, and said it was healthy
+
+The first attempt at the I4 scoring run blocked on every attempt of its first two case-runs.
+Recorded reason: `APIConnectionError: Connection error.` Not a rate limit, and not the agent.
+
+Chain, in the order it was actually established:
+
+| Step | Finding |
+|---|---|
+| Harness output | `BLOCKED`, retried at 80s and 160s, blocked again |
+| Trace row | `APIConnectionError` — a connection failure, not a 429 |
+| Proxy container | **Up 2 hours, State.Running true** — the preflight's only check |
+| Proxy log | `opensock: Could not retrieve address info ...: Try again` (EAI_AGAIN) |
+| Fresh container, same lookup | **http 200** — host, network and free tier all fine |
+| `getent hosts` in the proxy | resolves, 75.2.113.119 |
+| `getent ahosts` in the proxy | **empty** |
+
+That last pair is the whole diagnosis. `getent hosts` is an A-only lookup; `getent ahosts` is the
+dual-family AF_UNSPEC query that tinyproxy actually makes. Docker's embedded resolver at 127.0.0.11
+was answering the first and returning nothing for the second, so every CONNECT died while the
+obvious health check looked green.
+
+**Fix:** the proxy is created with `--dns 8.8.8.8 --dns 1.1.1.1`. This does not widen egress —
+which hosts the proxy may reach is decided by the CONNECT filter, not by which resolver it asks.
+Verified after the change: allowed host `200`, non-allowlisted host `403`, and the proxy rebuilt by
+`ensure_egress()` itself rather than by hand.
+
+**The preflight was the real defect.** Phase H already learned that `docker run -d` returning 0 only
+means *created*, and added a Running poll. This is the same lesson one level up: **Running is not
+usable.** `_proxy_can_resolve()` now probes `getent ahosts` for every allowlisted host and refuses
+the run with the command that fixes it. Probing `getent hosts` instead would have passed the broken
+proxy straight through, which is why the check names the AF_UNSPEC form explicitly.
+
+**A wrong turn worth recording:** the first hand-built replacement proxy returned 403 on *every*
+host, which looked like a filter bug. It was not — the manual `docker run` omitted
+`MSYS_NO_PATHCONV=1`, Git Bash rewrote the two config mount paths, and tinyproxy silently fell back
+to its built-in default, which permits only localhost. The rig was fine; the test of the rig was
+broken. Same family as the CRLF fault in Phase H: on this machine, a path or a line ending crossing
+into a Linux container is guilty until proven innocent.
+
+No score is affected. Blocked runs carry no result by design, which is exactly why this surfaced as
+`0 scored` rather than as a bad number.
+
+---
+
+## Phase I4 — the multibug set, scored: the axis does not discriminate either
+
+`eval/runs/20260819T070445Z/`, one model, egress restricted, 3 runs per case, cap 25.
+
+```
+pass 25/26   (4 blocked, excluded - not counted as failures)
+verdicts: done 25, stuck 1
+```
+
+| case | bugs | pass | turns | tokens (med) |
+|---|---|---|---|---|
+| `multi-metrics` | 3 | 3/3 | 11/12/13 | 28,701 |
+| `multi-orders` | 3 | 3/3 | 11/12/13 | 27,729 |
+| `multi-registry` | 3 | 3/3 | 12/15/16 | 38,415 |
+| `multi-analytics` | 4 | 3/3 | 16/12/13 | 34,355 |
+| `multi-billing` | 4 | 2/3 | 13/12/14 | 30,833 |
+| `multi-routing` | 4 | 3/3 | 16/16/16 | 43,471 |
+| `pilot-multibug` | 4 | 3/3 | 17/15/15 | 56,983 |
+| `multi-payroll` | 5 | 2/2 | 17/17 | 51,727 |
+| `multi-warehouse` | 5 | 3/3 | 18/17/23 | 55,273 |
+| `multi-catalogue` | 5 | **no runs** | — | — |
+
+### The verdict, against the rule fixed in advance
+
+Phase I2 set the band before any data existed: 40-70% discriminates, **above 85% means reject the
+axis**. This set scores **96%**. The rule applies to its author too.
+
+**Independent-bug count is not a difficulty axis for this agent.** That is now three axes tried and
+three rejected - misdirection (Phase G, 12/12), cross-cutting edits (`pilot-crosscut`, 3/3), and
+independent diagnoses (this set, 25/26). The Phase I exit criterion explicitly allows this outcome:
+*"an explicit finding that none of the three axes discriminates this agent, which ends the search
+rather than extending it by guesswork."* That is the result. **The search ends here.**
+
+### Two retractions, both mine, both from this phase
+
+1. **"The first genuine capability limit this project has found"** - withdrawn. `pilot-multibug`
+   scored 1/3 in calibration and **3/3** here, unchanged, at the same cap on the same model. A
+   1-of-3 that reproduces at 3-of-3 is variance.
+2. **The thrash-detector tuning hypothesis** - withdrawn with it. Its entire evidence base was those
+   two `stuck` runs.
+
+The project already had a standing lesson for this shape - *probe before theorising when a number
+looks structurally wrong* - and it was learned from a model swap. This is the same error in the
+other direction: **I built a theory on n=3 and it did not survive n=30.** The lesson generalises to
+"a single surprising result is a hypothesis, never a finding", and belongs in `CLAUDE.md` as such.
+
+### What DID survive, and it is the useful part
+
+Bug count buys **turns**, monotonically and predictably:
+
+| bugs | runs | turns (range) | mean |
+|---|---|---|---|
+| 3 | 9 | 11-16 | **12.8** |
+| 4 | 12 | 12-17 | **14.6** |
+| 5 | 5 | 17-23 | **18.4** |
+
+**About +2.8 turns per additional bug**, and the first quantified predictive relationship this
+project has. It says the honest way to build a discriminating case is to keep going up this axis
+until the turn budget binds: extrapolating, ~8 bugs lands near 27 turns and would exceed a cap of
+25. It also says a 12-turn cap - the dev and held-out default - would have failed most of this set
+on budget alone, measuring the cap rather than the agent.
+
+Nothing here is at the cap: **0 of 26 runs hit 25 turns**, max observed 23.
+
+### The set is incomplete, and that is stated rather than smoothed over
+
+`multi-catalogue` has **zero** completed runs and `multi-payroll` has two of three. The set is
+therefore measured on **9 of 10 cases**, and the absent case is a 5-bug one - the hard end. The
+conclusion does not turn on it (rejecting the axis needs a score far above the band, and 25/26 is
+far above it whichever way one case falls), but the number is not a clean 30 and must not be quoted
+as one. `--continue` completes it when quota returns.
+
+### Why it is incomplete: the free tier, measured rather than assumed
+
+Six identical first-calls, 10s apart, after the 26 runs had completed:
+
+```
+attempt 0: OK              2.4s
+attempt 1: RateLimitError  0.3s
+attempt 2: RateLimitError  0.5s
+attempt 3: RateLimitError  0.4s
+attempt 4: RateLimitError  0.2s
+attempt 5: OK              1.2s
+```
+
+The tier rejects roughly two of every three requests, instantly and at random - not by size (a
+16,000-token request with tools succeeded), not by gap (`--pace 5` and `--pace 60` behaved
+identically), and not by exhausted credits (calls still succeed). A turn survives 3 SDK attempts
+about 70% of the time, so a 17-turn run completes with probability near **0.7^17, under 1%**.
+Retrying cannot fix that, which is why the resume attempts were stopped rather than left looping.
+
+**Correction, made after this was first written.** An earlier draft said blocked runs "failed on the
+first model call, before any work", citing `turns=0, tokens=0, messages=0` in the row. That is an
+**artifact, not evidence**: `harness.py` records a `ProviderUnavailable` run with `state=None` by
+design, so those fields read zero no matter how far the run actually got. The only real datum is the
+26.7s elapsed, which is consistent both with three rate-limited retries on the first call and with
+several completed turns before a later one. **How far these runs got is unknown.**
+
+What makes them safely excludable is unchanged and does not depend on that claim: a blocked run
+never reaches its check command, so **no score is ever produced for it**. There is nothing to
+exclude from the denominator except an absence.
+
+**A suspected case-specific anomaly, raised and then disproved within the hour.** `multi-payroll`
+run 2 blocked on 12 consecutive attempts across four resume passes, which at the measured failure
+rate looked far too improbable to be chance, so it was written up as likely case-specific. A control
+settled it: `multi-orders` - 3 bugs, passed 3/3 an hour earlier - blocks identically right now. The
+effect is **tier-wide**. The apparent anomaly was a selection artifact: `multi-payroll` run 2 is the
+first case-run every resume pass attempts, so it drew the worst slot every time.
+
+**The probe-based estimate was also wrong.** A 6/8 success rate on isolated calls predicted ~77%
+completion odds for a 17-turn run; six consecutive real runs then blocked. Isolated probes do not
+predict sustained load - plausibly the throttle responds to the request *pattern* an agent produces
+rather than to individual calls. Treat single-request probes as a liveness check only, never as a
+capacity estimate.
+
+**Cost, now known:** this run consumed **1,105,411 tokens** for 26 scored runs (~42.5k each) and
+saturated the free tier. A 30-run scoring pass is a once-per-day operation on this key, which is a
+hard constraint on how often any future tuning cycle can be measured - and worth more than the pass
+rate it produced.
+
+### Trust checks
+
+26 scored, 4 blocked and excluded, **0 tampering**, **0 attempted writes outside the workspace**,
+one model (`nvidia/nemotron-3-super-120b-a12b`) across every row, all fixtures verified in both
+directions before scoring, egress restricted throughout. Median 42,950 tokens against the 60,000
+ceiling; largest single tool result 3,811 chars against 6,000.
+
+---
+
+## Phase J1 — cost probe on the first real repository
+
+One case, `real-humanize`, vendored from python-humanize/humanize at the parent of the fix commit
+for *"Carry `metric()` to the next SI prefix when rounding reaches 1000"* (#328). Source at the
+parent, tests from the fix. 73 files, suite 3.8s, verified both directions offline:
+**4 failed / 689 passed** untouched, **693 passed** with the upstream diff applied.
+
+The probe exists so six cases are not sized against a guess. It cost two runs and found two defects.
+
+| | probe 1 | probe 2 (after fixes) |
+|---|---|---|
+| tokens | 260,531 | **136,077** |
+| turns | 18 (cap 30) | 12 |
+| largest tool result | **11,340 chars** (cap 6,000) | 4,784 |
+| verdict | `compact` — out of budget | `done` |
+
+### Defect 1 — `shrink()` bounded lines, not characters (NFR-104)
+
+`shrink()` takes 30 head + 20 tail lines when a result has enough lines, and never checked the
+character total in that branch. Real pytest output has long lines, so a 62KB result came back at
+**11,340 chars against a 6,000-char cap**. The practice fixtures never had lines long enough to
+expose it, which is why 161 tests passed over it. Fixed by clamping both halves to `cap // 2`, with
+a test built from long lines rather than a long single line.
+
+### Defect 2 — the fixture created a rabbit hole unrelated to the bug
+
+Probe 1 spent **nine of eighteen turns** trying to `pip install pytest-codspeed`, `pip install -e
+.[tests]`, `hatch-vcs`, and even `--index-url https://pypi.org/simple` against a sandbox with no
+egress. Cause: `tests/test_benchmarks.py` needs a plugin the offline image lacks, so the agent's own
+`pytest -q` errored — while the check command hid it behind `--ignore`.
+
+**The agent and the scorer were running different suites.** That is the Phase A "fails for the wrong
+reason" trap one level up, and hiding it with `--ignore` would have been the worse fix: the agent
+would still have seen a broken suite while a different one was scored. The benchmark file is dropped
+from the fixture instead, so `pytest -q` **is** the scored command, byte for byte.
+
+### What the agent actually does on a real repository
+
+Probe 2's trace is the useful part. It diagnosed the bug **correctly** — all four failures, and the
+root cause stated plainly:
+
+> *"the function is not scaling correctly when the value is just below a threshold ... Instead of
+> scaling up to the next prefix (k, M, m), it stays in the current prefix"*
+
+Then it wrote `/workspace/debug.py`, never edited `src/humanize/number.py`, and spent its output
+budget on a long analysis that hit `max_tokens` mid-sentence. A text-only reply after at least one
+tool call means `done`, so the loop terminated on a correct diagnosis and an unapplied fix.
+
+**Understanding the bug and editing the file are separate capabilities, and only the first is
+present.** This is the first failure this project has that is neither saturation nor a rig fault.
+
+### Sizing
+
+At ~136k tokens/run the free tier supports **~8 runs/day**, so 6 cases x 3 runs is ~2.5 days —
+within the plan, no re-sizing needed. The turn cap of 30 is **not** binding (12 used); the limits
+that bite are the token budget and the model's own premature termination.
+
+---
+
+## Phase J2/J3 — six real-repository cases, verified before any scored run
+
+Split `real`. Source vendored at the **parent** of a genuine upstream bug-fix commit; tests taken
+from the fix. No nested `.git`, so `scripts/reset.sh` works unchanged and Phase J adds no rig code.
+The fix diff is never committed - `spawn()` mounts the whole project at `/app` and the agent has
+`run_shell`, so verification fetches the fix SHA from upstream on the host instead.
+
+| case | files | suite | untouched | hand-fixed | the actual bug |
+|---|---|---|---|---|---|
+| `real-humanize` | 73 | 3.8s | 4 failed, 689 passed | 693 passed | `metric()` does not carry to the next SI prefix when rounding reaches 1000 |
+| `real-cachetools` | 41 | 5.2s | 1 failed, 290 passed | 291 passed | `TLRUCache` silently keeps a stale value when an expired entry is overwritten |
+| `real-more-itertools` | 39 | 58.9s | 2 failed, 730 passed | 732 passed | `running_min`/`running_max` are not stable |
+| `real-click` | 156 | 9.1s | 6 failed, 1857 passed | 1863 passed | progress bar does not land on its final position |
+| `real-rich` | 548 | 10.3s | 1 failed, 926 passed | 927 passed | `print` with `end=` mishandles empty input |
+| `real-markdown` | 443 | 8.5s | 3 failed, 779 passed | 782 passed | mixed `=`/`-` characters accepted in Setext-style headings |
+
+Sizes span 39 to 548 files and fixes span one line to 43, which is the spread the mixed-scale
+decision asked for. `files` and `suite_seconds` are recorded per case so a low score can be
+attributed to **scale** rather than **difficulty** - the mitigation for choosing mixed scale.
+
+### The dominant hazard with real repositories, found the hard way
+
+**Three of six repos were not green at their own fix commit.** rich had 7 failures, click had 25,
+markdown had a collection error, and humanize needed a pytest plugin the offline image lacks. Every
+cause was environmental - no pager binary, pygments version, terminal width, missing optional deps -
+and none related to any bug.
+
+Each would have produced a case whose check **can never exit 0**: a guaranteed failure indistinguishable
+from the agent being bad. With authored fixtures this trap was rare; with real repositories it is the
+**common case**, and only the both-directions check catches it.
+
+The fix is always to remove the offending test file from the fixture, never to hide it behind
+`--ignore` in the check command. **The agent must see exactly the suite that is scored** - Phase J1
+measured what happens otherwise: nine of eighteen turns spent installing a plugin, because the agent's
+`pytest -q` was broken while a different, quieter suite was being graded. Dropped files:
+2 from rich (553), 2 from click (158), 1 each from markdown and humanize.
+
+Repo runtime dependencies are pre-installed in the image (`freezegun`, `attrs`, `pygments`,
+`markdown-it-py`) ahead of the `pip.conf` line, because the sandbox has no egress and setup turns are
+free-tier quota spent on nothing.
+
+---
+
+## Phase J5/J6 — the real-repository baseline: pass 0/18
+
+`eval/runs/20260820T052036Z/`, 6 cases x 3 runs, cap 30, budget 400,000, one model
+(`nvidia/nemotron-3-super-120b-a12b`), egress restricted throughout.
+
+```
+pass 0/18   (0 blocked)
+verdicts: compact 10, done 5, stuck 3
+turns  min/med/max: 1 / 26 / 30  (cap 30, 3 at cap)
+tokens min/med/max: 6,837 / 245,713 / 255,824   total 3,543,685
+```
+
+| case | files | pass | turns | tokens (med) | verdicts |
+|---|---|---|---|---|---|
+| `real-more-itertools` | 39 | 0/3 | 30/30/30 | 198,584 | stuck x3 |
+| `real-cachetools` | 41 | 0/3 | 28/20/25 | 245,713 | compact x2 done x1 |
+| `real-humanize` | 73 | 0/3 | 10/20/1 | 86,422 | done x2 compact x1 |
+| `real-click` | 156 | 0/3 | 28/27/26 | 255,043 | compact x3 |
+| `real-markdown` | 443 | 0/3 | 8/22/12 | 113,388 | done x2 compact x1 |
+| `real-rich` | 548 | 0/3 | 29/26/25 | 249,883 | compact x3 |
+
+### Read against the band fixed in advance
+
+0% is **below the 20% floor**, which the rule calls "too hard to measure against - do not celebrate
+a hard set". But the same rule names the exception that applies here: **"or a higher cap if cap-hits
+dominate."**
+
+They dominate. **13 of 18 runs (72%) ended on a resource limit rather than a decision:**
+
+- **10 `compact`** - every one at >=235k tokens, i.e. precisely the 240k compaction threshold
+- **3 `stuck`** - all three at the 30-turn cap, 30/30/30
+- **5 `done`** - the only runs the agent itself chose to end
+
+So 0/18 is **not** evidence that the agent cannot fix real bugs. On `humanize` it stated the root
+cause correctly - *"instead of scaling up to the next prefix, it stays in the current prefix"* - and
+then ran out of room before applying it. The prescribed response is to raise the budget, **not** to
+dilute the repositories.
+
+### The compaction layer is now earned, by the trigger v1 specified
+
+v1 deferred compaction with an explicit condition: *"compact verdicts dominate the baseline
+distribution."* Across **60 fixture runs it never appeared once**. Here it is **10 of 18**.
+
+That is the first deferred layer in this project's history to be justified by evidence rather than
+by prediction, and it is the single most valuable output of Phase J - more than the pass rate.
+
+### Rig defect found: the scored check had no timeout
+
+One run hung for **25 minutes** on `cd /workspace && pytest`, and the suite could not proceed until
+the process was killed by hand. Cause: `harness.py` ran `case["check"]` through `subprocess.run`
+with **no timeout at all**. An agent edit that makes a parser loop then hangs the entire scored run
+with no diagnosis. Fixed: `CHECK_TIMEOUT = 600` (10x the slowest real suite), and a timeout scores
+as a **FAIL** - the suite genuinely did not pass, and the agent's own edit is why.
+
+**A misdiagnosis worth recording.** This was first blamed on `run_shell`'s timeout, on the theory
+that killing `/bin/sh` orphans a grandchild holding the stdout pipe. A test written to prove it
+**passed** - `run_shell` bounds a forked compound command correctly. The hung process belonged to
+the harness, not the tool; the agent's own calls are bare `pytest -q`, because `run_shell` sets
+`cwd` rather than prefixing `cd`. Seeing a `pytest` in the process list and not checking which
+caller owned it is the whole error. The test is kept as a regression guard with a corrected
+docstring.
+
+Practice fixtures could not have surfaced any of this: their suites are fast and always terminate.
+
+### Contamination, stated
+
+`real-markdown` run 1 was interfered with - the hung process was killed by hand mid-run, and the
+`compact` verdict it recorded is partly a consequence of that intervention. The case is 0/3 either
+way and the headline does not move, but the run is not a clean observation and is flagged rather
+than quietly counted.
+
+### Cost
+
+**3.54M tokens for 18 runs** (~197k each), against an estimate of 136k. `compact` runs are what
+raise the mean: they burn the full budget before stopping. The median case is **245,713 tokens
+against the 60,000 ceiling** - real repositories simply cost about 4x what v1 was scoped for, and
+that ceiling needs restating rather than quietly failing.
+
+Two free-tier keys were used: the first was exhausted mid-run and swapped. Model and endpoint were
+identical, so this remains one coherent measurement - a key governs quota, not behaviour.
+
+### The next question, and it is one cheap run
+
+Re-run a single case with the budget raised from 400k to 1M. If it then passes, the ceiling is
+budget and compaction is the highest-value work in v2. If it still fails, the limit is capability
+and the set needs diluting after all. **One run decides which of the two paths Phase K takes.**

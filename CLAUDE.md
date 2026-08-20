@@ -19,8 +19,20 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   available on the existing key.
 - Still deferred and unearned: compaction, plan node, memory, web, worker. The verdict distribution
   (`done 13, stuck 2`) earns none of them.
-- **Next is Phase G**: ten held-out cases, scored once. Five dev cases means one flip is a 20% swing,
-  so 14/15 is not yet evidence of generalisation.
+- **Held out: 29/30** on ten cases never seen during development (matched six 17/18, harder four
+  12/12) - so the dev score was not overfitted.
+- **Egress is restricted on scored runs.** The agent container has no route off the machine except
+  an allowlisting proxy; the harness refuses to score a split without it. **Definition of Done: 9/9.**
+- **The search for a harder case shape is over: three axes tried, three rejected.** Misdirection
+  (held-out four, 12/12), cross-cutting edits (`pilot-crosscut`, 3/3), and independent bug count
+  (`multibug`, **25/26** at 3–5 bugs) all failed the 40–70% band fixed in advance. Every set this
+  project owns is saturated, so **no tuning cycle can currently be measured** — do not start one.
+  What the multibug set did yield is a rule: **each extra bug costs about 2.8 turns** (12.8 → 14.6 →
+  18.4 mean, at 3 → 4 → 5 bugs), so difficulty on this axis is a budget question, not a reasoning
+  one. The honest next step is a real repository and a real goal, not a fourth synthetic axis.
+- **A 30-run scoring pass costs ~1.1M tokens and saturates the free tier for the day.** Budget one
+  scored run per day on this key; the tier then rejects ~2 of 3 requests, which makes a 17-turn run
+  complete with probability under 1%.
 
 ### Standing lessons, each paid for once
 
@@ -32,6 +44,18 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   from progress.
 - **Verify the rig before believing a number**, in both directions: that passes are untampered, and
   that untouched fixtures still fail.
+- **A blocked connection is not proof of a boundary.** "Could not resolve host" is DNS failing;
+  re-test by raw IP before believing egress is closed.
+- **One surprising result is a hypothesis, never a finding.** A pilot case scored 1/3 and was written
+  up as "the first genuine capability limit", with a tuning hypothesis built on it. The same case,
+  unchanged, scored 3/3 in the full run. Both claims had to be retracted. This is the twin of the
+  model-swap lesson above: probe before theorising, and repeat before believing.
+- **"Running" is not "usable".** The egress proxy reported `State.Running: true` for two hours while
+  failing every request: Docker's embedded DNS answered the A-only `getent hosts` but returned
+  nothing for the dual-family `getent ahosts` that tinyproxy actually calls. A preflight must probe
+  the operation the dependent code performs, not the one that is easy to check.
+- **Text files crossing an OS boundary need their line endings pinned.** A config written on Windows
+  and parsed by a Linux container fails on the trailing carriage return. Use newline="" when writing it.
 
 ## CONTEXT.md is the authority
 

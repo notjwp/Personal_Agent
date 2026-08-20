@@ -34,6 +34,15 @@ def shrink(tool: str, text: str) -> str:
         head, tail = text[:half], text[-half:]
         elided = f"[{len(text) - 2 * half} chars elided, {len(text)} chars total]"
 
+    # NFR-104 bounds CHARACTERS; the line branch above bounds LINES, and real test
+    # output has long ones. Measured on the first real-repository run, not by a unit
+    # test: 50 lines of pytest output became 11,340 chars against a 6,000 cap. The
+    # practice fixtures never had lines long enough to expose it. Clamping here keeps
+    # the bound true in both branches, and the spill path below still carries the
+    # whole text - nothing is lost, only deferred to a read the model can choose.
+    half = cap // 2
+    head, tail = head[:half], tail[-half:]
+
     return (
         f"{head}\n... {elided} ...\n{tail}\n"
         f"[full output: {artifact}]\n"

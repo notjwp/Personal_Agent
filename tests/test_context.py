@@ -41,6 +41,20 @@ def test_single_giant_line_is_still_bounded(tmp_workspace):
     assert list(config.ARTIFACTS.glob("*.txt"))
 
 
+def test_many_long_lines_are_bounded_by_characters(tmp_workspace):
+    """The line-based path must still honour the CHARACTER cap (NFR-104).
+
+    Found on a real repository, not in a unit test: 50 lines of pytest output
+    shrank to 11,340 chars against a 6,000-char cap, because head+tail bounded
+    LINES while the requirement bounds CHARACTERS. Real test output has long
+    lines; the practice fixtures did not, which is why this survived 161 tests.
+    """
+    text = chr(10).join("x" * 400 for _ in range(200))
+    out = shrink("run_shell", text)
+    assert len(out) < config.MAX_RESULT_CHARS + 600, (
+        f"shrunk to {len(out)} chars against a {config.MAX_RESULT_CHARS} cap")
+
+
 def test_per_tool_caps_are_honoured(tmp_workspace):
     """write_file has a much smaller cap than run_shell."""
     text = "y" * 3000

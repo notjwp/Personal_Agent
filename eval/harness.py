@@ -26,6 +26,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+# Ceiling on the scored check. The slowest real-repository suite is ~59s, so this
+# is roughly 10x headroom - generous enough never to fail honest work, tight
+# enough that a non-terminating suite costs minutes rather than a whole run.
+CHECK_TIMEOUT = 600
+
 IMAGE = "personal-agent"
 ENV_FILE = REPO / ".env"
 
@@ -50,17 +55,165 @@ FORWARDED_ENV = (
     "NIM_MODEL",
 )
 
-# A run calling a HOSTED model cannot use --network none, so the scored lane runs
-# with egress open. The spec asks for egress restricted to an allowlist, and there
-# are two routes: a proxy in front of the container (unbuilt - the remaining open
-# item), or pointing the agent at a local model, where the container needs the host
-# and nothing on the internet. The second is the stronger property and is what
-# Phase E demonstrates; the scored lane still runs hosted, so this stays an
-# explicit, recorded gap rather than a silent one.
+# --------------------------------------------------------------- egress (H)
 #
-# Hermeticity of the `missing-dep` case does NOT depend on this: /etc/pip.conf sets
-# no-index, so pip resolves from /wheels whether or not the network is up.
-NETWORK = os.environ.get("AGENT_NETWORK", "bridge")
+# NFR-205 asks for egress restricted to an allowlist, not removed. A scored run
+# reaches the model through a filtering proxy and has NO other route off the
+# machine, because the agent container sits on an --internal network whose only
+# neighbour is the proxy.
+#
+# Why this needs no TLS interception: HTTPS through a forward proxy uses CONNECT,
+# and the destination hostname travels in the CONNECT line in cleartext. The proxy
+# allowlists on that hostname without decrypting anything, so the model connection
+# stays end-to-end encrypted and no CA has to be injected into the image.
+#
+# VERIFIED on this machine before being relied on (Phase H1):
+#   allowed host through the proxy      -> http 200
+#   non-allowlisted host                -> "CONNECT tunnel failed, response 403",
+#                                          proxy logs "refused on filtered domain"
+#   direct connection by RAW IP, no DNS -> curl exit 7, failed to connect
+# That last one is the one that matters: it proves the block is routing, not just
+# DNS. A DNS-only barrier is bypassed by dialling an IP.
+EGRESS_NET = "personal-agent-egress"
+EGRESS_PROXY = "personal-agent-egress-proxy"
+EGRESS_IMAGE = "personal-agent-egress"
+PROXY_PORT = 8888
+EGRESS_DIR = REPO / ".agent" / "egress"
+
+PROXY_DOCKERFILE = """FROM alpine:3.20
+RUN apk add --no-cache tinyproxy
+ENTRYPOINT ["tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]
+"""
+
+PROXY_CONF = """User tinyproxy
+Group tinyproxy
+Port {port}
+Listen 0.0.0.0
+Timeout 600
+Allow 0.0.0.0/0
+ConnectPort 443
+FilterDefaultDeny Yes
+FilterExtended On
+Filter "/etc/tinyproxy/allow.txt"
+LogLevel Info
+"""
+
+
+def model_hosts() -> list[str]:
+    """Hosts the proxy will permit, derived from the CONFIGURED provider.
+
+    Derived rather than hardcoded so the allowlist follows the model choice: point
+    the agent at a different endpoint and the permitted host moves with it. A
+    hand-maintained list would drift and silently either over-permit or break runs.
+
+    `.env` is read here because the harness runs on the host and does not otherwise
+    load it - only the containers get it via --env-file.
+    """
+    from urllib.parse import urlparse
+
+    values = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, _, v = line.partition("=")
+                values[k.strip()] = v.strip().strip("\"'")
+    values.update({k: v for k, v in os.environ.items() if v})
+
+    from agent import config as settings
+    base = values.get("NIM_BASE_URL") or values.get("OPENAI_BASE_URL") or settings.OPENAI_BASE_URL
+    hosts = {urlparse(base).hostname}
+    if (values.get("AGENT_PROVIDER") or settings.PROVIDER) == "anthropic":
+        hosts.add("api.anthropic.com")
+    return sorted(h for h in hosts if h)
+
+
+def _docker(*args, **kw):
+    return subprocess.run(["docker", *args], capture_output=True, text=True, **kw)
+
+
+def ensure_egress() -> bool:
+    """Bring up the restricted-egress network and proxy. Idempotent.
+
+    Idempotent because a scored run may be resumed with --continue hours later; a
+    half-present setup must converge rather than fail.
+    """
+    EGRESS_DIR.mkdir(parents=True, exist_ok=True)
+    # newline="" defeats Windows CRLF translation. These files are parsed by a LINUX
+    # container: tinyproxy reads "User tinyproxy\r" and dies with "Syntax error on
+    # line 1". Same family as the .gitattributes lesson from Phase A - a text file
+    # crossing an OS boundary needs its line endings pinned.
+    (EGRESS_DIR / "tinyproxy.conf").write_text(
+        PROXY_CONF.format(port=PROXY_PORT), encoding="utf-8", newline="")
+    # Anchored regex per host: a bare substring would let evil-nvidia.com through.
+    rules = ["^" + h.replace(".", r"\.") + "$" for h in model_hosts()]
+    (EGRESS_DIR / "allow.txt").write_text(
+        "\n".join(rules) + "\n", encoding="utf-8", newline="")
+
+    if _docker("image", "inspect", EGRESS_IMAGE).returncode != 0:
+        if _docker("build", "-q", "-t", EGRESS_IMAGE, "-",
+                   input=PROXY_DOCKERFILE).returncode != 0:
+            return False
+    if _docker("network", "inspect", EGRESS_NET).returncode != 0:
+        _docker("network", "create", "--internal", EGRESS_NET)
+
+    running = _docker("inspect", "-f", "{{.State.Running}}", EGRESS_PROXY)
+    if running.stdout.strip() != "true":
+        _docker("rm", "-f", EGRESS_PROXY)
+        # Explicit resolvers. Docker's embedded DNS (127.0.0.11) answered an A-only
+        # lookup here but returned NOTHING for the dual-family AF_UNSPEC query
+        # tinyproxy actually makes, so every CONNECT failed with EAI_AGAIN while
+        # `getent hosts` still looked healthy. Measured mid-run, after it blocked a
+        # scored suite. Pinning the resolvers drops the dependency on Docker
+        # Desktop's forwarder and does NOT widen egress - the CONNECT filter is what
+        # bounds where the proxy may go, not which resolver it asks.
+        if _docker("run", "-d", "--name", EGRESS_PROXY, "--network", EGRESS_NET,
+                   "--dns", "8.8.8.8", "--dns", "1.1.1.1",
+                   "-v", f"{(EGRESS_DIR / 'tinyproxy.conf').as_posix()}:/etc/tinyproxy/tinyproxy.conf:ro",
+                   "-v", f"{(EGRESS_DIR / 'allow.txt').as_posix()}:/etc/tinyproxy/allow.txt:ro",
+                   EGRESS_IMAGE).returncode != 0:
+            return False
+        # The proxy needs an outward route; the agent container deliberately does not.
+        _docker("network", "connect", "bridge", EGRESS_PROXY)
+
+    # `docker run -d` returning 0 only means the container was CREATED. A bad config
+    # exits immediately after, and returning success there would let a scored run
+    # begin with no proxy at all - exactly what this preflight exists to prevent.
+    for _ in range(20):
+        if _docker("inspect", "-f", "{{.State.Running}}", EGRESS_PROXY).stdout.strip() == "true":
+            return _proxy_can_resolve()
+        time.sleep(0.5)
+    logs = _docker("logs", EGRESS_PROXY)
+    print((logs.stderr or logs.stdout).strip()[-400:], file=sys.stderr)
+    return False
+
+
+def _proxy_can_resolve() -> bool:
+    """Running is not the same as usable.
+
+    A live proxy that cannot resolve the model host fails every CONNECT, and the
+    suite records blocked runs instead of a score. That happened: a scored run was
+    stopped after every attempt on its first two case-runs blocked, with the
+    container reporting Running throughout. `getent ahosts`
+    is the AF_UNSPEC query tinyproxy itself makes; the A-only `getent hosts`
+    succeeds even when that one fails, so probing the wrong one would have waved
+    the broken proxy straight through.
+    """
+    for host in model_hosts():
+        if not _docker("exec", EGRESS_PROXY, "getent", "ahosts", host).stdout.strip():
+            print(f"egress proxy is running but cannot resolve {host}.", file=sys.stderr)
+            print(f"Recreate it with: docker rm -f {EGRESS_PROXY}", file=sys.stderr)
+            return False
+    return True
+
+
+# Scored runs sit on the internal egress network and reach the model only through
+# the proxy above. Overridable for local iteration, but `outer()` refuses to score
+# a split without the proxy: a number produced with egress silently open would be
+# exactly the quiet untruth the rest of this rig exists to prevent.
+#
+# Hermeticity of the `missing-dep` case does NOT depend on any of this: /etc/pip.conf
+# sets no-index, so pip resolves from /wheels whether or not the network is up.
+NETWORK = os.environ.get("AGENT_NETWORK", EGRESS_NET)
 
 # Running `python eval/harness.py` puts eval/ on sys.path, not the project root,
 # so `import agent` would fail. Fixing it here rather than via PYTHONPATH keeps the
@@ -306,8 +459,18 @@ def run_dir(args, cases) -> Path | None:
     if not args.continue_:
         out = root / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         out.mkdir(parents=True, exist_ok=True)
+        # Provider, model and network are RECORDED but deliberately kept out of
+        # `want`: they describe the number, they do not decide whether resuming is
+        # safe, and folding them into the comparison would make every older run
+        # directory unresumable. The model is on every row too - this is the
+        # summary a reader hits first, and it was missing when a scored set was
+        # audited, which is why it is here.
+        from agent import config as _cfg
         (out / "manifest.json").write_text(
             json.dumps({**want, "image": IMAGE,
+                        "provider": _cfg.PROVIDER,
+                        "model": _cfg.OPENAI_MODEL if _cfg.PROVIDER != "anthropic" else _cfg.MODEL,
+                        "network": NETWORK,
                         "started": datetime.now(timezone.utc).isoformat()}, indent=2),
             encoding="utf-8")
         return out
@@ -350,6 +513,13 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
     for name in FORWARDED_ENV:
         if os.environ.get(name):
             cmd += ["-e", name]
+    if NETWORK == EGRESS_NET:
+        # httpx runs with trust_env=True, so the openai SDK picks these up on its
+        # own - agent/provider.py needs no knowledge that a proxy exists. NO_PROXY
+        # is emptied deliberately: any exemption here would be a hole in the
+        # boundary, and the container has no other route regardless.
+        proxy = f"http://{EGRESS_PROXY}:{PROXY_PORT}"
+        cmd += ["-e", f"HTTPS_PROXY={proxy}", "-e", f"HTTP_PROXY={proxy}", "-e", "NO_PROXY="]
     cmd += [
         IMAGE, "python", "eval/harness.py",
         "--run-case", case["id"],
@@ -367,6 +537,14 @@ def outer(args) -> int:
     ]
     if not cases:
         print("no cases matched", file=sys.stderr)
+        return 2
+
+    if NETWORK == EGRESS_NET and not ensure_egress():
+        print("egress proxy could not be started, and a scored run must not reach "
+              "the network unrestricted (NFR-205).", file=sys.stderr)
+        print("  Fix docker, or set AGENT_NETWORK=bridge to run WITHOUT the "
+              "restriction - the result is then not a compliant scored run.",
+              file=sys.stderr)
         return 2
 
     out = run_dir(args, cases)
@@ -470,10 +648,27 @@ def inner(args) -> int:
     if tampered:
         trace.append({"kind": "tamper", "files": tampered})
 
-    check = subprocess.run(case["check"], shell=True, capture_output=True, text=True)
-    return record(out, case, args.run_index, passed=check.returncode == 0,
+    # A timeout is MANDATORY here. The agent can leave the workspace in a state where
+    # the suite never terminates - on a real repository, one edit to a parser is
+    # enough - and an unbounded check then hangs the entire scored suite with no
+    # diagnosis at all. Measured: one run held for 25 MINUTES on
+    # `cd /workspace && pytest` until the process was killed by hand. Practice
+    # fixtures could never surface this; their suites are fast and always terminate.
+    #
+    # A timeout counts as a FAIL, not as blocked: the suite genuinely did not pass,
+    # and the agent's own edit is why.
+    try:
+        check = subprocess.run(case["check"], shell=True, capture_output=True,
+                               text=True, timeout=CHECK_TIMEOUT)
+        passed, check_note = check.returncode == 0, check.stdout[-2000:]
+    except subprocess.TimeoutExpired:
+        passed, check_note = False, (
+            f"check exceeded {CHECK_TIMEOUT}s and was killed: the workspace was left "
+            f"in a state where the test suite does not terminate")
+        print(f"  check timed out after {CHECK_TIMEOUT}s", file=sys.stderr)
+    return record(out, case, args.run_index, passed=passed,
                   verdict=final.get("verdict") or "none", seconds=seconds,
-                  state=final, note=note or check.stdout[-2000:], trace=trace)
+                  state=final, note=note or check_note, trace=trace)
 
 
 def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
@@ -496,6 +691,9 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         "status": status,
         "provider": settings.PROVIDER,
         "model": model,
+        # Recorded per row: whether THIS run was egress-restricted is part of what
+        # the number describes, exactly like the model is.
+        "egress": os.environ.get("AGENT_EGRESS", "restricted"),
         "pass": passed,
         "verdict": verdict,
         "turns": state.get("turns", 0),

@@ -15,6 +15,12 @@ RUN pip install --no-cache-dir "pytest>=9,<10" "flask>=3,<4"
 # and an unpinned dependency silently changes what was measured.
 RUN pip install --no-cache-dir "anthropic==0.122.0" "langgraph==1.2.11" "langgraph-checkpoint-sqlite==3.1.1" "openai==3.2.0"
 
+# Test dependencies the REAL-repository cases declare for themselves (Phase J).
+# Installed rather than staged as wheels: those cases are about fixing a bug, and
+# every turn the agent spends on environment setup is free-tier quota spent on
+# nothing. Must stay ahead of the pip.conf line below, like everything else here.
+RUN pip install --no-cache-dir "freezegun" "attrs" "pygments" "markdown-it-py"
+
 # The `missing-dep` case must be solvable with networking off: stage the wheel
 # but deliberately do NOT install it.
 RUN pip download --no-cache-dir tabulate -d /wheels

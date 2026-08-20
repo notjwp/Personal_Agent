@@ -8,6 +8,61 @@ projects and scores each by exit code.
 
 ## Numbers
 
+**Real repositories — 2026-08-20: pass 0/18.** Six real open-source projects, each vendored at the
+parent of a genuine upstream bug-fix commit, scored by the repo's own test suite. 3 runs per case,
+0 blocked, cap 30, egress restricted.
+
+| case | files | pass | turns | tokens (med) | verdicts |
+|---|---|---|---|---|---|
+| `real-more-itertools` | 39 | 0/3 | 30/30/30 | 198,584 | stuck ×3 |
+| `real-cachetools` | 41 | 0/3 | 28/20/25 | 245,713 | compact ×2 done ×1 |
+| `real-humanize` | 73 | 0/3 | 10/20/1 | 86,422 | done ×2 compact ×1 |
+| `real-click` | 156 | 0/3 | 28/27/26 | 255,043 | compact ×3 |
+| `real-markdown` | 443 | 0/3 | 8/22/12 | 113,388 | done ×2 compact ×1 |
+| `real-rich` | 548 | 0/3 | 29/26/25 | 249,883 | compact ×3 |
+
+**This is the first case set this project owns with real headroom**, after three synthetic
+difficulty axes were built and all three were rejected for saturating above 85%.
+
+**0/18 does not mean the agent cannot fix real bugs.** 13 of 18 runs (72%) ended on a *resource*
+limit, not a decision: 10 `compact` (all at the 240,000-token threshold) and 3 `stuck` (all at the
+30-turn cap). Only 5 ended because the agent chose to stop. On `humanize` it diagnosed the root
+cause correctly and ran out of room before applying the fix.
+
+**It also earns the compaction layer**, which v1 deferred pending a specific trigger — *"compact
+verdicts dominate the baseline distribution."* Across 60 fixture runs `compact` never appeared once;
+here it is 10 of 18. That is the first deferred layer justified by evidence rather than prediction.
+
+Cost: 3.54M tokens for 18 runs. The median case is 245,713 tokens against a 60,000 ceiling — real
+repositories cost roughly 4× what v1 was scoped for. One run (`real-markdown` run 1) was interfered
+with by hand to clear a hung process and is flagged as not a clean observation.
+
+**Multibug set — 2026-08-19: pass 25/26**, 3 runs per case, cap 25, **4 blocked and excluded**.
+Ten cases carrying 3, 4 or 5 independent one-line defects, all of which must be fixed for the suite
+to go green.
+
+| bugs | runs | pass | turns (range) | mean turns |
+|---|---|---|---|---|
+| 3 | 9 | 9/9 | 11–16 | 12.8 |
+| 4 | 12 | 11/12 | 12–17 | 14.6 |
+| 5 | 5 | 5/5 | 17–23 | 18.4 |
+
+**This set was built to have headroom and does not.** The band was fixed before the data existed —
+40–70% discriminates, above 85% means reject the axis — and 96% rejects it. That is **three
+difficulty axes tried and three rejected**: misdirection, cross-cutting edits, and now independent
+diagnoses. The search for a harder task shape ends here rather than continuing by guesswork.
+
+What survived is more useful than the pass rate: **each additional bug costs about 2.8 turns**, the
+first quantified predictive relationship in the project. It implies ~8 bugs would exceed a 25-turn
+cap, and it shows the 12-turn cap used by the other two sets would have failed most of this one on
+budget alone.
+
+**Incomplete, and not to be quoted as 30.** `multi-catalogue` has zero completed runs and
+`multi-payroll` two of three, so this is 9 of 10 cases; the free tier began rejecting ~2 of every 3
+requests after ~1.1M tokens. Blocked runs are excluded because **a blocked run never reaches its
+check command, so no score exists for it** — not because of anything their row reports, which is
+written with `state=None` and therefore reads zero regardless. `--continue` completes the set.
+
 **Held out — 2026-08-19: pass 29/30** on ten cases the system was never developed against,
 scored once, 3 runs each, 0 blocked.
 
@@ -89,6 +144,17 @@ Offline tests need no API key and no network. Only the scored run calls a model.
 A run that never reached the model is reported as **blocked** and excluded from the
 score rather than counted as a failure - `pass 4/13, 2 blocked`, never `pass 4/15`.
 Blocked runs are retried, and `--continue` re-runs exactly the ones with no result.
+
+### Restricted egress
+
+Scored runs reach the model through an allowlisting proxy and have **no other route off the
+machine** - the agent container sits on an internal Docker network whose only neighbour is that
+proxy. The harness brings it up automatically and **refuses to score a split without it**; set
+`AGENT_NETWORK=bridge` to run unrestricted, in which case the result is not a compliant scored run.
+
+Verified with the agent image: the model host returns `200`, any other host returns
+`403 Filtered`, and a direct connection **by raw IP with no proxy** fails as unroutable. That last
+check is the one that matters - a DNS-only barrier looks the same and is bypassed by dialling an IP.
 
 ### Interactive
 
