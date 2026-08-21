@@ -2096,3 +2096,39 @@ Caught only because `--check-provider` was run by hand minutes later and succeed
 failure mode is silence needs its probe verified before it is trusted** - the same lesson as
 `State.Running: true` on a proxy that could not resolve DNS. The script was deleted rather than
 fixed; the guards were run directly.
+
+### Cycle 5 guards — run at last, and they hold
+
+The backend recovered, so the two regression guards finally produced data.
+
+| case | before | after | role |
+|---|---|---|---|
+| `real-rich` | **0/3** (twice) | **3/3** | target |
+| `real-click` | 2/3 | 3/3 | guard |
+| `real-cachetools` | 2/2 | 2/3 | guard |
+
+**Neither guard moved outside noise, in either direction.** `click` gaining a run and `cachetools`
+losing one are single-run differences at n=3 - exactly the wobble expected of cases whose files (945
+and 776 lines) already mostly fit under the cap. The prediction was "these should not move", and
+nothing here falsifies it.
+
+The mechanism shows even where the score does not: `click` used **11 reads in all three runs**
+against 12-17 before, and `cachetools`' passes took 7 and 9. Its one failure made **zero edits** -
+the older write-reluctance, not an edit that went wrong.
+
+**CYCLE 5 KEPT**, now on evidence rather than on a caveat.
+
+### Read this before quoting a set-level number
+
+`0/18 -> 8/9` is **wrong** and was briefly stated that way. Three honest limits:
+
+1. **Three of six cases.** `real-markdown` and `real-more-itertools` have never run with either the
+   edit tool or contiguous reads. `real-humanize` is known-failing on arithmetic (Item 27).
+2. **Those three are the cases that were tuned against.** Traces were read, hypotheses formed and
+   changes measured on `rich`, `click` and `cachetools` all day. That is selection, and it is the
+   same overfitting risk the held-out set exists to catch on the fixture side.
+3. **The gain is one case.** Strip `real-rich` out and the change shows nothing: +1 run on `click`,
+   -1 on `cachetools`. The combined figure hides that.
+
+What is solid: **`real-rich` went from impossible to reliable**, clean every time, with the predicted
+mechanism visible in the traces. The set-level number is unknown until Item 25 runs.

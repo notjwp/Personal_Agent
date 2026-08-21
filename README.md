@@ -1,39 +1,80 @@
 # personal-agent
 
-A single-user autonomous agent: goal in natural language, then a tool-calling loop with a policy
-gate, bounded context, and checkpointing, until a terminal verdict.
+A single-user **personal AI agent**: you give it a goal in plain English, it plans, calls tools, and
+works until it reaches a terminal verdict — `done`, `stuck`, or out of budget — then stops and tells
+you which.
 
-Success is measured, not asserted. `eval/harness.py` runs a suite of deliberately broken practice
-projects and scores each by exit code.
+Three things separate it from chat with function calling, and each is a layer that is not allowed to
+collapse into the others:
+
+- **Every tool call is judged before it happens.** A pure `classify()` labels each call
+  `auto` / `confirm` / `deny` *before* any side effect. Destructive commands pause for approval
+  interactively and are refused outright when running unattended.
+- **Nothing reaches the model unfiltered.** Tool output is capped, spilled to disk when it overflows,
+  and returned with instructions for reading the rest — otherwise one `pytest` run floods the context.
+- **It survives being killed.** State is checkpointed after every step. A `docker kill` mid-task
+  resumes having lost at most one step, with no duplicated side effects. Verified, not asserted.
+
+**Only one component ever talks to the model.** The gate, the context manager, the verdict logic and
+the harness are ordinary deterministic code — all 174 tests run with no API key and no network.
+
+### Why the evaluation is full of code repair
+
+Because it is the only work with an objective scorer. A test suite exits 0 or it does not; "summarise
+my email well" has no exit code. The coding cases are a **capability probe, not the product** — an
+agent that cannot fix a real bug in an unfamiliar repository is unlikely to handle your other work
+either, and without a scorer you could never tell.
+
+Success is measured, not asserted. Every change goes through one cycle: one change, three runs per
+case, keep it or revert it, log the result. Two changes were reverted this week for moving nothing.
 
 ## Numbers
 
-**Real repositories with an edit tool — 2026-08-21: pass 4/7 (57%).** Adding
-`edit_file(path, old_string, new_string)` took the real-repository set from **0/9 to 4/7** on the
-three cases measured — the largest delta in this project's history, and the first change since the
-model swap to move the number at all.
+**Real repositories — 2026-08-21.** Two tool changes, on the same model, against the 0/18 baseline:
 
-| case | before | after | evidence |
+| case | baseline | + `edit_file` | + contiguous reads |
 |---|---|---|---|
-| `real-cachetools` | 0/3 | **2/2 PASS** | 1→0 failures, one edit each |
-| `real-click` | 0/3 | **2/3 PASS** | 6→0 twice; the failure still reached 6→3 |
-| `real-humanize` | 0/3 | 0/2 | 4→4, no edits landed |
+| `real-rich` | 0/3 | 0/3 | **3/3** |
+| `real-click` | 0/3 | 2/3 | **3/3** |
+| `real-cachetools` | 0/3 | 2/2 | **2/3** |
+| `real-humanize` | 0/3 | 0/2 | not re-run |
+| `real-markdown` | 0/3 | — | **never run** |
+| `real-more-itertools` | 0/3 | — | **never run** |
 
-**57% is inside the 40–70% band** fixed in advance — the range where a set can actually detect an
-improvement. No set this project owns has ever been there: dev 93%, held-out 97%, multibug 96%, real
-repositories 0%. Tuning cycles are possible for the first time.
+**Do not read a set-level percentage off this table.** Three of six cases have been measured with
+both changes, and they are the same three that were tuned against — traces read, hypotheses formed
+and changes judged on them all week. That is selection, and it is the risk the held-out set exists to
+catch elsewhere. The gain is also concentrated: strip `real-rich` out and the second change shows
++1 run on `click` and −1 on `cachetools`.
 
-The clearest evidence is `real-click`: the same case burned 255,043 tokens in the baseline and
-stalled at 6→1 of 6 failures. With `edit_file` it fixed **all six in two edits**, twice. Both passes
-carry `verdict: compact` — the agent exhausted its budget and passed anyway, because scoring is by
-the check command's exit code and never by the agent's own claim.
+What is solid is narrower and more useful: **`real-rich` went from impossible to reliable.** Fixing
+`rich/console.py` once required emitting 25,308 tokens into a 16,000-token reply. It now takes ten
+reads and a single edit.
 
-The read-to-write ratio moved from **1:29 to 1:7**. It stopped circling and started editing.
+The read-to-write ratio moved **1:29 → 1:7**. It stopped circling and started acting.
 
-`real-rich` remains 0/3 and **stays in the set**: it is now hard rather than impossible. All six of
-its edits failed with *"that text appears 2 times"* — ambiguity in a 2,689-line file, not imprecision.
-That is evidence **against** porting a fuzzy matcher, which would loosen matching in a file that
-already contains duplicates.
+`real-humanize` still fails, and not for a reason any tool fixes: its edit applies cleanly and is
+nearly correct, using `exponent += 3` where the fix needs `exponent += 3 - exponent % 3`. The carry
+happens; the precision does not survive it. That is arithmetic, and it points at the model.
+
+### The earlier reading, kept because it was wrong in an instructive way
+
+**pass 4/7 (57%)** was quoted from three cases before `real-rich` was included; the honest figure at
+that moment was 4/10.
+
+At that point the set had left the saturated band every earlier set sits in — dev 93%, held-out 97%,
+multibug 96% — which is what made a tuning cycle measurable here for the first time.
+
+The clearest single case was `real-click`: it burned 255,043 tokens in the baseline and stalled at
+6→1 of 6 failures. With `edit_file` it fixed **all six in two edits**, twice. Both passes carried
+`verdict: compact` — the agent exhausted its budget and passed anyway, because scoring is by the
+check command's exit code and never by the agent's own claim.
+
+`real-rich` was still 0/3 at that stage, with all six of its edits rejected for *"that text appears
+2 times"* — ambiguity in a 2,689-line file, not imprecision. That was read as evidence **against**
+porting a fuzzy matcher, and it held up: the ambiguity failures disappeared once the agent could see
+contiguous code, without ever being addressed directly. A cycle that attacked them head-on, by naming
+the line numbers of each match, moved nothing and was reverted.
 
 ### The baseline this replaced
 
@@ -66,8 +107,10 @@ replaces a file entirely, so a five-line fix means emitting the whole file insid
 
 Across 30 real-repository runs: **11 `write_file` calls against 352 `read_file` calls (1:32)**, nine
 runs ended `stop_reason: "length"`, and every run that made progress made exactly **one** write.
-`real-rich` cannot be passed by any agent using this toolset and will be fixed or dropped — a case
-that cannot be passed measures nothing.
+`real-rich` cannot be passed by any agent using **this** toolset — a case that cannot be passed
+measures nothing. *(Resolved: rather than dropping it, the toolset was fixed. With an edit tool the
+arithmetic disappears, and `real-rich` now passes 3/3. Dropping it would have been lowering the bar
+instead of clearing it.)*
 
 The fix is an **edit tool** taking `old_string` → `new_string`. A budget experiment ruled out the
 alternative explanation: given 1M tokens instead of 400k, the agent used 281–516k and made *less*

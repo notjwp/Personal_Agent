@@ -25,13 +25,18 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   12/12) - so the dev score was not overfitted.
 - **Egress is restricted on scored runs.** The agent container has no route off the machine except
   an allowlisting proxy; the harness refuses to score a split without it. **Definition of Done: 9/9.**
-- **An edit tool took real repositories from 0/9 to 4/7 (57%) — the largest delta this project has
-  measured.** `edit_file(path, old_string, new_string)`, exact and unique, ~15 lines. Read:write went
-  1:29 -> 1:7. **57% is inside the 40-70% band**, so tuning cycles are finally possible; every other
-  set is saturated above 93%. `real-rich` is still 0/3 but STAYS - it is hard now, not impossible.
-  Its six failed edits all say *"appears 2 times"*: **ambiguity in a 2,689-line file, not
-  imprecision**, which is evidence AGAINST a fuzzy matcher. Next candidate: make the ambiguity error
-  name the line numbers of each match.
+- **Two tool changes took real repositories from 0/18 to `rich` 3/3, `click` 3/3, `cachetools` 2/3.**
+  (1) `edit_file(path, old_string, new_string)`, exact and unique - a whole-file write could not fit
+  a 2,689-line file into a 16,000-token reply. (2) `read_file` sizes its own window, so a paged read
+  returns **164 contiguous lines instead of 30 head + 20 tail with the middle elided** - 17 reads to
+  see a file rather than 54. Read:write went **1:29 -> 1:7**.
+  **Do not quote a set-level percentage.** Three of six cases are measured, and they are the three
+  that were tuned against; `real-markdown` and `real-more-itertools` have never run with either tool.
+  The gain is also one case - strip `real-rich` out and it is +1 run and -1 run.
+- **Ambiguity in edits was a SYMPTOM, not a cause.** A cycle that named the line numbers of each
+  duplicate match moved 0/3 -> 0/3 and was reverted. The same failures vanished on their own once the
+  agent could see contiguous code: an agent that can read a region picks a unique snippet by itself.
+  Fuzzy matching is still unearned, and this is why.
 - **Never wrap the harness in `timeout`.** It kills the client but leaves the container running; the
   orphan then corrupts the shared `eval/workspace` mid-way through the next case. Three runs were
   invalidated this way. `await_exclusive_workspace()` now blocks it, and `--continue` is the
