@@ -52,6 +52,11 @@ FORWARDED_ENV = (
     "ANTHROPIC_API_KEY",
     "NVIDIA_API_KEY",
     "OPENAI_API_KEY",
+    # Provider-neutral names first; the NIM_* / vendor-keyed ones are forwarded too
+    # so existing .env files keep working.
+    "AGENT_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_MODEL",
     "NIM_BASE_URL",
     "NIM_MODEL",
     # Override a case's token budget and turn cap for ONE run without editing
@@ -130,7 +135,8 @@ def model_hosts() -> list[str]:
     values.update({k: v for k, v in os.environ.items() if v})
 
     from agent import config as settings
-    base = values.get("NIM_BASE_URL") or values.get("OPENAI_BASE_URL") or settings.OPENAI_BASE_URL
+    base = (values.get("OPENAI_BASE_URL") or values.get("NIM_BASE_URL")
+            or settings.OPENAI_BASE_URL)
     hosts = {urlparse(base).hostname}
     if (values.get("AGENT_PROVIDER") or settings.PROVIDER) == "anthropic":
         hosts.add("api.anthropic.com")
@@ -837,6 +843,57 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
     return COMPLETED
 
 
+def check_provider() -> int:
+    """One tool-calling request against the configured endpoint.
+
+    Worth its own command because the spec forbids parsing tool calls out of free
+    text, so a model that will not emit a well-formed call has **no fallback** -
+    the architecture simply fails, and it fails mid-run after spending quota. This
+    project has watched exactly that: one open-weight model leaked raw
+    `<tool_call>` markup as message text and the run ended there.
+
+    Reports what the endpoint IS, not just whether it answered: a 200 with prose
+    instead of a tool call is the failure mode that matters.
+    """
+    from agent import config as settings
+    from agent.provider import call_model
+    from agent.tools import SCHEMAS
+
+    where = ("anthropic" if settings.PROVIDER == "anthropic"
+             else settings.OPENAI_BASE_URL)
+    model = (settings.MODEL if settings.PROVIDER == "anthropic"
+             else settings.OPENAI_MODEL)
+    print(f"provider : {settings.PROVIDER}")
+    print(f"endpoint : {where}")
+    print(f"model    : {model}")
+
+    try:
+        reply = call_model(
+            [{"role": "user", "content": "List the files in the current directory."}],
+            "You fix broken code. Use the tools available to you.",
+            SCHEMAS, None)
+    except Exception as exc:
+        print(f"FAILED   : {type(exc).__name__}: {exc}", file=sys.stderr)
+        return MISCONFIGURED
+
+    calls = [b for b in reply.blocks if b.get("type") == "tool_use"]
+    text = " ".join(b.get("text", "") for b in reply.blocks if b.get("type") == "text")
+    if calls:
+        print(f"tool call: OK - {calls[0]['name']}({json.dumps(calls[0].get('input', {}))[:60]})")
+        print(f"tokens   : {reply.billed_tokens}")
+        print("verdict  : USABLE")
+        return COMPLETED
+
+    print(f"tool call: NONE - the model replied with text instead", file=sys.stderr)
+    print(f"           {text[:200]!r}", file=sys.stderr)
+    if "<tool_call>" in text or "function" in text.lower():
+        print("           it looks like a call leaked into the text; this model "
+              "cannot be used, because tool calls are never parsed out of prose",
+              file=sys.stderr)
+    print("verdict  : NOT USABLE for this agent", file=sys.stderr)
+    return MISCONFIGURED
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--split")
@@ -847,10 +904,16 @@ def main() -> int:
     # `continue` is a keyword, hence the dest.
     p.add_argument("--continue", dest="continue_", action="store_true",
                    help="resume the newest run directory instead of starting one")
+    p.add_argument("--check-provider", action="store_true",
+                   help="send ONE tool-calling request and report whether the "
+                        "configured endpoint answers correctly; spends no quota "
+                        "beyond that single call")
     p.add_argument("--run-case")
     p.add_argument("--run-index", type=int, default=0)
     p.add_argument("--out")
     args = p.parse_args()
+    if args.check_provider:
+        return check_provider()
     return inner(args) if args.run_case else outer(args)
 
 

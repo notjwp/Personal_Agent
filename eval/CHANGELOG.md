@@ -2042,3 +2042,57 @@ then the guard claim is an open question, not a result.
 while making inference request"` from `nvcf-worker-service`, and `503 "Service temporarily
 overloaded"`. Not the key, not the model, not the code - free-tier capacity. Blocked runs are
 excluded rather than scored, so the data stays honest; there is simply far less of it per hour.
+
+---
+
+## Provider cleanup — any OpenAI-compatible endpoint, one key variable, one preflight
+
+No measurement: nothing here can change agent behaviour. Done while the backend was down, which is
+the right work for that time.
+
+The adapter already supported any OpenAI-compatible provider - `agent/provider.py` is the only file
+that imports a provider SDK, and it dispatches on one variable. Three warts made that hard to use.
+
+**1. The names lied.** `NIM_BASE_URL` / `NIM_MODEL` were what you set for OpenAI, OpenRouter or Groq.
+Now `OPENAI_BASE_URL` / `OPENAI_MODEL` - the protocol being spoken, not the vendor - with the NIM_*
+names kept as fallbacks so existing `.env` files keep working. Verified both directions: old names
+alone still resolve; new names win when both are present.
+
+**2. The key variable was wrong-shaped.** It read `NVIDIA_API_KEY` first, so an OpenRouter key went
+into a variable named for a different vendor. Now `AGENT_API_KEY` -> `OPENAI_API_KEY` ->
+`NVIDIA_API_KEY`, provider-neutral first.
+
+**3. Nothing checked the endpoint before a run.** `--check-provider` sends ONE tool-calling request
+and reports what came back. This matters more than it looks: the spec forbids parsing tool calls out
+of free text, so a model that will not emit a well-formed call has **no fallback** - it fails
+mid-run, after spending quota. One open-weight model tried here leaked raw `<tool_call>` markup as
+message text and the run ended there. The check reports that case specifically rather than just
+"200 OK".
+
+```
+$ python eval/harness.py --check-provider
+provider : nvidia
+endpoint : https://integrate.api.nvidia.com/v1
+model    : nvidia/nemotron-3-super-120b-a12b
+tool call: OK - run_shell({"command": "ls -la"})
+verdict  : USABLE
+```
+
+The egress allowlist is derived from the base URL, so pointing at a new provider moves the proxy rule
+automatically - there is no firewall entry to remember.
+
+**Unchanged, and restated in `.env.example`:** switching models invalidates every existing baseline.
+It is a different measurement, not a tuning delta - this project's dev score once moved 4/15 -> 14/15
+on a model swap alone, with no code change.
+
+### A watcher that would have waited three hours for nothing
+
+While the backend was at 0/8 a script was written to poll health and launch the guards on recovery.
+Its probe mounted `$HOME/.claude/jobs/.../tmp` into the container - a path Docker on Windows does not
+resolve - so every probe returned empty and printed `health ?/6`. It would have polled until its
+three-hour deadline and never fired, while the backend recovered underneath it.
+
+Caught only because `--check-provider` was run by hand minutes later and succeeded. **A watcher whose
+failure mode is silence needs its probe verified before it is trusted** - the same lesson as
+`State.Running: true` on a proxy that could not resolve DNS. The script was deleted rather than
+fixed; the guards were run directly.
