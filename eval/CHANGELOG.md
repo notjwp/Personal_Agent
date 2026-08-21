@@ -1943,3 +1943,56 @@ python eval/harness.py --case real-rich       --runs 3
 python eval/harness.py --case real-click      --runs 3
 python eval/harness.py --case real-cachetools --runs 3
 ```
+
+### A transient provider 404 was being scored as a case failure
+
+Found mid-cycle: a run died at turn 0 with 0 tokens on `NotFoundError`, and the same model answered a
+probe minutes later. `NotFoundError` sat in neither `RETRYABLE` nor `FATAL`, so it fell through to
+"a crashed agent IS a real result" and was recorded as a **failed case** - the exact thing the
+standing rule forbids, because a run that never reached the model measured nothing.
+
+The fix landing mid-run made the contrast visible in one case:
+
+```
+real-click run0  404 -> status=ok,      scored FAIL   (before the fix)
+real-click run2  404 -> status=blocked, excluded      (after the fix)
+```
+
+Identical failures, classified differently by timing alone.
+
+**Classified retryable, not fatal.** A genuinely wrong model name fails every attempt and is then
+excluded as blocked - visible, costing three fast 404s. A transient blink recovers on the first
+retry. Treating it as fatal would abort a whole scored suite over one hiccup.
+
+### What the 404s actually were - captured, not guessed
+
+```
+404  NotFoundError      (EMPTY body)
+500  "Internal error while making inference request"   nvcf-worker-service
+503  "Service temporarily overloaded"
+```
+
+**NVIDIA's inference backend is overloaded**, and says so in two of the three. The 404s carry an
+**empty body**, which is a load balancer routing to a worker with no model loaded - not "your model
+does not exist". Three error codes, one root cause.
+
+Not the key (a bad key gives 401, and none appeared), not the model name (it is in the catalogue and
+answers when a worker is free), not our code (nothing reaches it). A case needs ~20 sequential model
+calls, so at ~60% success per call a full run rarely completes even though isolated probes look
+tolerable - which is why single probes and whole runs disagree so sharply.
+
+### Cycle 5 remains UNDECIDED
+
+The re-run was stopped after `real-rich` run 0 blocked twice. Spending the day's quota during a
+backend outage buys another four-run sample, which is the very problem the re-run existed to fix.
+
+Standing, excluding runs that measured nothing:
+
+| case | before | cycle 5 | role |
+|---|---|---|---|
+| `real-rich` | 0/3 | **1/2** | target - moved |
+| `real-click` | 2/3 | 1/1 | guard - cannot falsify at n=1 |
+| `real-cachetools` | 2/2 | 1/1 | guard - cannot falsify at n=1 |
+
+The change stays in the tree, committed and **explicitly unverified**. Re-run when the backend
+recovers: `--case real-rich / real-click / real-cachetools --runs 3`.

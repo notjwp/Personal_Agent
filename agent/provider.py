@@ -54,7 +54,20 @@ class ProviderMisconfigured(RuntimeError):
 # Both SDKs expose identical exception names, verified against the installed
 # releases, so one table serves both without importing both to compare classes.
 RETRYABLE = ("RateLimitError", "APITimeoutError", "APIConnectionError",
-             "InternalServerError")
+             "InternalServerError",
+             # A 404 on the model endpoint. Measured mid-cycle: a run died at turn 0
+             # with 0 tokens on NotFoundError, and the same model answered a probe
+             # minutes later - so the endpoint had blinked, not vanished. Left
+             # unclassified it fell through to "a crashed agent is a real result"
+             # and was scored as a failed case, which is exactly what the standing
+             # rule forbids: a run that never reached the model measured nothing.
+             #
+             # Retryable rather than fatal, deliberately. A genuinely wrong model
+             # name fails every attempt, so the retries cost three quick 404s and
+             # the run is then excluded as blocked - visible, and not counted. A
+             # transient blink recovers on the first retry. Treating it as fatal
+             # would abort a whole scored suite over one hiccup.
+             "NotFoundError")
 FATAL = ("AuthenticationError", "PermissionDeniedError")
 
 

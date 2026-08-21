@@ -115,6 +115,24 @@ def sdk_error(name, message="boom"):
     return type(name, (Exception,), {})(message)
 
 
+def test_a_404_on_the_model_endpoint_is_infrastructure_not_a_score():
+    """A run that never reached the model measured nothing.
+
+    Measured mid-cycle: a scored run died at turn 0 with 0 tokens on
+    NotFoundError, and the same model answered a probe minutes later - the
+    endpoint had blinked. Unclassified, it fell through to "a crashed agent is a
+    real result" and was recorded as a failed case, understating the agent and
+    corrupting the comparison, which is precisely what the standing rule forbids.
+
+    Retryable rather than fatal on purpose: a genuinely wrong model name fails
+    every attempt and is then excluded as blocked, which is visible and costs
+    three fast 404s; treating it as fatal would abort a whole suite over a hiccup.
+    """
+    from agent.provider import ProviderUnavailable, _reraise_classified
+    with pytest.raises(ProviderUnavailable):
+        _reraise_classified(sdk_error("NotFoundError"))
+
+
 @pytest.mark.parametrize("name", ["RateLimitError", "APITimeoutError",
                                   "APIConnectionError", "InternalServerError"])
 def test_infrastructure_failures_are_retryable(name):
