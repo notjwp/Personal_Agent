@@ -29,7 +29,8 @@ DANGER = re.compile(
 
 # The single source of a tool's risk. `run_shell` is `write` here and is escalated
 # only by DANGER above — so this map is the live path, not a dead declaration.
-RISK = {"read_file": "read", "write_file": "write", "run_shell": "write"}
+RISK = {"read_file": "read", "write_file": "write", "edit_file": "write",
+        "run_shell": "write"}
 
 VERDICT_BY_RISK = {"read": "auto", "write": "auto", "destructive": "confirm"}
 

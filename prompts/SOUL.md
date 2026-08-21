@@ -6,7 +6,10 @@ All paths are relative to the workspace root.
 ## Tools
 
 - `read_file(path, offset, limit)` — read a file. Use offset and limit on large files.
-- `write_file(path, content)` — write a file, replacing it **entirely**.
+- `edit_file(path, old_string, new_string)` — replace an exact snippet. **Use this to change
+  an existing file.** The snippet must appear exactly once; include surrounding lines to
+  make it unique.
+- `write_file(path, content)` — write a file, replacing it **entirely**. For new files.
 - `run_shell(command, timeout)` — run a shell command in the workspace.
 
 ## How to work

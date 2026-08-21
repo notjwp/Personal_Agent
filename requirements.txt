@@ -1,0 +1,55 @@
+# Pinned dependencies for personal-agent.
+#
+# Exact pins throughout, deliberately: this project's headline number is a
+# measurement, and an unpinned dependency silently changes what was measured.
+#
+# `pyproject.toml` remains the source of truth for the agent's own runtime
+# dependencies. The pins below MUST match it; if they drift, pyproject wins.
+# Recorded here as well because the container installs by list, not by package,
+# and because two of the three groups below have no other declared home.
+#
+# The container is where the agent actually runs (Python 3.12). Installing these
+# on a host is only useful for editor IntelliSense - the host and the image are
+# separate environments, and running the agent outside the container is not a
+# supported configuration.
+#
+#   pip install -r requirements.txt
+
+# --- agent runtime -----------------------------------------------------------
+# Mirrors [project.dependencies] in pyproject.toml.
+# Two provider SDKs, not one: the second implementation is what earns
+# agent/provider.py its own module, and either can be selected at runtime.
+anthropic==0.122.0
+langgraph==1.2.11
+langgraph-checkpoint-sqlite==3.1.1
+openai==3.2.0
+
+# --- tests -------------------------------------------------------------------
+# Mirrors [project.optional-dependencies].dev. The unit suite runs with no API
+# key, no network, and a read-only root filesystem.
+pytest==9.1.1
+
+# --- evaluation fixture runtime ----------------------------------------------
+# NOT agent dependencies. These exist so the practice projects and the vendored
+# real repositories can run their own test suites inside the sandbox, which has
+# no egress and therefore cannot install anything at run time.
+#
+# Previously declared only in the Containerfile, and unpinned there - pinned here
+# to the versions the scored 0/18 real-repository baseline actually ran against.
+#
+#   flask           practice project `add-endpoint`
+#   freezegun       real-humanize (time-dependent tests)
+#   attrs           real-rich (tests/test_pretty.py collection)
+#   pygments        real-rich runtime dependency
+#   markdown-it-py  real-rich runtime dependency
+flask==3.1.3
+freezegun==1.5.5
+attrs==26.1.0
+pygments==2.21.0
+markdown-it-py==4.2.0
+
+# --- deliberately NOT installed ----------------------------------------------
+# tabulate is staged as a wheel in /wheels and left uninstalled on purpose: the
+# practice project `missing-dep` is solved by the agent running `pip install
+# tabulate`, which must succeed with networking switched off. Installing it here
+# would make that case pass without the agent doing anything.

@@ -214,3 +214,30 @@ def test_an_unmeasured_ceiling_says_so_rather_than_reporting_zero():
     out = harness.summarise([row("a", 0, tokens=1_000)])
     assert "not recorded" in out
     assert "0 / 6,000" not in out
+
+def test_failing_tests_reads_the_pytest_summary():
+    """Pass/fail hides everything short of a green suite.
+
+    Measured on the first real-repository baseline: one case fixed five of its six
+    failures on two of three runs and was recorded identically to a run that did
+    nothing, while another broke 38 previously-passing tests and was likewise
+    recorded as a plain 0. On a set the agent scores zero on, this delta is the
+    only signal there is.
+    """
+    assert harness.failing_tests("4 failed, 689 passed, 69 skipped in 4.13s") == 4
+    assert harness.failing_tests("693 passed, 69 skipped in 3.67s") == 0
+    assert harness.failing_tests("[31m6 failed[0m, 1857 passed") == 6, "ANSI colour must not hide it"
+
+
+def test_failing_tests_distinguishes_green_from_unreadable():
+    """0 and None must never be conflated - that would invent progress."""
+    assert harness.failing_tests("12 passed") == 0
+    assert harness.failing_tests("") is None
+    assert harness.failing_tests("Interrupted: no summary line") is None
+
+
+def test_progress_column_shows_partial_credit():
+    group = [{"failures_before": 6, "failures_after": a, "run_index": i}
+             for i, a in enumerate([1, 1, 6])]
+    assert harness._progress(group) == "6->1/1/6"
+    assert harness._progress([{"failures_before": None, "failures_after": None}]) == "-"

@@ -61,6 +61,52 @@ def write_file(path: str, content: str) -> str:
     return f"wrote {path} ({len(content)} chars, {content.count(chr(10)) + 1} lines)"
 
 
+def edit_file(path: str, old_string: str, new_string: str) -> str:
+    """Replace `old_string` with `new_string`. The match must be unique.
+
+    Why this exists, measured rather than assumed: `write_file` replaces a file
+    ENTIRELY, so a five-line fix means emitting the whole file as a tool argument
+    inside MAX_TOKENS - which caps thinking, text and arguments together. On the
+    first real-repository baseline the files needing edits ran 559 to 2,689 lines;
+    `rich/console.py` needs ~25,308 tokens to rewrite, 158% of one reply, so that
+    case was impossible rather than merely expensive. Across 30 runs the agent made
+    **11 writes against 352 reads** and scored 0/18, while every run that did manage
+    a write fixed most of its failures.
+
+    Exact matching only, deliberately. Hermes solves the same problem with a fuzzy
+    patch format; that is hundreds of lines, and CE-02 says a framework earns its
+    place at break-even at the CURRENT scale. If exact matching measurably fails
+    because the model cannot reproduce strings precisely, the traces will show
+    repeated edit errors and fuzzy matching is earned then, not now.
+    """
+    target = config.WORKSPACE / path
+    if target.is_dir():
+        raise IsADirectoryError(
+            f"{path} is a directory, not a file. "
+            f"List it with run_shell(command='ls -la {path}').")
+    text = target.read_text(encoding="utf-8", errors="replace")
+
+    found = text.count(old_string)
+    if found == 0:
+        # An error the model cannot act on costs a turn every time it is retried,
+        # so name the tool that recovers from it.
+        raise ValueError(
+            f"that text was not found in {path}. Read the current contents with "
+            f'read_file(path="{path}") and copy the text exactly, including '
+            f"indentation and blank lines.")
+    if found > 1:
+        # Editing the first occurrence silently would corrupt the file in a way no
+        # test necessarily catches. Refusing is the safety property of this tool.
+        raise ValueError(
+            f"that text appears {found} times in {path}; it must match exactly "
+            f"once. Include more of the surrounding lines to make it unique.")
+
+    target.write_text(text.replace(old_string, new_string), encoding="utf-8")
+    delta = new_string.count(chr(10)) - old_string.count(chr(10))
+    return (f"edited {path} (replaced {len(old_string)} chars with "
+            f"{len(new_string)}, {delta:+d} lines)")
+
+
 def run_shell(command: str, timeout: int = 120) -> str:
     """Run `command` in the workspace. Exit code, stdout and stderr are reported
     separately (FR-202)."""
@@ -119,6 +165,31 @@ TOOLS = {
                                 "description": "The complete new contents of the file."},
                 },
                 "required": ["path", "content"],
+            },
+        },
+    },
+    "edit_file": {
+        "fn": edit_file,
+        "schema": {
+            "name": "edit_file",
+            "description": (
+                "Replace an exact snippet of a file with new text. Prefer this over "
+                "write_file for any change to an existing file: it costs a few "
+                "hundred characters instead of the whole file. The snippet must "
+                "appear exactly once - include surrounding lines to make it unique."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string",
+                             "description": "Path relative to the workspace root."},
+                    "old_string": {"type": "string",
+                                   "description": ("The exact text to replace, copied "
+                                                   "from the file including indentation.")},
+                    "new_string": {"type": "string",
+                                   "description": "The text to put in its place."},
+                },
+                "required": ["path", "old_string", "new_string"],
             },
         },
     },

@@ -8,6 +8,35 @@ projects and scores each by exit code.
 
 ## Numbers
 
+**Real repositories with an edit tool — 2026-08-21: pass 4/7 (57%).** Adding
+`edit_file(path, old_string, new_string)` took the real-repository set from **0/9 to 4/7** on the
+three cases measured — the largest delta in this project's history, and the first change since the
+model swap to move the number at all.
+
+| case | before | after | evidence |
+|---|---|---|---|
+| `real-cachetools` | 0/3 | **2/2 PASS** | 1→0 failures, one edit each |
+| `real-click` | 0/3 | **2/3 PASS** | 6→0 twice; the failure still reached 6→3 |
+| `real-humanize` | 0/3 | 0/2 | 4→4, no edits landed |
+
+**57% is inside the 40–70% band** fixed in advance — the range where a set can actually detect an
+improvement. No set this project owns has ever been there: dev 93%, held-out 97%, multibug 96%, real
+repositories 0%. Tuning cycles are possible for the first time.
+
+The clearest evidence is `real-click`: the same case burned 255,043 tokens in the baseline and
+stalled at 6→1 of 6 failures. With `edit_file` it fixed **all six in two edits**, twice. Both passes
+carry `verdict: compact` — the agent exhausted its budget and passed anyway, because scoring is by
+the check command's exit code and never by the agent's own claim.
+
+The read-to-write ratio moved from **1:29 to 1:7**. It stopped circling and started editing.
+
+`real-rich` remains 0/3 and **stays in the set**: it is now hard rather than impossible. All six of
+its edits failed with *"that text appears 2 times"* — ambiguity in a 2,689-line file, not imprecision.
+That is evidence **against** porting a fuzzy matcher, which would loosen matching in a file that
+already contains duplicates.
+
+### The baseline this replaced
+
 **Real repositories — 2026-08-20: pass 0/18.** Six real open-source projects, each vendored at the
 parent of a genuine upstream bug-fix commit, scored by the repo's own test suite. 3 runs per case,
 0 blocked, cap 30, egress restricted.
@@ -24,14 +53,38 @@ parent of a genuine upstream bug-fix commit, scored by the repo's own test suite
 **This is the first case set this project owns with real headroom**, after three synthetic
 difficulty axes were built and all three were rejected for saturating above 85%.
 
+**The cause of 0/18 is measured, and it is a tool defect, not a reasoning one.** `write_file`
+replaces a file entirely, so a five-line fix means emitting the whole file inside `MAX_TOKENS`
+(16,000, covering thinking, text and tool arguments together). Real files are 559–2,689 lines:
+
+| file | ~tokens to rewrite | share of one reply |
+|---|---|---|
+| `humanize/number.py` | 3,898 | 24% |
+| `click/_termui_impl.py` | 7,933 | 50% |
+| `more_itertools/recipes.py` | 11,531 | 72% |
+| `rich/console.py` | **25,308** | **158% — impossible** |
+
+Across 30 real-repository runs: **11 `write_file` calls against 352 `read_file` calls (1:32)**, nine
+runs ended `stop_reason: "length"`, and every run that made progress made exactly **one** write.
+`real-rich` cannot be passed by any agent using this toolset and will be fixed or dropped — a case
+that cannot be passed measures nothing.
+
+The fix is an **edit tool** taking `old_string` → `new_string`. A budget experiment ruled out the
+alternative explanation: given 1M tokens instead of 400k, the agent used 281–516k and made *less*
+progress, because the binding limit is the per-reply cap, not the per-run budget.
+
 **0/18 does not mean the agent cannot fix real bugs.** 13 of 18 runs (72%) ended on a *resource*
 limit, not a decision: 10 `compact` (all at the 240,000-token threshold) and 3 `stuck` (all at the
 30-turn cap). Only 5 ended because the agent chose to stop. On `humanize` it diagnosed the root
 cause correctly and ran out of room before applying the fix.
 
-**It also earns the compaction layer**, which v1 deferred pending a specific trigger — *"compact
-verdicts dominate the baseline distribution."* Across 60 fixture runs `compact` never appeared once;
-here it is 10 of 18. That is the first deferred layer justified by evidence rather than prediction.
+**The `compact` verdicts look like they earn the compaction layer — they do not.** v1 deferred
+compaction pending exactly this trigger (*"compact verdicts dominate the baseline distribution"*),
+and `compact` never appeared once across 60 fixture runs against 10 of 18 here. So the trigger fired,
+and it was tested directly: given 1M tokens instead of 400k, the agent used 281–516k and made *less*
+progress. **Running out of budget is a symptom of the whole-file write, not an independent problem.**
+The trigger earned a hypothesis; the experiment refuted it. Recorded so the next reader does not
+build compaction on a distribution that has already been checked.
 
 Cost: 3.54M tokens for 18 runs. The median case is 245,713 tokens against a 60,000 ceiling — real
 repositories cost roughly 4× what v1 was scoped for. One run (`real-markdown` run 1) was interfered

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -53,6 +54,15 @@ FORWARDED_ENV = (
     "OPENAI_API_KEY",
     "NIM_BASE_URL",
     "NIM_MODEL",
+    # Override a case's token budget and turn cap for ONE run without editing
+    # tasks.jsonl. Deliberately overrides rather than edits: an experiment that
+    # mutates the case definition quietly changes what every later run measures.
+    #
+    # Both exist because raising one alone is not a test of "resource-limited" -
+    # measured: lifting the budget to 1M simply moved the wall to the 30-turn cap
+    # at 281k tokens, answering nothing.
+    "AGENT_BUDGET",
+    "AGENT_MAX_TURNS",
 )
 
 # --------------------------------------------------------------- egress (H)
@@ -375,6 +385,17 @@ def _ceilings(scored: list[dict]) -> list[str]:
     return out
 
 
+def _progress(group: list[dict]) -> str:
+    """Failing tests before -> after, per run. "?" where it could not be read."""
+    befores = {r.get("failures_before") for r in group if r.get("failures_before") is not None}
+    if not befores:
+        return "-"
+    start = sorted(befores)[-1]
+    ends = "/".join("?" if r.get("failures_after") is None else str(r["failures_after"])
+                    for r in group)
+    return f"{start}->{ends}"
+
+
 def summarise(rows: list[dict]) -> str:
     """Render the score. Pure - takes rows, returns text, touches nothing.
 
@@ -414,7 +435,7 @@ def summarise(rows: list[dict]) -> str:
     ids = sorted({r["id"] for r in scored})
     if ids:
         lines += ["", f"{'case':<16}{'pass':<7}{'verdicts':<24}{'turns':<14}"
-                      f"{'tokens(med)':>11}  tamper"]
+                      f"{'tokens(med)':>11}  {'failures':<12}tamper"]
     for cid in ids:
         group = sorted((r for r in scored if r["id"] == cid),
                        key=lambda r: r["run_index"])
@@ -429,7 +450,11 @@ def summarise(rows: list[dict]) -> str:
             # it where "median 4" conceals it.
             f"{'/'.join(str(r['turns']) for r in group):<14}"
             f"{int(statistics.median([r['tokens'] for r in group])):>11,}"
-            f"  {sum(r.get('tampered', 0) for r in group)}")
+            # Partial progress: "6->1/1/6" says the agent fixed five of six failures
+            # twice, which `pass 0/3` renders identical to having done nothing. A
+            # RISING count is just as important - it means working tests were broken.
+            f"  {_progress(group):<12}"
+            f"{sum(r.get('tampered', 0) for r in group)}")
 
     lines += _ceilings(scored)
 
@@ -494,7 +519,43 @@ def run_dir(args, cases) -> Path | None:
     return out
 
 
+def await_exclusive_workspace(timeout: float = 900.0) -> bool:
+    """Refuse to start a case-run while another agent container is still alive.
+
+    Every case-run gets its OWN container, but they all bind-mount the SAME host
+    workspace. Two overlapping containers therefore corrupt each other: `reset.sh`
+    wipes the directory the other one is working in.
+
+    Measured, and self-inflicted: wrapping the harness in `timeout` killed the
+    python client while its `docker run` container kept going. The orphan finished
+    later, mid-way through the NEXT case, and its tests appeared in a workspace
+    belonging to a different repository - three runs of one cycle were invalidated
+    that way. The tamper check caught it only because the leftover files looked
+    like invented tests.
+
+    Waiting rather than failing: an orphan finishes on its own, and a scored suite
+    that aborts is worse than one that pauses.
+    """
+    deadline = time.monotonic() + timeout
+    warned = False
+    while time.monotonic() < deadline:
+        running = _docker("ps", "--filter", f"ancestor={IMAGE}",
+                          "--format", "{{.Names}}").stdout.split()
+        if not running:
+            return True
+        if not warned:
+            print(f"  waiting for {len(running)} agent container(s) to exit before "
+                  f"starting: {' '.join(running)}", file=sys.stderr)
+            warned = True
+        time.sleep(5)
+    print("  workspace still busy after waiting; refusing to start a case-run that "
+          "would corrupt it", file=sys.stderr)
+    return False
+
+
 def spawn(case: dict, run_index: int, out: Path) -> int:
+    if not await_exclusive_workspace():
+        return BLOCKED
     cmd = [
         "docker", "run", "--rm", "--network", NETWORK,
         # NFR-201, enforced by the kernel instead of asserted in a test. The root
@@ -612,11 +673,22 @@ def inner(args) -> int:
         return record(out, case, args.run_index, passed=False, verdict="setup-failed",
                       seconds=0.0, state=None, note=setup.stderr[-2000:])
 
+    # The failing-test count BEFORE the agent touches anything. Two jobs: it is the
+    # baseline for measuring partial progress, and it independently confirms the
+    # fixture reset into its broken state - a case that starts green would otherwise
+    # be scored as a pass the agent did not earn.
+    _, _, before = run_check(case)
+
     # Imported after setup so a rig failure needs no agent.
     from agent.graph import get_app, new_state
     from agent.provider import ProviderMisconfigured, ProviderUnavailable
 
-    state = new_state(case["goal"], case["max_turns"], case["budget"])
+    budget = int(os.environ.get("AGENT_BUDGET") or case["budget"])
+    max_turns = int(os.environ.get("AGENT_MAX_TURNS") or case["max_turns"])
+    if budget != case["budget"] or max_turns != case["max_turns"]:
+        print(f"  overridden: budget {case['budget']:,} -> {budget:,}, "
+              f"turns {case['max_turns']} -> {max_turns}", file=sys.stderr)
+    state = new_state(case["goal"], max_turns, budget)
     trace: list[dict] = []          # nodes append here; see agent/graph.py _log()
     started = time.monotonic()
     try:
@@ -657,23 +729,54 @@ def inner(args) -> int:
     #
     # A timeout counts as a FAIL, not as blocked: the suite genuinely did not pass,
     # and the agent's own edit is why.
-    try:
-        check = subprocess.run(case["check"], shell=True, capture_output=True,
-                               text=True, timeout=CHECK_TIMEOUT)
-        passed, check_note = check.returncode == 0, check.stdout[-2000:]
-    except subprocess.TimeoutExpired:
-        passed, check_note = False, (
-            f"check exceeded {CHECK_TIMEOUT}s and was killed: the workspace was left "
-            f"in a state where the test suite does not terminate")
-        print(f"  check timed out after {CHECK_TIMEOUT}s", file=sys.stderr)
-    return record(out, case, args.run_index, passed=passed,
+    code, check_out, after = run_check(case)
+    return record(out, case, args.run_index, passed=code == 0,
                   verdict=final.get("verdict") or "none", seconds=seconds,
-                  state=final, note=note or check_note, trace=trace)
+                  state=final, note=note or check_out[-2000:], trace=trace,
+                  failures_before=before, failures_after=after)
+
+
+def failing_tests(output: str) -> int | None:
+    """Failing-test count from a pytest summary line; None when it cannot be read.
+
+    Pass/fail alone cannot tell 6->1 from 4->4 from 1->39, and on a set the agent
+    scores zero on, that difference is the ONLY signal there is. Measured on the
+    first real-repository baseline: one case fixed five of its six failures twice
+    and was recorded identically to a run that did nothing at all, while another
+    broke 38 tests that had been passing and was likewise recorded as a plain 0.
+
+    Returns 0 for a green suite, so "no failures" and "could not tell" stay
+    distinguishable - conflating them would quietly invent progress.
+    """
+    clean = re.sub(r"\[[0-9;]*m", "", output or "")
+    found = re.findall(r"(\d+) failed", clean)
+    if found:
+        return int(found[-1])
+    return 0 if re.search(r"\d+ passed", clean) else None
+
+
+def run_check(case: dict) -> tuple[int, str, int | None]:
+    """Run a case's check command. Returns (exit code, output, failing count).
+
+    Bounded by CHECK_TIMEOUT: the agent can leave the workspace in a state where
+    the suite never terminates, and an unbounded check hangs the whole scored run
+    with no diagnosis. Measured: one run held for 25 MINUTES before it was killed
+    by hand. A timeout is a FAIL - the suite genuinely did not pass.
+    """
+    try:
+        done = subprocess.run(case["check"], shell=True, capture_output=True,
+                              text=True, timeout=CHECK_TIMEOUT)
+        return done.returncode, done.stdout, failing_tests(done.stdout)
+    except subprocess.TimeoutExpired:
+        print(f"  check timed out after {CHECK_TIMEOUT}s", file=sys.stderr)
+        return 1, (f"check exceeded {CHECK_TIMEOUT}s and was killed: the workspace "
+                   f"was left in a state where the test suite does not terminate"), None
 
 
 def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
            seconds: float, state: dict | None, note: str, trace=(),
-           status: str = "ok") -> int:
+           status: str = "ok", failures_before: int | None = None,
+           failures_after: int | None = None) -> int:
     state = state or {}
     calls = [t for t in trace if t.get("kind") == "tool"]
     models = [t for t in trace if t.get("kind") == "model"]
@@ -713,6 +816,11 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # NFR-104's observable: the biggest result the model was actually shown,
         # in characters, after shrink().
         "max_result_chars": max((c.get("shrunk_bytes", 0) for c in calls), default=0),
+        # Partial progress. `pass` is binary and hides everything short of a green
+        # suite; these two make "fixed five of six" visible, and make a run that
+        # BROKE working tests visible too - which matters just as much.
+        "failures_before": failures_before,
+        "failures_after": failures_after,
         "seconds": round(seconds, 2),
     }
     with (out / "summary.jsonl").open("a", encoding="utf-8") as fh:

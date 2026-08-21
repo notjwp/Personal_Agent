@@ -20,7 +20,7 @@ from agent.provider import Reply
 import subprocess
 import time
 
-from agent.tools import read_file, run_shell, write_file
+from agent.tools import edit_file, read_file, run_shell, write_file
 
 
 # ===================================================================== helpers
@@ -188,6 +188,45 @@ def test_write_file_replaces_entirely(tmp_workspace):
     write_file("a.py", "first\n")
     write_file("a.py", "second\n")
     assert (tmp_workspace / "a.py").read_text() == "second\n"
+
+
+def test_edit_file_replaces_a_unique_string(tmp_workspace):
+    """Targeted replacement, so a small fix costs a small number of tokens.
+
+    Measured cause of the 0/18 real-repository baseline: `write_file` replaces a
+    file entirely, so changing five lines meant emitting the whole file inside
+    MAX_TOKENS (16,000, covering thinking + text + tool arguments). Real files run
+    559-2,689 lines; rich/console.py needs ~25,308 tokens to rewrite, which is 158%
+    of one reply - impossible, not merely expensive. Across 30 runs the agent made
+    11 writes against 352 reads.
+    """
+    (tmp_workspace / "m.py").write_text("def f():" + chr(10) + "    return 1" + chr(10), encoding="utf-8")
+    out = edit_file("m.py", "return 1", "return 2")
+    assert (tmp_workspace / "m.py").read_text() == "def f():" + chr(10) + "    return 2" + chr(10)
+    assert "m.py" in out
+
+
+def test_edit_file_refuses_an_ambiguous_match(tmp_workspace):
+    """Two matches means the agent does not know which one it is changing.
+
+    Refusing is the whole safety property of exact matching: silently editing the
+    first occurrence would corrupt a file in a way no test necessarily catches.
+    """
+    (tmp_workspace / "m.py").write_text("x = 1" + chr(10) + "y = 1" + chr(10), encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        edit_file("m.py", "= 1", "= 2")
+    message = str(caught.value)
+    assert "twice" in message or "2 times" in message
+    assert "more" in message.lower(), "the error must say HOW to disambiguate"
+    assert (tmp_workspace / "m.py").read_text() == "x = 1" + chr(10) + "y = 1" + chr(10), "must not edit"
+
+
+def test_edit_file_says_what_to_do_when_the_string_is_absent(tmp_workspace):
+    """An error the model cannot act on costs a turn every time it is retried."""
+    (tmp_workspace / "m.py").write_text("x = 1" + chr(10), encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        edit_file("m.py", "nope", "yes")
+    assert "read_file" in str(caught.value)
 
 
 def test_run_shell_separates_streams_and_exit_code(tmp_workspace):

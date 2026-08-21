@@ -1463,3 +1463,342 @@ identical, so this remains one coherent measurement - a key governs quota, not b
 Re-run a single case with the budget raised from 400k to 1M. If it then passes, the ceiling is
 budget and compaction is the highest-value work in v2. If it still fails, the limit is capability
 and the set needs diluting after all. **One run decides which of the two paths Phase K takes.**
+
+---
+
+## Item 12 — the budget experiment: the starvation hypothesis is REFUTED
+
+Phase J's 0/18 had 72% of runs ending on a resource limit, which suggested the agent was starved
+rather than incapable. `real-click` was the probe: it ended `compact` 3/3 and twice reached **one
+remaining failure out of six**, apparently cut off mid-solve.
+
+Three runs with resources raised, one variable at a time:
+
+| resources | verdict | turns | tokens | failures | writes |
+|---|---|---|---|---|---|
+| 400k / 30 (baseline) | compact x3 | 28/27/26 | 255k | **6->1, 6->1**, 6->6 | 1, 1, 0 |
+| 1M / 30 | stuck | 30 (at cap) | 281k | 6->6 | **0** |
+| 1M / 60 | stuck | **35 of 60** | 516k | 6->6 | **0** |
+| 1M / 60 | done | **27 of 60** | 302k | 6->6 | **0** |
+
+**More room produced less progress.** Not one of the three used its budget or its turns: one hit the
+old cap, one was stopped by the thrash detector at turn 35 of 60, and one terminated *itself* at turn
+27 with two-thirds of everything unspent.
+
+Raising the budget alone was not even a valid test - it simply moved the wall from the token
+threshold to the 30-turn cap at 281k tokens. `AGENT_MAX_TURNS` was added alongside `AGENT_BUDGET` so
+the hypothesis could be tested properly, as overrides rather than edits to `tasks.jsonl`.
+
+### The real finding: the agent reads, and does not write
+
+Across **all 21 real-repository runs**:
+
+```
+write_file calls:   7
+read_file calls:  260
+runs with ZERO writes: 13 of 21
+runs with MORE than one write: 0
+```
+
+A 37:1 read-to-write ratio. The failing run at 1M/60 read `src/click/_termui_impl.py` **eleven times
+consecutively**, then `cat`-ed the same file three more times until the repeat detector fired.
+
+And the converse holds: **every run that made progress made exactly one write.** `real-click`'s fix
+is 43 lines in a single file, so one `write_file` is all it takes - the two runs that fixed five of
+six failures each did exactly that.
+
+**The limit is not diagnosis, and not budget. It is committing to an edit.** On `humanize` the agent
+stated the root cause correctly and never wrote. Given a million tokens it re-read one file eleven
+times instead of changing it.
+
+### What this rules in and out
+
+- **Item 13 (compaction) is NOT justified by this experiment.** The `compact` verdicts were real, but
+  removing the ceiling does not convert failures into passes - runs given the room do not use it. The
+  10-of-18 `compact` distribution earned a hypothesis; this experiment tested it and it did not hold.
+- **Item 13-alt (dilute) does not address the finding either.** A smaller repository does not make an
+  agent commit an edit; the two successful runs happened on the *unmodified* 156-file case.
+- The pre-registered table routed "ends `done`/`stuck` with room to spare" to 13-alt. That routing
+  was written before the write-ratio was visible, and the honest reading is that **neither branch
+  targets the measured cause**. Recorded rather than force-fitted.
+
+### Cost and caution
+
+Three runs, ~1.1M tokens. Variance remains large - the same case, unchanged, has produced both
+`6->1` and `6->6`. Three runs is not many, and this project has already been burned twice by
+treating n=3 as settled. **This refutes starvation; it does not by itself establish the write-
+reluctance figure as stable.** The 7:260 ratio spans 21 runs, which is firmer ground than the
+verdicts.
+
+---
+
+## Cycle 2 — "an empty reply is not a completion" — REVERTED
+
+The first tuning cycle this project has been able to run since cycle 1, because the real-repository
+set is the first one with headroom. Followed the eval-cycle discipline: read traces, bucket, fix the
+largest bucket, 3 runs per case, keep or revert.
+
+### Bucketing (21 real-repository runs)
+
+```
+ 6  termination: `done` while tests still failing   <- largest, fixed this
+ 5  budget spent, had written
+ 5  budget spent, never wrote
+ 4  no strategy (cap, no repeats)
+ 1  thrashing
+```
+
+**The bucket table sent me somewhere I did not expect.** The intended change was a prompt edit
+targeting write-reluctance (7 writes against 260 reads). Bucketing put termination first, and the
+skill's own table maps `done` with the test still failing to **reflect logic, not the prompt**. The
+prompt change was dropped unmeasured.
+
+### Hypothesis
+
+Five of those six runs ended with `stop_reason: "length"` - the model cut off by `max_tokens`
+mid-sentence - and four left a message with **zero content blocks**. `reflect` was reading silence as
+"finished". So: an assistant reply carrying no text is not a claim of success; return `continue`.
+
+Deliberately **not** gated on the tests passing. Cycle 1 tried that and was reverted: rewarding a
+green suite taught the agent to rewrite the tests instead of the code, and tampering went 5/15 to
+5/5. This rule says nothing about tests and cannot be gamed the same way.
+
+### Measurement — 3 cases x 3 runs, identical settings (400k / 30)
+
+| case | before | after | tokens (med) |
+|---|---|---|---|
+| `real-humanize` | 0/3 done x2 compact x1 | 0/3 **done x3** | 86,422 -> 107,194 |
+| `real-markdown` | 0/3 done x2 compact x1 | 0/3 **stuck x2** compact x1 | 113,388 -> 195,758 |
+| `real-cachetools` | 0/3 compact x2 done x1 | 0/3 **compact x3** | 245,713 -> 252,523 |
+| **total** | **0/9** | **0/9** | **+24% to +73% cost** |
+
+### REVERTED
+
+Zero delta on the pass rate, and cost rose by up to 73%. The Iron Law: *a change with a zero delta is
+reverted, including one that seems right.* `agent/graph.py` and `tests/test_reflect.py` are back at
+HEAD; 166 tests green.
+
+**The mechanism worked - the outcome did not.** `real-markdown` moved from `done x2` to `stuck x2`,
+so the guard fired and did convert premature completions into continued work. The agent then spent
+the extra turns without fixing anything. Stopping a run from quitting early does not make it
+succeed; it just makes it stop later and cost more.
+
+### What the cycle taught, which is worth more than the change
+
+**The defect has two shapes, and the fix only covered one.** Both end `stop_reason: "length"` and
+both are misread as `done`:
+
+- **empty message, zero content blocks** - what the baseline sampled, and what the guard catches
+- **a ~49,000-character reply truncated mid-sentence** - what all three new `humanize` runs produced,
+  which the guard cannot see, because that text is not empty
+
+The general fix keys on `stop_reason`, not on emptiness. `reflect(state)` cannot see it today - it
+takes only state, and §13 fixes the state shape at nine fields - so that is a larger change and
+belongs in its own cycle rather than bolted onto this one.
+
+### A reporting artifact, not a scoring error
+
+One case printed `pass 0/2` while `summary.jsonl` held three scored rows. The harness reads that file
+from a Windows bind mount and the flush lagged the container's exit, so the console line was computed
+early. The stored data is complete and every recorded number is correct; only terminal scrollback
+misleads. Noted because someone reading a transcript later would reasonably believe the smaller
+number.
+
+---
+
+## The cause of 0/18, measured: the agent cannot afford to write
+
+`write_file` replaces a file **entirely**. Changing five lines therefore means emitting the whole
+file as a tool argument, inside `MAX_TOKENS = 16,000` - which caps thinking, text and tool arguments
+together.
+
+| case | file | lines | ~tokens to rewrite | share of one reply |
+|---|---|---|---|---|
+| humanize | `number.py` | 559 | 3,898 | 24% |
+| cachetools | `__init__.py` | 776 | 5,818 | 36% |
+| markdown | `blockprocessors.py` | 641 | 6,753 | 42% |
+| click | `_termui_impl.py` | 945 | 7,933 | 50% |
+| more-itertools | `recipes.py` | 1,607 | 11,531 | **72%** |
+| **rich** | `console.py` | 2,689 | **25,308** | **158% - impossible** |
+
+One fact accounts for every symptom recorded across 30 real-repository runs:
+
+- **11 writes against 352 reads (1:32)** - the write is enormous or impossible
+- **nine runs ended `stop_reason: "length"`** - it begins emitting the file and runs out mid-way
+- **the budget experiment changed nothing** - `BUDGET_TOKENS` is per RUN, the wall is `MAX_TOKENS`
+  per REPLY. The wrong dial was turned, and 1M tokens bought 281-516k of wandering
+- **click sometimes worked** - at 50% the file just fits, and both runs that wrote fixed 5 of 6
+  failures
+- **`real-rich` is unpassable** by any agent using this toolset, and has been silently contributing a
+  guaranteed zero to the denominator
+
+### A v1 decision whose premise expired
+
+> *"A one-line fix means rewriting a whole file, **but these files are 30-80 lines**, and `run_shell`
+> gives sed/patch as an escape hatch."*
+
+Correct for practice fixtures. Real files are 559-2,689 lines. The decision was not wrong when made;
+its premise stopped being true, which §0 says to state rather than reinterpret.
+
+**This is the third v1 decision to break the same way**, alongside `shrink()` bounding lines rather
+than characters (fixture output has short lines) and the scored check having no timeout (fixture
+suites always terminate). All three were justified by numbers that only held for 10-file projects.
+
+### How Hermes solves it - checked, not assumed
+
+`tools/patch_parser.py` implements a custom **V4A patch format**: `*** Begin Patch`,
+`*** Update File: <path>`, and hunks marked `@@ context hint @@` carrying ` ` context, `-` removal
+and `+` addition lines. **The model supplies only changed regions** - editing a 2,689-line file costs
+~50 tokens rather than 25,308. It adds `fuzzy_find_and_replace()` for imperfect matches, context-hint
+placement for addition-only hunks, and sequential hunk validation so a multi-hunk patch cannot
+half-apply.
+
+### What will be built - deliberately smaller
+
+`edit_file(path, old_string, new_string)` with **exact, unique** matching; ambiguous or absent
+`old_string` raises with an actionable message. ~15 lines, one file (NFR-601), tool count four -
+still under the five-tool break-even that `registry.py` waits on.
+
+**V4A's machinery is deliberately not ported.** Multi-file, multi-hunk, fuzzy matching and sequential
+validation are hundreds of lines for capability not yet shown to be needed, and CE-02 is explicit
+that a framework earns its place at break-even at the CURRENT scale. If exact matching measurably
+fails because the model cannot reproduce strings precisely, the traces will show repeated edit errors
+and fuzzy matching is then earned by evidence.
+
+Measured as one cycle: 3 cases x 3 runs, same settings, keep or revert.
+
+---
+
+## Cycle 3 — `edit_file` — the first passes on a real repository
+
+**Change (one):** a fourth tool, `edit_file(path, old_string, new_string)`, exact and unique
+matching. `SOUL.md` gains one line naming it — counted as part of shipping the tool, not a second
+change, because the prompt lists tools explicitly and would otherwise describe a system that no
+longer exists.
+
+**Hypothesis:** `write_file` replaces a file entirely, so a five-line fix meant emitting 559-2,689
+lines inside `MAX_TOKENS`. Across 30 runs the agent made 11 writes against 352 reads and scored 0/18.
+
+### Result — clean runs only
+
+| case | baseline | cycle 3 (clean) | evidence |
+|---|---|---|---|
+| `real-humanize` | 0/3 | 0/2 `compact` x2 | 4->4, no edits landed |
+| `real-cachetools` | 0/3 | **2/2 PASS** | 1->0, one `edit_file` each |
+| `real-click` | 0/3 | **2/3 PASS** | 6->0 twice (2 and 3 edits); the failure still reached 6->3 |
+| **total** | **0/9** | **4/7 = 57%** | first real-repository passes |
+
+**KEPT.** 0/9 to 4/7 is the largest measured delta in this project's history, and the first change
+since the model swap to move the number at all.
+
+**57% lands inside the 40-70% band** fixed in advance - the range where a set can actually detect
+improvement. This project has never had a set in that band: dev 93%, held-out 97%, multibug 96%, real
+repositories 0%. **Tuning cycles are now possible for the first time.**
+
+`real-click` is the sharpest evidence. The same case burned 255,043 tokens in the baseline and stalled
+at 6->1; with `edit_file` it fixed **all six failures** in two edits, twice. Even its failing run
+reached 6->3. Both passes carry `verdict: compact` - the agent exhausted its budget and passed anyway,
+because scoring is by the check command's exit code and never by the agent's own claim.
+
+Both passes verified rather than assumed: `tampered=0`, `write_violations=0`, exactly ONE
+`edit_file` call each, applied to `src/cachetools/__init__.py` - the **source**, not the tests - with
+zero match errors, and the failing-test count went 1 -> 0.
+
+**Zero edit-match errors across every run that used the tool.** Exact matching was sufficient; the
+model reproduced snippets precisely. Hermes's fuzzy matching is therefore still unearned, exactly as
+CE-02 requires - if it were needed, the traces would show repeated edit failures, and they do not.
+
+### A rig fault, self-inflicted, found by the tamper check
+
+Three of the eight runs were invalidated and excluded. `real-humanize-2` contained **cachetools'**
+test files, though cachetools ran later in the loop - only possible if the two overlapped.
+
+**Cause:** each case-run gets its own container, but they all bind-mount the SAME host workspace.
+Wrapping each harness invocation in `timeout 3000` killed the python client while its `docker run`
+container kept going; the orphan finished mid-way through the next case and `reset.sh` wiped the
+directory the other one was using.
+
+**None of the historical numbers are affected** - 14/15, 29/30, 25/26 and 0/18 each came from a
+single sequential invocation with no opportunity to overlap. The fault was introduced by the shell
+loop used for this cycle.
+
+**Fixed structurally**, not by a note to self: `await_exclusive_workspace()` refuses to spawn a
+case-run while any agent container is still alive, waiting rather than aborting, because an orphan
+finishes on its own and a paused suite beats a dead one.
+
+Worth recording that the **tamper check found this**. It was built to catch the agent rewriting the
+tests it is judged by; it caught a rig fault instead, which is a better argument for keeping it than
+anything it was designed for.
+
+### Standing lesson
+
+**Never wrap the harness in `timeout`.** Killing the client orphans the container, and orphaned
+containers corrupt the shared workspace. This joins "never pipe the harness through `tail`" - both
+are ways of losing a measurement by managing the harness from outside instead of using its own
+controls (`--continue` exists for exactly this).
+
+### Item 18 — `MAX_TOKENS`: measured, and deliberately NOT changed
+
+The plan said to re-examine the per-reply cap only after the edit tool was measured, so it could not
+confound the cycle. Measured now:
+
+```
+stop_reason "length"
+  before edit_file:  4 / 402 model calls   (1%)
+  after  edit_file:  0 /  71 model calls   (0%)
+```
+
+Truncation has disappeared. The cap is no longer binding, so **`MAX_TOKENS` stays at 16,000** - a
+change with no evidence behind it is exactly what the revert rule exists to prevent, and raising it
+would inflate cost on every run for no measured gain.
+
+Worth correcting an earlier reading: `length` was never the *dominant* stop reason - 4 of 402 calls.
+It was concentrated on the FINAL reply of runs that ended `done`, which is why it looked larger from
+the terminal-bucket view. Both statements are true; the second is the one that matters, and cycle 2
+was built on the first.
+
+### Item 17 — `real-rich`: no longer impossible, so it STAYS in the set
+
+The case was excluded-in-principle because fixing it required emitting 25,308 tokens into a
+16,000-token reply. `edit_file` removes that arithmetic entirely, so the premise was re-tested rather
+than the case dropped.
+
+**Result: 0/3, and every run failed for a measured, diagnosable reason.**
+
+| run | verdict | edits | edit errors | failures |
+|---|---|---|---|---|
+| 0 | compact | 2 | **2** | 1->1 |
+| 1 | compact | 3 | **3** | 1->1 |
+| 2 | compact | 1 | **1** | 1->1 |
+
+**Every `edit_file` call failed to apply** - six of six - against ONE failed edit across all of
+cachetools and click. The case is now hard rather than impossible, which is the right shape for a
+scored case, so it stays.
+
+### The failure mode is ambiguity, NOT imprecision - and that matters
+
+Five of the six errors:
+
+```
+that text appears 2 times in rich/console.py; it must match exactly once.
+```
+
+One was "not found". So the model is **reproducing snippets correctly**; in a 2,689-line file its
+chosen snippet simply is not unique.
+
+**This is evidence AGAINST porting Hermes's fuzzy matching**, not for it. Fuzzy matching loosens the
+match - in a file that already contains duplicates, that produces more ambiguity, not less, and risks
+editing the wrong occurrence silently. The earlier note said fuzzy matching would be earned if
+"exact matching measurably fails because the model cannot reproduce strings precisely". It did fail,
+but **not for that reason**, so the trigger has not fired.
+
+What Hermes actually uses for this problem is the `@@ context hint @@` that scopes which region a
+hunk applies to - a different mechanism from `fuzzy_find_and_replace()`.
+
+### Next candidate cycle, not built now
+
+The error text already says "include more of the surrounding lines", and the model did not recover
+from it. The cheap, targeted improvement is to **name where the matches are** - report the line
+numbers of each occurrence - so the model knows which region to extend. That is one change, testable
+on `real-rich` where the failure is 6/6, and it belongs in its own cycle rather than bolted onto this
+one.

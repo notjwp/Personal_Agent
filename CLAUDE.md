@@ -17,16 +17,42 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   from the same free key.** One tuning cycle was spent and reverted before that was tried. When a
   number looks structurally wrong here, **probe a different model before tuning the loop** - 102 are
   available on the existing key.
-- Still deferred and unearned: compaction, plan node, memory, web, worker. The verdict distribution
-  (`done 13, stuck 2`) earns none of them.
+- Still deferred: compaction, plan node, memory, web, worker. Real repositories produce
+  `compact 14, done 9, stuck 7`, which looks like it earns compaction — **it does not**. A budget
+  experiment tested exactly that and refuted it: given 1M tokens the agent used 281-516k and made
+  *less* progress. The `compact` verdicts are a symptom of the write problem above, not a cause.
 - **Held out: 29/30** on ten cases never seen during development (matched six 17/18, harder four
   12/12) - so the dev score was not overfitted.
 - **Egress is restricted on scored runs.** The agent container has no route off the machine except
   an allowlisting proxy; the harness refuses to score a split without it. **Definition of Done: 9/9.**
+- **An edit tool took real repositories from 0/9 to 4/7 (57%) — the largest delta this project has
+  measured.** `edit_file(path, old_string, new_string)`, exact and unique, ~15 lines. Read:write went
+  1:29 -> 1:7. **57% is inside the 40-70% band**, so tuning cycles are finally possible; every other
+  set is saturated above 93%. `real-rich` is still 0/3 but STAYS - it is hard now, not impossible.
+  Its six failed edits all say *"appears 2 times"*: **ambiguity in a 2,689-line file, not
+  imprecision**, which is evidence AGAINST a fuzzy matcher. Next candidate: make the ambiguity error
+  name the line numbers of each match.
+- **Never wrap the harness in `timeout`.** It kills the client but leaves the container running; the
+  orphan then corrupts the shared `eval/workspace` mid-way through the next case. Three runs were
+  invalidated this way. `await_exclusive_workspace()` now blocks it, and `--continue` is the
+  supported way to manage a long run. Twin of the `tail` lesson.
+- **The 0/18 baseline that preceded it, and its cause.**
+  `write_file` replaces a file entirely, so a five-line fix means emitting the whole file inside
+  `MAX_TOKENS` (16,000, covering thinking + text + tool arguments). Real files are 559-2,689 lines:
+  `rich/console.py` needs ~25,308 tokens to rewrite, **158% of one reply — that case is impossible,
+  not merely hard.** Across 30 real-repo runs: **11 writes against 352 reads (1:32)**, nine runs
+  ended `stop_reason: "length"`, and every run that made progress made exactly ONE write.
+  **The fix is an edit tool** (`old_string` -> `new_string`, exact and unique). v1's "these files are
+  30-80 lines" premise is dead; say so rather than reinterpreting it. Hermes solves this with a V4A
+  patch format — port the idea, not the machinery: fuzzy matching is earned by evidence, not assumed.
+- **Raising `BUDGET_TOKENS` does not raise `MAX_TOKENS`.** A budget experiment moved the per-RUN
+  budget to 1M and changed nothing, because the wall is the per-REPLY cap. Check which limit binds
+  before spending quota on the other.
 - **The search for a harder case shape is over: three axes tried, three rejected.** Misdirection
   (held-out four, 12/12), cross-cutting edits (`pilot-crosscut`, 3/3), and independent bug count
   (`multibug`, **25/26** at 3–5 bugs) all failed the 40–70% band fixed in advance. Every set this
-  project owns is saturated, so **no tuning cycle can currently be measured** — do not start one.
+  project owns is saturated, so no tuning cycle can be measured **on the synthetic sets**; the
+  real-repository split is where cycles now run.
   What the multibug set did yield is a rule: **each extra bug costs about 2.8 turns** (12.8 → 14.6 →
   18.4 mean, at 3 → 4 → 5 bugs), so difficulty on this axis is a budget question, not a reasoning
   one. The honest next step is a real repository and a real goal, not a fourth synthetic axis.
@@ -46,6 +72,11 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   that untouched fixtures still fail.
 - **A blocked connection is not proof of a boundary.** "Could not resolve host" is DNS failing;
   re-test by raw IP before believing egress is closed.
+- **When a fixture-era design decision meets real code, re-check its stated premise.** Three v1
+  decisions were justified by numbers that only held for 10-file practice projects: whole-file writes
+  ("these files are 30-80 lines"), the character caps in `shrink()` (short lines), and the scored
+  check having no timeout (fast, terminating suites). All three broke on real repositories. The
+  decisions were not wrong when made - their premises expired.
 - **One surprising result is a hypothesis, never a finding.** A pilot case scored 1/3 and was written
   up as "the first genuine capability limit", with a tuning hypothesis built on it. The same case,
   unchanged, scored 3/3 in the full run. Both claims had to be retracted. This is the twin of the
