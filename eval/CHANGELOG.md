@@ -1996,3 +1996,49 @@ Standing, excluding runs that measured nothing:
 
 The change stays in the tree, committed and **explicitly unverified**. Re-run when the backend
 recovers: `--case real-rich / real-click / real-cachetools --runs 3`.
+
+## Cycle 5 re-run — `real-rich` 0/3 -> 3/3, guards unmeasured
+
+| case | before | after | role |
+|---|---|---|---|
+| `real-rich` | **0/3** (twice) | **3/3** | target |
+| `real-click` | 2/3 | **0/0, 9 blocked** | guard - no data |
+| `real-cachetools` | 2/2 | **0/0, 9 blocked** | guard - no data |
+
+All three `real-rich` passes clean: `tamper=0`, `write_violations=0`, every run 1 -> 0.
+
+```
+run0 PASS  20 turns  10 reads  1 edit,  0 errors
+run1 PASS  19 turns  10 reads  1 edit,  0 errors
+run2 PASS  30 turns  16 reads  2 edits, 1 error
+```
+
+Against the same case before the change: 15-18 reads and **6 of 6 edits rejected**. Two runs now
+find and fix a bug in a 2,689-line file with **ten reads and a single edit**.
+
+**The ambiguity failures disappeared without being addressed.** Cycle 4 tried to fix them directly by
+naming match locations and was reverted at 0/3. They were a *symptom* of the partial view: an agent
+that can see contiguous code picks a unique snippet by itself. Fixing the cause removed the symptom
+that the direct fix could not.
+
+### KEPT, with the caveat stated rather than buried
+
+The target moved decisively and is clean. **Both regression guards produced zero scored runs** - 18
+blocked attempts between them, as NVIDIA's backend degraded again mid-cycle.
+
+So the claim "cases that already fit under the cap are unaffected" is **still unverified**. It is
+plausible - `read_file` only narrows when a window would overflow, and 776/945-line files rarely do -
+but plausible is not measured, and this project has a standing rule about the difference.
+
+Kept rather than reverted because the evidence that exists is strong and one-directional: 0/3 twice,
+then 3/3, on the hardest case in the set, with the predicted mechanism visible in the traces.
+
+**Owed: re-run `real-click` and `real-cachetools`, 3 runs each, when the backend is stable.** Until
+then the guard claim is an open question, not a result.
+
+### Provider conditions during this cycle
+
+19 blocked runs against 3 scored. Errors captured directly: empty-bodied 404s, `500 "Internal error
+while making inference request"` from `nvcf-worker-service`, and `503 "Service temporarily
+overloaded"`. Not the key, not the model, not the code - free-tier capacity. Blocked runs are
+excluded rather than scored, so the data stays honest; there is simply far less of it per hour.
