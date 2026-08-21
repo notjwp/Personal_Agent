@@ -2132,3 +2132,203 @@ the older write-reluctance, not an edit that went wrong.
 
 What is solid: **`real-rich` went from impossible to reliable**, clean every time, with the predicted
 mechanism visible in the traces. The set-level number is unknown until Item 25 runs.
+
+---
+
+## Phase K — two writable roots, held by the kernel instead of asserted after the fact
+
+**Not a tuning cycle.** No prompt, tool or loop change; the pass rate is a regression guard here,
+not a measurement. What changed is where the agent is allowed to write.
+
+### The defect, found while planning the phase
+
+`spawn()` mounted the project at `/app` writable, and `--read-only` does not cover bind mounts. The
+probe, run before anything was changed:
+
+```
+WRITABLE   /workspace/.probe
+WRITABLE   /app/.probe
+WRITABLE   /app/eval/fixtures/.probe
+WRITABLE   /app/eval/tasks.jsonl.probe
+refused    /usr/local/.probe   (Read-only file system)
+```
+
+So the agent could write to the harness that scores it, to `tasks.jsonl`, and to the fixtures that
+decide whether it passed. **Nothing ever did** — all 30 Phase I traces show zero access to `/app` —
+but two things were wrong regardless:
+
+1. The guard was **post-hoc**. `restore_protected_tests()` repairs damage after the run; a kernel
+   refusal prevents it. Repair is the weaker claim and the docs made the stronger one.
+2. A successful write to `/app` **would not have registered as a violation at all**, because
+   `count_write_violations()` looked for `Read-only file system` errors that could never occur there.
+   The boundary check was blind to exactly the region it most needed to watch.
+
+### What changed
+
+| | before | after |
+|---|---|---|
+| project tree | `-v REPO:/app` (writable) | `-v REPO:/app:ro` |
+| traces | inherited `/app`'s writability | `-v REPO/eval/runs:/app/eval/runs` |
+| agent state | `/app/.agent/state.db` | `/state/state.db`, its own mount |
+| scored agent home | n/a | **blank per case-run** |
+| violation report | a count | a count **and the paths** |
+
+`AGENT_HOME` moved to `/state` in the `Containerfile` and `config.py`. It had satisfied "outside the
+workspace" by living in the project tree — which only worked because the project tree was writable,
+so the fix to one was the fix to the other.
+
+**Per case-run, blank.** Phases M and N put memory and skills in the agent home. A memory carried
+from case 1 into case 2 is the same contamination that already forced one container per case-run,
+where a shared container left `missing-dep`'s package installed and the repeat passed without the
+agent doing anything. The interactive CLI keeps a persistent home; only the scored suite starts
+blank, because only the scored suite is a measurement.
+
+### Proof, both directions, zero quota
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm --network none --read-only --tmpfs /tmp:exec \
+  -v "$(pwd -W):/app:ro" -v "$(pwd -W)/eval/runs:/app/eval/runs" \
+  -v "$(pwd -W)/eval/workspace:/workspace" -v "$(pwd -W)/.agent/homes/_probe:/state" \
+  personal-agent bash -c 'for p in /workspace /state /app/eval/runs /app \
+      /app/eval/fixtures /app/eval/tasks.jsonl.x /app/agent/tools.py.x /usr/local; do
+    if touch "$p/.probe" 2>/dev/null || touch "$p" 2>/dev/null
+      then echo "WRITABLE $p"; else echo "refused  $p"; fi; done'
+```
+
+```
+-- must be writable
+WRITABLE   /workspace/.probe
+WRITABLE   /state/.probe
+WRITABLE   /app/eval/runs/.probe
+-- must be refused
+refused    /app/.probe                    (Read-only file system)
+refused    /app/eval/fixtures/.probe      (Read-only file system)
+refused    /app/eval/tasks.jsonl.probe    (Read-only file system)
+refused    /app/agent/tools.py.probe      (Read-only file system)
+refused    /usr/local/.probe              (Read-only file system)
+```
+
+Both directions, because a probe that only checks refusals passes just as well on a container that
+mounts nothing at all.
+
+### K4 — per-case egress, and the obvious implementation that does not work
+
+A case may now declare `"egress": [...]` on its `tasks.jsonl` row; the allowlist is derived per
+case-run and recorded in the manifest. No case declares any today, so every current number is
+measured against the model host alone, exactly as before.
+
+**SIGHUP was measured, not assumed, and it does not reload the filter.** With `example.com` already
+present in the mounted filter file, tinyproxy refused it identically before and after the signal:
+
+```
+before HUP (file already widened):  curl: (7) CONNECT tunnel failed, response 403
+after  HUP:                         curl: (7) CONNECT tunnel failed, response 403
+proxy log: Proxying refused on filtered domain "example.com"
+```
+
+The mounted file *does* propagate from host to container — that was checked separately, and it is
+the assumption that would otherwise have been blamed. tinyproxy simply reads the filter once, at
+startup. So `apply_allowlist()` recreates the proxy instead. Two seconds, and only when the list
+actually changes.
+
+A widening that silently fails is harmless on its own — it fails closed. The damage would have been
+in the manifest, which would have recorded the allowlist that was *asked for*: a row stating a
+condition that was never true.
+
+With recreation, both directions hold:
+
+```
+case declares example.com:      example.com -> 200,  an unlisted host -> refused
+next case declares nothing:     example.com -> refused
+```
+
+A proxy left running by an *earlier invocation* is now recreated too. What a running proxy enforces
+is not observable from outside — only the file is, and the file is not what it loaded — so the only
+way to know is to have started it.
+
+### A row that claimed a condition nobody checked
+
+Found while probing K4. Every trace row carried `"egress": "restricted"` from
+
+```python
+"egress": os.environ.get("AGENT_EGRESS", "restricted"),
+```
+
+and **nothing anywhere ever set `AGENT_EGRESS`.** Every row ever written asserted restricted egress,
+including runs deliberately made on `AGENT_NETWORK=bridge`, and including a `--network none`
+preflight during this phase. `spawn()` now sets it to the actual allowlist, and the in-container
+fallback says `UNKNOWN` rather than `restricted` — **a default that asserts the safe answer is how a
+row comes to claim a condition nobody checked.**
+
+This does not invalidate the existing numbers: those runs *were* egress-restricted, verified through
+the proxy at the time. It invalidates the row as *evidence* of it, which is the property that
+mattered.
+
+### Tests
+
+182 offline tests pass under the new mounts — no API key, no network, read-only root, `/tmp` a
+tmpfs. Nine are new: the violation paths, an old row without the new field, the agent home being
+outside the workspace, `reset.sh` leaving it alone, a blank home per case-run, and per-case egress
+widening only its own case.
+
+`pytest` warns twice that it cannot write `/app/.pytest_cache` — expected, and the point. The scored
+check runs in `/workspace` and is unaffected.
+
+### K5 — the regression guard: 14/15, case for case
+
+**2026-08-21, `nemotron-3-super-120b-a12b`, 3 runs per dev case, 0 blocked.**
+
+| case | Phase K | baseline (2026-08-19) | verdicts now | tokens (med) |
+|---|---|---|---|---|
+| `fix-import` | **3/3** | 3/3 | done x2 stuck x1 | 26,600 |
+| `off-by-one` | **3/3** | 3/3 | done x3 | 31,368 |
+| `broken-fixture` | **3/3** | 3/3 | done x2 stuck x1 | 21,784 |
+| `missing-dep` | **3/3** | 3/3 | done x3 | 10,854 |
+| `add-endpoint` | **2/3** | 2/3 | done x1 stuck x2 | 41,369 |
+
+Not just the same total — **the same case-by-case pattern, including which single case fails.** A
+sandbox change that broke something would have moved a case, not shaved the total.
+
+`missing-dep` is the one that mattered most and it is 3/3: its fix is a plain `pip install`, so it
+proves `PIP_USER` / `PYTHONUSERBASE` still resolve to the `/tmp` tmpfs now that a third and fourth
+mount exist and the project is read-only.
+
+Trust checks, all verified rather than assumed:
+
+```
+rows                 15          blocked           0
+tampered              0          write violations  0   (paths: none)
+models               ['nvidia/nemotron-3-super-120b-a12b']
+egress (per row)     ['integrate.api.nvidia.com']
+manifest network     personal-agent-egress
+```
+
+**This is the first run in the project's history where the egress on a row is a recorded fact rather
+than a default string.** Ceilings held: median 26,600 / 60,000 tokens, largest single result
+4,604 / 6,000 chars.
+
+### Found while checking the above, NOT fixed — `failing_tests()` reads a collection error as zero
+
+The table shows `fix-import` starting at `0` failures, which would mean the fixture was green before
+the agent touched it — a case scored as a pass nobody earned. It is not. The untouched fixture was
+re-run directly:
+
+```
+ERROR tests/test_parser.py
+E   ImportError: attempted relative import beyond top-level package
+13 passed, 1 error in 0.24s
+EXIT=1
+```
+
+The suite genuinely fails. `failing_tests()` looks for `N failed`, finds none, falls through to
+`13 passed`, and returns 0 — so a **collection error reads as a green suite.** Its own docstring says
+it returns 0 only for a green suite precisely so that "no failures" and "could not tell" stay
+distinguishable, and here they do not.
+
+**The score is unaffected**: `pass` comes from the check's exit code, never from this count. Only
+the partial-progress column is wrong, and only where a case fails at import rather than at assert -
+which is why it never showed on the real-repository set the column was built for.
+
+**Left unfixed deliberately.** It is not a Phase K defect and fixing it here would change the dev
+table in a way unrelated to the sandbox, muddying the regression comparison this run exists to make.
+It is one regex, and it should be its own change.

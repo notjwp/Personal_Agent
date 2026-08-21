@@ -16,6 +16,7 @@ Constants only. No functions, no I/O beyond reading environment variables.
 ```python
 WORKSPACE       : Path   # os.environ["AGENT_WORKSPACE"], default "/workspace", resolved
 ARTIFACTS       : Path   # WORKSPACE / ".agent" / "artifacts"
+AGENT_HOME      : Path   # os.environ["AGENT_HOME"], default "/state", resolved
 STATE_DB        : Path   # AGENT_HOME / "state.db"   (outside WORKSPACE — survives reset.sh)
 
 MODEL           : str    = "claude-opus-5"
@@ -40,6 +41,13 @@ separately, where a key is present.
 **Why `ARTIFACTS` is inside the workspace and `STATE_DB` is not:** §4.3 requires the model to read
 spilled artifacts, and FR-302 rejects any path outside the workspace — so artifacts must be inside.
 Checkpoints must survive `reset.sh`, which wipes the workspace — so `state.db` must be outside.
+
+**Why `AGENT_HOME` is `/state` and not `/app/.agent` (Phase K):** "outside the workspace" was
+satisfied by the project tree, and the project tree was writable — `--read-only` makes the root
+filesystem immutable and leaves bind mounts alone, so the agent could write to the harness, to
+`tasks.jsonl` and to the fixtures scoring it. `/app` is now mounted `:ro`, which leaves state
+nowhere to go inside it. The two writable roots are `/workspace` and `/state`, both declared on
+the `docker run` line, and every other refusal is recorded with the path it targeted.
 
 ---
 

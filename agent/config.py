@@ -18,7 +18,13 @@ WORKSPACE = Path(os.environ.get("AGENT_WORKSPACE", "/workspace")).resolve()
 # (§4.3) without tripping FR-302. Checkpoints live OUTSIDE it so they survive
 # reset.sh, which wipes the workspace between cases.
 ARTIFACTS = WORKSPACE / ".agent" / "artifacts"
-STATE_DB = Path(os.environ.get("AGENT_HOME", "/app/.agent")).resolve() / "state.db"
+
+# The second declared writable root (Phase K). It was /app/.agent, inside the
+# project tree - which only worked because the project was mounted writable, and
+# that turned out to make the harness and the fixtures writable too. /app is now
+# read-only, so state moves out rather than the mount widening back.
+AGENT_HOME = Path(os.environ.get("AGENT_HOME", "/state")).resolve()
+STATE_DB = AGENT_HOME / "state.db"
 
 # --- model -----------------------------------------------------------------
 

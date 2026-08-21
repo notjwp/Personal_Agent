@@ -74,7 +74,7 @@ number.
                +--------------------v--------------------+
       +------->|  ORCHESTRATOR                           |
       |        |  plan . act . reflect                   |
-      |        |  checkpointer -> .agent/state.db        |
+      |        |  checkpointer -> /state/state.db        |
       |        +--------------------+--------------------+
       |                             |
       |                  +----------v-----------+        +---------------+
@@ -415,6 +415,15 @@ A requirement without a number is not testable. Targets are the point.
                              shrinking
   NFR-201   Safety           Zero writes outside the workspace root across the
                              full eval suite
+                             AMENDED 2026-08-21 (Phase K): exactly TWO declared
+                             writable roots - the workspace, and the agent home
+                             holding checkpoints, memory and skills. Memory has
+                             to survive reset.sh, which wipes the workspace by
+                             design, so it cannot live inside it. Everything
+                             else is refused BY THE KERNEL, the project tree
+                             included, and each refusal is recorded with the
+                             path it targeted. Reason and evidence: ROADMAP.md
+                             Phase K, eval/CHANGELOG.md.
   NFR-202   Safety           No destructive command executes unapproved in
                              interactive mode; none at all in autonomous mode
   NFR-203   Security         Secrets never enter model context; env-var
@@ -694,7 +703,8 @@ scope rather than pushing through.
   [ ] 5 dev cases + 10 held-out cases in eval/tasks.jsonl
   [ ] Dev set >= 4/5 across 3 seeds; held-out set scored at least once and the
       number recorded, whatever it is
-  [ ] Zero writes outside the workspace root across the full suite (NFR-201)
+  [ ] Zero writes outside the two declared roots across the full suite
+      (NFR-201, as amended)
   [ ] Median case completes within the turn and token caps (NFR-402)
   [ ] Every deterministic node has unit tests that run without an API key
   [ ] A SIGKILL mid-task, followed by resume, completes without duplicated
@@ -759,9 +769,17 @@ speculative code and will rot.
     scripts/
       reset.sh           restore workspace to a fixture's known state
     .agent/              RUNTIME STATE, gitignored
-      state.db           checkpoints
-      artifacts/         spilled tool output
-      AGENT.md           durable user profile, written by the agent
+      artifacts/         spilled tool output (inside the workspace: the model
+                         has to be able to read a spill without tripping FR-302)
+      egress/            proxy config and the allowlist a run was measured under
+      homes/<case>-<n>/  a BLANK agent home per scored case-run
+
+  ~/.personal-agent/     THE AGENT HOME, mounted at /state (amended NFR-201).
+    state.db             checkpoints
+    AGENT.md             durable user profile, written by the agent
+                         Outside the project tree, which the container now
+                         mounts read-only, and outside the workspace, which
+                         reset.sh wipes between runs.
 
 DEFERRED FILES — create each only when its layer is earned
 

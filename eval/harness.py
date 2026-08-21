@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -143,16 +144,69 @@ def model_hosts() -> list[str]:
     return sorted(h for h in hosts if h)
 
 
+def allowlist_for(case: dict) -> list[str]:
+    """Hosts THIS case-run may reach: the model, plus whatever the case declares.
+
+    Repo work needs no egress beyond the model and declares none, so the default is
+    exactly what it was. A case that genuinely needs the web says so on its
+    tasks.jsonl row and gets that widening for its own runs only - never for the
+    whole suite, and never silently, because the manifest records the result.
+    """
+    return sorted(set(model_hosts()) | set(case.get("egress", ())))
+
+
+def _write_allowlist(hosts) -> None:
+    # Anchored regex per host: a bare substring would let evil-nvidia.com through.
+    (EGRESS_DIR / "allow.txt").write_text(
+        "\n".join("^" + h.replace(".", r"\.") + "$" for h in hosts) + "\n",
+        encoding="utf-8", newline="")
+
+
+# The allowlist currently IN FORCE, as opposed to the one last written to disk.
+# They are not the same thing, and conflating them is what the measurement below
+# caught: the file is read once, at startup.
+_APPLIED: list[str] | None = None
+
+
+def apply_allowlist(hosts) -> bool:
+    """Make the running proxy enforce EXACTLY these hosts.
+
+    The proxy is RECREATED rather than signalled. SIGHUP was the obvious move and
+    was measured not to work: with `example.com` already present in the mounted
+    filter file, tinyproxy refused it identically before and after the signal -
+    `403`, and `refused on filtered domain "example.com"` in its own log. The
+    mounted file does propagate from the host; it is simply only read at startup.
+
+    A widening that silently fails is harmless by itself - it fails closed - but the
+    manifest would have recorded the allowlist that was ASKED for, which is a row
+    stating a condition that was never true. That is the failure worth spending two
+    seconds of container restart to avoid.
+
+    A no-op when the list is already in force, so the ordinary case - every
+    repository case declaring no egress at all - costs nothing.
+    """
+    if hosts == _APPLIED:
+        return True
+    _docker("rm", "-f", EGRESS_PROXY)
+    return ensure_egress(hosts)
+
+
 def _docker(*args, **kw):
     return subprocess.run(["docker", *args], capture_output=True, text=True, **kw)
 
 
-def ensure_egress() -> bool:
+def ensure_egress(hosts=None) -> bool:
     """Bring up the restricted-egress network and proxy. Idempotent.
 
     Idempotent because a scored run may be resumed with --continue hours later; a
     half-present setup must converge rather than fail.
+
+    `hosts` defaults to the model host alone. A case that declares its own egress
+    passes a wider list through apply_allowlist(), which recreates the proxy - the
+    filter file is read at startup and never again.
     """
+    global _APPLIED
+    hosts = model_hosts() if hosts is None else hosts
     EGRESS_DIR.mkdir(parents=True, exist_ok=True)
     # newline="" defeats Windows CRLF translation. These files are parsed by a LINUX
     # container: tinyproxy reads "User tinyproxy\r" and dies with "Syntax error on
@@ -160,10 +214,7 @@ def ensure_egress() -> bool:
     # crossing an OS boundary needs its line endings pinned.
     (EGRESS_DIR / "tinyproxy.conf").write_text(
         PROXY_CONF.format(port=PROXY_PORT), encoding="utf-8", newline="")
-    # Anchored regex per host: a bare substring would let evil-nvidia.com through.
-    rules = ["^" + h.replace(".", r"\.") + "$" for h in model_hosts()]
-    (EGRESS_DIR / "allow.txt").write_text(
-        "\n".join(rules) + "\n", encoding="utf-8", newline="")
+    _write_allowlist(hosts)
 
     if _docker("image", "inspect", EGRESS_IMAGE).returncode != 0:
         if _docker("build", "-q", "-t", EGRESS_IMAGE, "-",
@@ -173,7 +224,12 @@ def ensure_egress() -> bool:
         _docker("network", "create", "--internal", EGRESS_NET)
 
     running = _docker("inspect", "-f", "{{.State.Running}}", EGRESS_PROXY)
-    if running.stdout.strip() != "true":
+    # Recreated unless THIS process started it. A proxy left running by an earlier
+    # invocation loaded whatever filter file existed at ITS startup, and that is not
+    # observable from outside - so the only way to know what a running proxy
+    # enforces is to have started it. Two seconds, once per invocation, and without
+    # it a stale widening survives into a suite that believes it is restricted.
+    if _APPLIED is None or running.stdout.strip() != "true":
         _docker("rm", "-f", EGRESS_PROXY)
         # Explicit resolvers. Docker's embedded DNS (127.0.0.11) answered an A-only
         # lookup here but returned NOTHING for the dual-family AF_UNSPEC query
@@ -196,7 +252,10 @@ def ensure_egress() -> bool:
     # begin with no proxy at all - exactly what this preflight exists to prevent.
     for _ in range(20):
         if _docker("inspect", "-f", "{{.State.Running}}", EGRESS_PROXY).stdout.strip() == "true":
-            return _proxy_can_resolve()
+            if not _proxy_can_resolve():
+                return False
+            _APPLIED = list(hosts)
+            return True
         time.sleep(0.5)
     logs = _docker("logs", EGRESS_PROXY)
     print((logs.stderr or logs.stdout).strip()[-400:], file=sys.stderr)
@@ -255,25 +314,38 @@ def count_tool_calls(messages: list[dict]) -> int:
 
 PROTECTED = "test_*.py"
 
-# What the kernel says when the agent tries to write outside the workspace.
+# What the kernel says when the agent tries to write outside its declared roots.
 READONLY_MARKER = "Read-only file system"
+# The path the OS names in the refusal: "[Errno 30] Read-only file system: '/app/x'"
+REFUSED_PATH = re.compile(re.escape(READONLY_MARKER) + r":?\s*'([^']*)'")
 
 
-def count_write_violations(messages: list[dict]) -> int:
-    """Tool results showing a write the kernel refused.
+def write_violations(messages: list[dict]) -> list[str]:
+    """Paths the kernel refused a write to - one entry per refusal.
 
     NFR-201 is about attempts as much as outcomes: a write that failed only
     because the filesystem was immutable is still the agent reaching outside its
     workspace, and it must surface rather than being silently absorbed as one more
     failed tool call.
+
+    The PATH is reported and not just a count, because the targets are not
+    equivalent. A refused write to /usr is an agent confused about where it lives;
+    a refused write to /app/eval/fixtures is an agent editing the thing that grades
+    it. Before Phase K the second was not refused at all - the project was mounted
+    writable - so it could never have appeared here, however hard it was looked for.
     """
-    return sum(
-        1
-        for m in messages
-        if isinstance(m.get("content"), list)
-        for b in m["content"]
-        if b.get("type") == "tool_result" and READONLY_MARKER in str(b.get("content", ""))
-    )
+    found = []
+    for m in messages:
+        if not isinstance(m.get("content"), list):
+            continue
+        for b in m["content"]:
+            if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                continue
+            text = str(b.get("content", ""))
+            if READONLY_MARKER in text:
+                named = REFUSED_PATH.search(text)
+                found.append(named.group(1) if named else "?")
+    return found
 
 
 def restore_protected_tests(case: dict) -> list[str]:
@@ -428,9 +500,10 @@ def summarise(rows: list[dict]) -> str:
         warnings.append("a case failed SETUP - that is the rig, not the agent")
     violations = sum(r.get("write_violations", 0) for r in scored)
     if violations:
+        where = sorted({p for r in scored for p in r.get("write_violation_paths", [])})
         warnings.append(
             f"{violations} attempted write(s) OUTSIDE the workspace, refused by the "
-            f"kernel - NFR-201 violation")
+            f"kernel - NFR-201 violation" + (f": {', '.join(where)}" if where else ""))
     for w in warnings:
         lines.append(f"  ! {w}")
 
@@ -502,6 +575,11 @@ def run_dir(args, cases) -> Path | None:
                         "provider": _cfg.PROVIDER,
                         "model": _cfg.OPENAI_MODEL if _cfg.PROVIDER != "anthropic" else _cfg.MODEL,
                         "network": NETWORK,
+                        # Per case, because a case may declare its own egress and
+                        # every number must state the egress it was measured under.
+                        "egress": ({c["id"]: allowlist_for(c) for c in cases}
+                                   if NETWORK == EGRESS_NET
+                                   else f"UNRESTRICTED (AGENT_NETWORK={NETWORK})"),
                         "started": datetime.now(timezone.utc).isoformat()}, indent=2),
             encoding="utf-8")
         return out
@@ -559,19 +637,42 @@ def await_exclusive_workspace(timeout: float = 900.0) -> bool:
     return False
 
 
+def agent_home(case: dict, run_index: int) -> Path:
+    """A FRESH agent home on the host for one scored case-run.
+
+    Wiped rather than reused, and that is the whole point. Phases M and N put memory
+    and skills in here; a memory carried from case 1 into case 2 is the same
+    contamination that already forced one container per case-run, where a shared
+    container left `missing-dep`'s package installed and the repeat passed without
+    the agent doing anything.
+
+    The interactive CLI keeps a persistent home (~/.personal-agent) - only the
+    scored suite starts blank, because only the scored suite is a measurement.
+    """
+    home = REPO / ".agent" / "homes" / f"{case['id']}-{run_index}"
+    shutil.rmtree(home, ignore_errors=True)
+    home.mkdir(parents=True)
+    return home
+
+
 def spawn(case: dict, run_index: int, out: Path) -> int:
     if not await_exclusive_workspace():
         return BLOCKED
     cmd = [
         "docker", "run", "--rm", "--network", NETWORK,
-        # NFR-201, enforced by the kernel instead of asserted in a test. The root
-        # filesystem is immutable; /tmp is an ephemeral tmpfs. Bind mounts are
-        # unaffected by --read-only, so /workspace and /app/.agent stay writable -
-        # which is exactly the boundary. PIP_USER/PYTHONUSERBASE in the image keep
-        # `missing-dep` solvable under it; the Containerfile records the measurement.
+        # NFR-201, enforced by the kernel instead of asserted in a test. --read-only
+        # makes the ROOT FILESYSTEM immutable and leaves bind mounts untouched, so
+        # every writable path has to be declared here and nowhere else. Until Phase K
+        # the project was mounted writable, which silently handed the agent the
+        # harness, tasks.jsonl and the fixtures it is scored against - a boundary
+        # asserted by a post-hoc tamper check rather than held by the kernel.
+        # PIP_USER/PYTHONUSERBASE in the image keep `missing-dep` solvable under
+        # --read-only; the Containerfile records that measurement.
         "--read-only", "--tmpfs", "/tmp:exec",
-        "-v", f"{REPO.as_posix()}:/app",
+        "-v", f"{REPO.as_posix()}:/app:ro",
+        "-v", f"{(REPO / 'eval' / 'runs').as_posix()}:/app/eval/runs",
         "-v", f"{(REPO / 'eval' / 'workspace').as_posix()}:/workspace",
+        "-v", f"{agent_home(case, run_index).as_posix()}:/state",
     ]
     # .env first, then the real environment, so an exported variable
     # deliberately overrides the file rather than the other way round.
@@ -580,13 +681,28 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
     for name in FORWARDED_ENV:
         if os.environ.get(name):
             cmd += ["-e", name]
+    # AGENT_EGRESS is what the ROW will claim, so the outer driver - the only
+    # component that knows what the network actually was - states it rather than
+    # the container guessing. It used to default to "restricted" inside the
+    # container where nothing ever set it, so every row asserted restriction
+    # whether or not a proxy was in the path, AGENT_NETWORK=bridge included.
     if NETWORK == EGRESS_NET:
+        # Re-applied per case-run, not once per suite: the allowlist is part of the
+        # conditions this row was measured under, and it must be this case's.
+        allowed = allowlist_for(case)
+        if not apply_allowlist(allowed):
+            print("could not apply this case's egress allowlist - refusing to run it "
+                  "under whatever the previous case left behind.", file=sys.stderr)
+            return BLOCKED
+        cmd += ["-e", "AGENT_EGRESS=" + ",".join(allowed)]
         # httpx runs with trust_env=True, so the openai SDK picks these up on its
         # own - agent/provider.py needs no knowledge that a proxy exists. NO_PROXY
         # is emptied deliberately: any exemption here would be a hole in the
         # boundary, and the container has no other route regardless.
         proxy = f"http://{EGRESS_PROXY}:{PROXY_PORT}"
         cmd += ["-e", f"HTTPS_PROXY={proxy}", "-e", f"HTTP_PROXY={proxy}", "-e", "NO_PROXY="]
+    else:
+        cmd += ["-e", f"AGENT_EGRESS=UNRESTRICTED (AGENT_NETWORK={NETWORK})"]
     cmd += [
         IMAGE, "python", "eval/harness.py",
         "--run-case", case["id"],
@@ -786,6 +902,7 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
     state = state or {}
     calls = [t for t in trace if t.get("kind") == "tool"]
     models = [t for t in trace if t.get("kind") == "model"]
+    violations = write_violations(state.get("messages", []))
 
     # Recorded per row, not once per suite: the row is what survives, and a score
     # whose model is unknown cannot be compared to anything.
@@ -801,8 +918,10 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         "provider": settings.PROVIDER,
         "model": model,
         # Recorded per row: whether THIS run was egress-restricted is part of what
-        # the number describes, exactly like the model is.
-        "egress": os.environ.get("AGENT_EGRESS", "restricted"),
+        # the number describes, exactly like the model is. Set by spawn(), and the
+        # fallback says UNKNOWN rather than "restricted" - a default that asserts
+        # the safe answer is how a row comes to claim a condition nobody checked.
+        "egress": os.environ.get("AGENT_EGRESS", "UNKNOWN"),
         "pass": passed,
         "verdict": verdict,
         "turns": state.get("turns", 0),
@@ -818,7 +937,10 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         "tampered": sum(len(t.get("files", [])) for t in trace
                         if t.get("kind") == "tamper"),
         # Non-zero means the agent tried to write outside the workspace (NFR-201).
-        "write_violations": count_write_violations(state.get("messages", [])),
+        "write_violations": len(violations),
+        # Where, not just how many: /usr is confusion, /app/eval/fixtures is the
+        # agent reaching for its own grader, and one number cannot say which.
+        "write_violation_paths": sorted(set(violations)),
         # NFR-104's observable: the biggest result the model was actually shown,
         # in characters, after shrink().
         "max_result_chars": max((c.get("shrunk_bytes", 0) for c in calls), default=0),

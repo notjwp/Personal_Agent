@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Phases A-E are built. What exists: the measurement rig, the
+Phases A-E and K are built. What exists: the measurement rig, the
 `act -> gate -> execute -> reflect` loop, a two-provider model adapter, the interactive CLI with
 approval and resume, kernel-enforced sandboxing, and a committed baseline.
 
 - **Baseline: 14/15**, 3 runs per dev case, 0 blocked, on `nvidia/nemotron-3-super-120b-a12b`.
   Per-case table in `README.md`; conditions and trust checks in `eval/CHANGELOG.md`.
-- **160 unit tests**, green with no API key, no network, and a read-only root filesystem.
+- **182 unit tests**, green with no API key, no network, and a read-only root filesystem.
 - **The model was the constraint, not the loop.** An earlier baseline of 4/15 on
   `llama-3.1-70b` was diagnosed as loop defects - 9 of 15 runs never called `read_file`, all 15
   ended `done` (11 wrongly), 5 rewrote their own tests. **All three vanished on a stronger model
@@ -65,8 +65,24 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   scored run per day on this key; the tier then rejects ~2 of 3 requests, which makes a 17-turn run
   complete with probability under 1%.
 
+- **Two writable roots, and `--read-only` does not give you them (Phase K).** `/workspace` and
+  `/state` (the agent home: checkpoints now, memory and skills later). The project tree is mounted
+  `:ro`, because `--read-only` makes the ROOT FILESYSTEM immutable and **leaves bind mounts
+  untouched** - so until K the agent could write to the harness, `tasks.jsonl` and the fixtures
+  scoring it. No trace ever did, but the tamper check *repairs* where the kernel *prevents*, and a
+  successful write to `/app` would not even have counted as a violation. Scored case-runs get a
+  **blank** agent home; the interactive CLI keeps a persistent one.
+
 ### Standing lessons, each paid for once
 
+- **A default that asserts the safe answer is how a row comes to claim a condition nobody checked.**
+  `os.environ.get("AGENT_EGRESS", "restricted")` - and nothing anywhere set `AGENT_EGRESS`. Every
+  trace row ever written asserted restricted egress, including runs deliberately made unrestricted.
+  Where a fallback describes what was measured, it must say `UNKNOWN`.
+- **A config file mounted into a container is read when the process starts, not when it changes.**
+  tinyproxy refused a host that was already in its filter file, identically before and after SIGHUP.
+  The mount propagated fine - that was checked separately, and it is the assumption that would
+  otherwise have been blamed. Recreate the container; verify the effect, never the mechanism.
 - **A declared JSON schema is not enforcement.** Numeric tool arguments arrive as strings; coerce at
   the tool boundary. This broke a live session twice before it was fixed.
 - **Infrastructure failure is not a score.** A rate-limited run must be excluded and retried, never

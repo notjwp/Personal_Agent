@@ -31,13 +31,19 @@ RUN pip download --no-cache-dir tabulate -d /wheels
 RUN printf '[global]\nno-index = true\nfind-links = /wheels\n' > /etc/pip.conf
 
 ENV AGENT_WORKSPACE=/workspace \
-    AGENT_HOME=/app/.agent \
+    AGENT_HOME=/state \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_USER=1 \
     PYTHONUSERBASE=/tmp/pyuser
 
-RUN mkdir -p /workspace /app/.agent
+# The two writable roots, and nothing else (Phase K). The harness bind-mounts the
+# project READ-ONLY at /app, so anything that must be written needs a declared
+# home of its own:
+#   /workspace  the task, wiped between runs by reset.sh
+#   /state      checkpoints now, memory and skills later - it exists precisely
+#               BECAUSE the workspace is wiped, and must outlive it
+RUN mkdir -p /workspace /state
 WORKDIR /app
 
 # Why PIP_USER + PYTHONUSERBASE (Phase E2, measured before adopting):

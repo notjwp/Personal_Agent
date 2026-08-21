@@ -169,17 +169,39 @@ def test_a_malformed_tool_call_is_a_result_not_an_outage():
     assert _reraise_classified(MalformedToolCall("no json")) is None
 
 
-# ==================================== the write boundary (NFR-201, Phase E2)
+# ================================== the write boundary (NFR-201, Phase E2/K)
+
+def _refusal(path):
+    return [{"role": "user", "content": [{
+        "type": "tool_result", "tool_use_id": "t1",
+        "content": f"OSError: [Errno 30] Read-only file system: '{path}'",
+        "is_error": True}]}]
+
 
 def test_a_refused_write_is_counted_as_a_violation():
-    """The scored suite runs read-only, so a write outside the workspace fails at
-    the kernel. That failure is still an ATTEMPT to leave the workspace and must
+    """The scored suite runs read-only, so a write outside the declared roots fails
+    at the kernel. That failure is still an ATTEMPT to leave the workspace and must
     be counted, not absorbed as one more ordinary tool error."""
+    assert harness.write_violations(_refusal("/usr/local/lib/x.txt")) == [
+        "/usr/local/lib/x.txt"]
+
+
+def test_a_violation_names_the_path_it_targeted():
+    """Phase K made the project tree read-only, so writes to the harness and to the
+    fixtures now REACH this counter for the first time. A bare count cannot tell
+    `/usr` (an agent confused about where it lives) from `eval/fixtures` (an agent
+    reaching for the thing that grades it), and only one of those is alarming."""
+    target = "/app/eval/fixtures/real-rich/tests/test_console.py"
+    assert harness.write_violations(_refusal(target)) == [target]
+
+
+def test_a_refusal_that_names_no_path_is_still_counted():
+    """Never drop a violation because it was phrased unexpectedly. Unknown is a
+    worse answer than a path, and a far better one than silence."""
     messages = [{"role": "user", "content": [{
         "type": "tool_result", "tool_use_id": "t1",
-        "content": "OSError: [Errno 30] Read-only file system: '/usr/local/lib/x.txt'",
-        "is_error": True}]}]
-    assert harness.count_write_violations(messages) == 1
+        "content": "OSError: Read-only file system", "is_error": True}]}]
+    assert harness.write_violations(messages) == ["?"]
 
 
 def test_ordinary_tool_errors_are_not_violations():
@@ -188,18 +210,99 @@ def test_ordinary_tool_errors_are_not_violations():
     messages = [{"role": "user", "content": [{
         "type": "tool_result", "tool_use_id": "t1",
         "content": "FileNotFoundError: no such file: nope.py", "is_error": True}]}]
-    assert harness.count_write_violations(messages) == 0
+    assert harness.write_violations(messages) == []
 
 
 def test_a_string_content_message_does_not_crash_the_scan():
     """The first message is the goal, a plain string, not a block list."""
-    assert harness.count_write_violations([{"role": "user", "content": "fix it"}]) == 0
+    assert harness.write_violations([{"role": "user", "content": "fix it"}]) == []
 
 
 def test_write_violations_are_flagged_above_the_table():
-    out = harness.summarise([row("a", 0, write_violations=2)])
+    out = harness.summarise([row("a", 0, write_violations=2,
+                                 write_violation_paths=["/app/eval/tasks.jsonl"])])
     assert "OUTSIDE the workspace" in out and "NFR-201" in out
+    # The path belongs in the warning, not only in a trace nobody opens.
+    assert "/app/eval/tasks.jsonl" in out
     assert out.index("OUTSIDE the workspace") < out.index("case ")
+
+
+def test_an_older_run_without_paths_still_summarises():
+    """Rows written before Phase K carry no `write_violation_paths`. Re-reading an
+    old run directory must not crash on the field that did not exist yet."""
+    assert "NFR-201" in harness.summarise([row("a", 0, write_violations=1)])
+
+
+# ================================ the two declared writable roots (Phase K)
+
+def test_the_agent_home_is_outside_the_workspace():
+    """It exists precisely BECAUSE reset.sh wipes the workspace between runs. Put
+    it back inside and memory silently stops surviving - with no test failing and
+    no error, which is exactly how this property would get lost."""
+    from agent import config
+
+    assert config.WORKSPACE not in config.STATE_DB.parents
+
+
+def test_reset_leaves_the_agent_home_alone(tmp_path):
+    """The end-to-end version of the property above, against the real script.
+
+    Skipped where there is no bash. That is honest rather than sufficient - the
+    scored runs execute this script inside the container, where bash always exists.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("reset.sh needs bash")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "scratch.txt").write_text("left over from the last case")
+    home = tmp_path / "state"
+    home.mkdir()
+    (home / "memory.db").write_text("learned last week")
+
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    case = next(p.name for p in (repo / "eval" / "fixtures").iterdir() if p.is_dir())
+    done = subprocess.run(
+        [bash, str(repo / "scripts" / "reset.sh"), case],
+        env={**os.environ, "AGENT_WORKSPACE": str(workspace)},
+        capture_output=True, text=True)
+
+    assert done.returncode == 0, done.stderr
+    assert not (workspace / "scratch.txt").exists(), "the workspace should be wiped"
+    assert (home / "memory.db").read_text() == "learned last week"
+
+
+def test_each_scored_case_run_gets_a_blank_agent_home(tmp_path, monkeypatch):
+    """A memory carried from case 1 into case 2 is the same contamination that
+    forced one container per case-run: `missing-dep` would pass on the repeat
+    without the agent doing anything."""
+    monkeypatch.setattr(harness, "REPO", tmp_path)
+    home = harness.agent_home({"id": "fix-import"}, 0)
+    (home / "memory.db").write_text("what run 0 learned")
+
+    assert harness.agent_home({"id": "fix-import"}, 1) != home
+    assert not (harness.agent_home({"id": "fix-import"}, 0) / "memory.db").exists()
+
+
+# ============================================= per-session egress (Phase K4)
+
+def test_a_case_that_declares_nothing_reaches_only_the_model():
+    """Repo work needs no web access, and the default must stay that narrow."""
+    assert harness.allowlist_for({"id": "fix-import"}) == harness.model_hosts()
+
+
+def test_a_declared_host_widens_only_the_case_that_declared_it():
+    """`egress` on a tasks.jsonl row is per case, so a research task cannot quietly
+    hand its allowlist to the repo cases that run after it."""
+    widened = harness.allowlist_for({"id": "research", "egress": ["docs.python.org"]})
+    assert "docs.python.org" in widened
+    assert set(harness.model_hosts()) <= set(widened)
+    assert "docs.python.org" not in harness.allowlist_for({"id": "fix-import"})
 
 
 # ======================================= cost ceilings (NFR-104, NFR-402, E3)

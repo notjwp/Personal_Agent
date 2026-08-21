@@ -193,6 +193,13 @@ Ceilings: median 27,852 / 60,000 tokens, largest single result 2,908 / 6,000 cha
 workspace, one model across all 15 rows, and every fixture re-checked to still fail exit-1 when
 untouched. A passing suite proves nothing if the reset quietly stopped working.
 
+**Re-run 2026-08-21 under the Phase K sandbox — 14/15 again, case for case, including which single
+case fails.** Not just the same total: a sandbox change that broke something would have moved a
+case, not shaved the total. `missing-dep` is the one that mattered and it is 3/3, because its fix is
+a plain `pip install` and it proves the user-site install still resolves now that the project tree is
+read-only. This is also the first run whose rows record the egress they were measured under as a
+fact rather than a default.
+
 **Two runs ended `stuck` and passed anyway.** Scoring is by the check command's exit code, never by
 the agent's claim of success — so a correct fix counts even when the agent does not realise it has
 finished. Had the verdict gated the score, those two would have been recorded as failures.
@@ -252,14 +259,44 @@ Verified with the agent image: the model host returns `200`, any other host retu
 `403 Filtered`, and a direct connection **by raw IP with no proxy** fails as unroutable. That last
 check is the one that matters - a DNS-only barrier looks the same and is bypassed by dialling an IP.
 
+### Two writable roots, and nothing else
+
+The container gets exactly two writable paths, and both are declared on the command line:
+
+| mount | holds | lifetime |
+|---|---|---|
+| `/workspace` | the task | wiped by `reset.sh` between runs |
+| `/state` | checkpoints, and later memory and skills | **survives** `reset.sh` - that is why it exists |
+
+Everything else is refused by the kernel, **including the project itself**, which is mounted
+`:ro`. `--read-only` alone does not do this: it makes the root filesystem immutable and leaves
+bind mounts untouched, so before Phase K the agent could write to the harness, to `tasks.jsonl`
+and to the fixtures it is scored against. Nothing in 30 real-repository traces ever did - but the
+tamper check that would have caught it *repairs after the fact*, and a kernel refusal *prevents*.
+Verified in both directions before it was believed; the probe and its output are in
+`eval/CHANGELOG.md`.
+
 ### Interactive
 
 ```bash
-docker run --rm -it -v "$PWD:/app" -v "$PWD/eval/workspace:/workspace"   --env-file .env personal-agent python -m agent "Fix the failing tests."
+mkdir -p ~/.personal-agent          # the agent home: state now, memory and skills later
 
+docker run --rm -it --env-file .env \
+  -v "$PWD:/app:ro" -v "$PWD/eval/workspace:/workspace" \
+  -v "$HOME/.personal-agent:/state" \
+  personal-agent python -m agent "Fix the failing tests."
+
+# same mounts, different argument
 python -m agent --list              # past threads
 python -m agent --resume <id>       # continue one
 ```
 
 Destructive commands pause for approval and show the full argument set; a task's
 identity is its thread id, so resuming is re-invocation rather than a restart.
+
+The interactive home is **persistent**; scored case-runs each get a **blank** one, because a
+memory carried from case 1 into case 2 is the same contamination that forced one container per
+case-run.
+
+On Git Bash, prefix any `docker run` carrying a `-v` mount with `MSYS_NO_PATHCONV=1` and give
+Windows-style paths (`$(pwd -W)`); `$HOME` does not survive the translation.

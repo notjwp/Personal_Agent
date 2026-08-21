@@ -37,13 +37,13 @@ cannot be attributed either.
 
 ---
 
-## Phase K — Two writable roots, kernel-enforced
+## Phase K — Two writable roots, kernel-enforced — **BUILT**
 
 **Context.** Memory and skills must survive `reset.sh`, which wipes the workspace every run by
 design. They therefore need somewhere else to live, and that "somewhere else" must be as tightly
 bounded as the workspace is — or the boundary that makes this project trustworthy quietly widens.
 
-**A defect found while planning this phase, and it is the reason K is not just a mount:**
+**A defect found while planning this phase, and it is the reason K was not just a mount:**
 
 ```
 /workspace           writable   intended
@@ -52,95 +52,78 @@ bounded as the workspace is — or the boundary that makes this project trustwor
 /usr/local           read-only  correct
 ```
 
-`--read-only` makes the ROOT FILESYSTEM immutable; **bind mounts are unaffected**. The project is
-bind-mounted at `/app`, so the agent can write to the harness, `tasks.jsonl`, and the fixtures that
+`--read-only` makes the ROOT FILESYSTEM immutable; **bind mounts are unaffected**. The project was
+bind-mounted at `/app`, so the agent could write to the harness, `tasks.jsonl`, and the fixtures that
 decide its own score.
 
-Nothing suggests it ever has — all 30 Phase I traces show zero access to `/app`, and the tamper check
+Nothing suggests it ever did — all 30 Phase I traces show zero access to `/app`, and the tamper check
 restores protected test files after every run. But that guard is **post-hoc**: it repairs damage
-rather than preventing it, and a successful write to `/app` would not even register as a violation,
-because `count_write_violations()` looks for "Read-only file system" errors that would never occur.
+rather than preventing it, and a successful write to `/app` would not even have registered as a
+violation, because `count_write_violations()` looked for "Read-only file system" errors that could
+never occur there.
 
 **Exit criterion:** the agent home survives `reset.sh`; a write to the project tree is refused by the
-kernel; the v1 suite score is unchanged.
+kernel; the v1 suite score is unchanged. Evidence for all three is in `eval/CHANGELOG.md`.
 
-### Task K1 — Make the project tree read-only
+### Task K1 — Make the project tree read-only ✅
 
-- [ ] **Step 1: Mount `-v {REPO}:/app:ro`** in `spawn()`.
-- [ ] **Step 2: Two things currently write under `/app`, and both need a home first** — do not skip
+- [x] **Step 1: Mount `-v {REPO}:/app:ro`** in `spawn()`.
+- [x] **Step 2: Two things currently write under `/app`, and both need a home first** — do not skip
       this and discover it mid-run:
       - `eval/runs/<ts>/` — the inner runner writes `summary.jsonl` and each trace there
       - `/app/.agent/state.db` — `AGENT_HOME` in the `Containerfile`
-- [ ] **Step 3: Give each its own narrow writable mount**, so every writable path is declared rather
-      than inherited:
+- [x] **Step 3: Give each its own narrow writable mount**, so every writable path is declared rather
+      than inherited.
+- [x] **Step 4: Move `AGENT_HOME` to `/state`** in the `Containerfile` and `config.py`.
+- [x] **Step 5: Prove it, in both directions.** All eight targets behave as specified; the probe and
+      its output are recorded in `eval/CHANGELOG.md` so a reader can re-run it rather than trust it.
 
-      ```
-      -v {REPO}:/app:ro                        the project, immutable
-      -v {REPO}/eval/runs:/app/eval/runs       traces only
-      -v {AGENT_HOME}:/state                   memory, skills, checkpoints
-      -v {REPO}/eval/workspace:/workspace      the task
-      ```
+### Task K2 — Teach the violation counter about the new shape ✅
 
-- [ ] **Step 4: Move `AGENT_HOME` to `/state`** in the `Containerfile`, so `STATE_DB` no longer lives
-      inside the project. `config.py` already reads it from the environment — this is one line, and it
-      is the single source of truth `FR-302`/`NFR-201` depend on.
-- [ ] **Step 5: Prove it, in both directions.** A write to `/app`, to `/app/eval/fixtures`, and to
-      `/app/eval/tasks.jsonl` must each fail with `Read-only file system`; writes to `/workspace`,
-      `/state` and `/app/eval/runs` must each succeed. This is the same probe that found the defect.
+- [x] **Step 1:** With `/app` read-only, an attempted write there now **produces** the error the
+      counter detects, so it starts being counted — which is the point.
+- [x] **Step 2: Report which path was targeted**, not just a count. `write_violations()` returns
+      paths; the row carries `write_violation_paths` and the warning names them above the table.
+- [x] **Step 3: Keep the tamper check.** Defence in depth: the kernel now prevents, the tamper check
+      still verifies.
 
-### Task K2 — Teach the violation counter about the new shape
+### Task K3 — The agent home, and what lives in it ✅
 
-- [ ] **Step 1:** `count_write_violations()` currently detects refusals by their error text. With
-      `/app` read-only, an attempted write there now **produces** that error, so it will start being
-      counted — which is correct and is the point.
-- [ ] **Step 2: Report which root was targeted**, not just a count. "Tried to write to the fixtures"
-      and "tried to write to `/usr`" are different findings, and only one of them suggests the agent
-      is trying to grade itself.
-- [ ] **Step 3: Keep the tamper check.** Defence in depth: the kernel now prevents, and the tamper
-      check still verifies. It has already caught one thing the kernel could not — a rig fault where
-      an orphaned container corrupted a shared workspace.
+- [x] **Step 1: `~/.personal-agent`** on the host, `/state` in the container.
+- [x] **Step 2: Layout fixed now**, so M and N do not each invent one:
+      `state.db` (checkpoints), `memory.db` (Phase M), `skills/` (Phase N).
+- [x] **Step 3: `reset.sh` must NOT touch it.** Two tests: the invariant (`STATE_DB` is not under
+      `WORKSPACE`) and the end-to-end one against the real script.
+- [x] **Step 4: Per-run isolation for scored runs.** `agent_home()` wipes and recreates per case-run;
+      the interactive CLI keeps a persistent one.
 
-### Task K3 — The agent home, and what lives in it
+### Task K4 — Per-session egress ✅
 
-- [ ] **Step 1: `~/.personal-agent`** on the host, `/state` in the container. Created if absent, so a
-      fresh clone works without ceremony.
-- [ ] **Step 2: Layout, fixed now so M and N do not each invent one:**
+- [x] **Step 1:** A case declares `"egress": [...]` on its `tasks.jsonl` row; `allowlist_for()`
+      derives the list per case-run. No case declares any today, so every current number is measured
+      against the model host alone — unchanged.
+- [x] **Step 2: Recorded in the manifest**, per case, and now per row too.
+- [x] **Step 3: Extended the Phase H derivation** rather than rebuilding it.
 
-      ```
-      /state/state.db        checkpoints (moved from /app/.agent)
-      /state/memory.db       Phase M, FTS5
-      /state/skills/         Phase N, version-controlled text
-      ```
+**Two findings this task paid for, both in the changelog:**
 
-- [ ] **Step 3: `reset.sh` must NOT touch it.** The whole point is that it survives. Add a test that
-      writes a file to the agent home, runs `reset.sh`, and asserts the file is still there — the
-      property is easy to break later and silent when broken.
-- [ ] **Step 4: Per-run isolation for scored runs.** A memory that persists across scored case-runs
-      would let case 2 benefit from case 1, which is the same contamination `missing-dep` forced
-      one-container-per-run to prevent. **Scored runs get a fresh agent home per case-run; the
-      interactive CLI keeps a persistent one.** Phase M's recall benchmark opts in deliberately,
-      because carrying memory between sessions is precisely what it measures.
-
-### Task K4 — Per-session egress
-
-- [ ] **Step 1:** Repo work keeps no egress beyond the model. A task that needs the web declares it,
-      and the allowlist is extended for that run only.
-- [ ] **Step 2: Record the allowlist in the manifest**, so every number states the egress it was
-      measured under — the same reason provider and model are recorded per row.
-- [ ] **Step 3: The proxy machinery already exists** (Phase H) and derives its allowlist from the
-      configured endpoint. This extends the derivation; it does not rebuild it.
+- **SIGHUP does not reload tinyproxy's filter.** Measured, not assumed — `example.com` was refused
+  identically before and after the signal, with the widened file already visible inside the
+  container. The proxy is recreated instead. A widening that silently fails is harmless (it fails
+  closed); the manifest recording the allowlist that was merely *asked for* would not have been.
+- **Every trace row ever written claimed `"egress": "restricted"`** from a default, and nothing set
+  the variable it read. `spawn()` now states the truth and the fallback says `UNKNOWN`. A default
+  that asserts the safe answer is how a row comes to claim a condition nobody checked.
 
 ### Task K5 — Prove nothing moved
 
-- [ ] **Step 1:** `pytest -q` under the new mounts — no API key, no network, read-only root.
-- [ ] **Step 2: Re-run the dev suite, 3 runs per case.** Expect 14/15. **This is a regression guard,
-      not a measurement** — the score should not move, and if it does, the sandbox change is
-      interfering and must be understood before Phase L starts.
-- [ ] **Step 3: Record the probe output in `eval/CHANGELOG.md`** as evidence, with the commands, so a
-      future reader can re-run it rather than trust a claim.
+- [x] **Step 1:** `pytest -q` under the new mounts — 182 pass, no API key, no network, read-only
+      root. Nine tests are new.
+- [x] **Step 2: Re-run the dev suite, 3 runs per case.** **14/15 — case for case, including which
+      single case fails.** 0 blocked, 0 tampered, 0 write violations, one model, egress recorded per
+      row for the first time. A sandbox change that broke something would have moved a case.
+- [x] **Step 3: Record the probe output in `eval/CHANGELOG.md`** as evidence, with the commands.
 
-**Cost: no model quota for K1–K4** — the probes are shell commands. Only K5's regression run spends,
-about 15 runs.
 
 ---
 

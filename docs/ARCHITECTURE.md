@@ -77,7 +77,7 @@ may have side effects.
                +--------------------v--------------------+
       +------->|  ORCHESTRATOR                           |
       |        |  act . gate . execute . reflect         |
-      |        |  checkpointer -> .agent/state.db        |
+      |        |  checkpointer -> /state/state.db        |
       |        +--------------------+--------------------+
       |                             |
       |                  +----------v-----------+        +---------------+
@@ -274,6 +274,7 @@ Recorded rather than papered over, per §0 and §8.2.
 | NFR-104 (truncate) vs FR-208 (diagnose errors) | FR-402 spill-and-path. Costs one extra tool call, buys a bounded context |
 | FR-503 (browser) vs NFR-402 (cost) | Browser automation is the largest token consumer and breaches the cost target alone. This is why it sits at [S] behind search plus text extraction |
 | §12 single `.agent/` vs FR-302 + §4.3 | Artifacts move under the workspace so the model can read them; `state.db` stays outside so it survives `reset.sh` |
+| NFR-201 (one writable root) vs memory that persists | **Amended Phase K to two declared roots.** `reset.sh` wipes the workspace by design, so anything learned has to live elsewhere. The project tree, previously writable because bind mounts ignore `--read-only`, is now mounted `:ro` |
 | FR-702 (display plan) [M] vs §13 cutting `plan`/`cursor` | Unsatisfiable at v1 by construction; closes with the plan node (L2). Recorded as open, not dropped |
 | §10 (test every node) vs §12 (three test files) | A fourth test file is added; §10's requirement is the stronger one |
 
