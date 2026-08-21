@@ -48,9 +48,38 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
             f"List it with run_shell(command='ls -la {path}').")
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     window = lines[offset:offset + limit]
-    body = "\n".join(f"{offset + i + 1:6d}\t{line}" for i, line in enumerate(window))
-    shown = f"{offset + 1}-{offset + len(window)}"
-    return f"{path} (lines {shown} of {len(lines)})\n{body}"
+
+    # Size the window so the result fits under the cap, rather than letting
+    # shrink() take head+tail out of it afterwards.
+    #
+    # shrink() exists for UNEXPECTEDLY large output. A paged read is the opposite:
+    # a deliberate, bounded request, and eliding its middle deletes exactly what
+    # was asked for. Measured on real-rich: console.py is 101,228 chars, a
+    # read_file(limit=500) renders 18,920, the cap is 6,000, and what arrived was
+    # 30 head + 20 tail of the 500 lines requested - so the agent edited a file it
+    # had only ever seen in fragments, and seeing all of it took 54 reads.
+    #
+    # NFR-104 is untouched: the result still fits the cap. Only its SHAPE changes,
+    # from a window with a hole to a contiguous run of lines.
+    cap = config.TOOL_CAPS.get("read_file", config.MAX_RESULT_CHARS)
+    header_room = len(path) + 80          # the header line, plus room for the hint
+    kept, used = [], header_room
+    for i, line in enumerate(window):
+        rendered = len(line) + 9          # 6-digit number, tab, newline
+        if used + rendered > cap and kept:
+            break
+        kept.append(line)
+        used += rendered
+
+    body = "\n".join(f"{offset + i + 1:6d}\t{line}" for i, line in enumerate(kept))
+    shown = f"{offset + 1}-{offset + len(kept)}"
+    head = f"{path} (lines {shown} of {len(lines)})"
+    if len(kept) < len(window):
+        # Say how to continue. A silent truncation costs a turn the same way an
+        # unactionable error does - the agent cannot ask for what it cannot see.
+        head += (f" - narrowed to fit; continue with "
+                 f"read_file(path=\"{path}\", offset={offset + len(kept)})")
+    return f"{head}\n{body}"
 
 
 def write_file(path: str, content: str) -> str:

@@ -137,14 +137,33 @@ def test_failures_counter_increments_on_a_failed_turn(tmp_workspace):
                    cfg())["failures"] == 2
 
 
-def test_oversized_output_is_spilled(tmp_workspace):
-    big = "\n".join(f"line {i}" for i in range(5000))
+def test_oversized_shell_output_is_spilled(tmp_workspace):
+    """Shell output is ephemeral, so overflow must spill to an artifact (FR-401/402).
+
+    This was written against read_file. read_file now sizes its own window rather
+    than overflowing, and spilling IT was always redundant: the "full output"
+    artifact was a copy of a file already sitting in the workspace, which the agent
+    can page or grep directly. Command output has no second copy, so this is where
+    the spill mechanism actually earns its place.
+    """
+    big = chr(10).join(f"line {i}" for i in range(5000))
     (tmp_workspace / "big.txt").write_text(big)
-    out = execute(state(approved=[call("read_file", path="big.txt", limit=5000)]), cfg())
+    out = execute(state(approved=[call("run_shell", command="cat big.txt")]), cfg())
     body = out["messages"][-1]["content"][0]["content"]
     assert len(body) < config.MAX_RESULT_CHARS + 600
     assert "[full output: " in body
     assert list(config.ARTIFACTS.glob("*.txt"))
+
+
+def test_oversized_read_narrows_instead_of_spilling(tmp_workspace):
+    """The counterpart: a paged read returns fewer lines, all of them contiguous."""
+    big = chr(10).join(f"line {i}" for i in range(5000))
+    (tmp_workspace / "big.txt").write_text(big)
+    out = execute(state(approved=[call("read_file", path="big.txt", limit=5000)]), cfg())
+    body = out["messages"][-1]["content"][0]["content"]
+    assert len(body) < config.MAX_RESULT_CHARS + 600
+    assert "elided" not in body, "a paged read must not have its middle removed"
+    assert "offset=" in body, "and must say how to fetch the next page"
 
 
 def test_execute_records_a_trace_entry_per_call(tmp_workspace):
@@ -177,6 +196,51 @@ def test_read_file_honours_offset_and_limit(tmp_workspace):
     out = read_file("a.py", offset=10, limit=5)
     assert "line10" in out and "line14" in out
     assert "line15" not in out and "line9" not in out
+
+
+def test_read_file_returns_a_contiguous_window_under_the_cap(tmp_workspace):
+    """A paged read must return CONTIGUOUS lines, not head+tail with a hole.
+
+    shrink() was built for UNEXPECTEDLY large output. Applied to a deliberately
+    paged read it deletes the middle of the window the agent explicitly asked for.
+    Measured on real-rich: rich/console.py is 101,228 chars, a read_file(limit=500)
+    renders 18,920 chars, the cap is 6,000, and what arrived was 30 head + 20 tail
+    of the 500 lines requested. Seeing the whole file took 54 reads, and the agent
+    edited a file it had only ever seen in fragments.
+
+    Sizing the window inside read_file keeps NFR-104 intact - the result still fits
+    under the cap - while making paging actually work.
+    """
+    body = [f"line{i:04d} " + "x" * 60 for i in range(2000)]
+    (tmp_workspace / "big.py").write_text(chr(10).join(body), encoding="utf-8")
+
+    out = read_file("big.py", offset=0, limit=500)
+    assert len(out) <= config.TOOL_CAPS["read_file"], (
+        f"read_file must size its own window; got {len(out)} chars")
+    assert "elided" not in out, "a paged read must not have its middle removed"
+
+    shown = [ln for ln in out.splitlines() if "line0" in ln or "line1" in ln]
+    numbers = [int(ln.split("line")[1][:4]) for ln in shown if "line" in ln]
+    assert numbers == list(range(numbers[0], numbers[0] + len(numbers))), (
+        "the delivered lines must be consecutive")
+    assert len(numbers) > 50, f"expected a useful window, got {len(numbers)} lines"
+
+
+def test_read_file_says_where_to_continue_when_it_narrows(tmp_workspace):
+    """An error the model cannot act on costs a turn; so does a silent truncation."""
+    body = [f"line{i:04d} " + "y" * 60 for i in range(2000)]
+    (tmp_workspace / "big.py").write_text(chr(10).join(body), encoding="utf-8")
+    out = read_file("big.py", offset=0, limit=500)
+    assert "offset=" in out, "the agent must be told how to fetch the next page"
+
+
+def test_read_file_small_file_is_unchanged(tmp_workspace):
+    """Narrowing must only apply when the window would overflow."""
+    (tmp_workspace / "s.py").write_text(chr(10).join(f"l{i}" for i in range(10)),
+                                        encoding="utf-8")
+    out = read_file("s.py", offset=0, limit=500)
+    assert "l0" in out and "l9" in out
+    assert "offset=" not in out, "a complete read must not suggest a next page"
 
 
 def test_write_file_creates_parent_directories(tmp_workspace):

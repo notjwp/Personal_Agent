@@ -1859,3 +1859,87 @@ scaffolding around it, and frontier models behind it.
 line-based bound, and the untimed check as decisions whose stated premises did not survive real code.
 
 **Next cycle target: the read cap, not the edit tool.**
+
+---
+
+## Item 27 — why `real-humanize` fails: reasoning, not tooling
+
+Read before building cycle 5, because it costs nothing and could have redirected it. `real-humanize`
+is 0/2 with edits that APPLY (zero match errors) and do not fix (4 -> 4) - a different failure from
+`real-rich`, whose edits were rejected outright.
+
+The agent's edit is **1,718 chars in, 2,519 out, applied cleanly**, and is a near-correct
+implementation of the SI-prefix carry. One line is wrong:
+
+```
+upstream:  exponent += 3 - exponent % 3     <- aligns to the bucket boundary
+agent:     exponent += 3                    <- naive
+```
+
+For `999.9 V` the exponent is 2. Upstream lands on 3; the agent lands on 5. That changes
+`exponent % 3`, which changes `decimal_places` from 2 to 0, so it formats `1 kV` instead of
+`1.00 kV`. The carry happens - the precision does not survive it.
+
+It also drops upstream's `abs()` in the rounding test and its `exponent < 30` guard.
+
+**Prediction recorded before cycle 5 runs: the read cap will NOT help this case.** `number.py` is
+559 lines and the agent plainly saw enough to write a nearly-correct fix; nothing here is a
+partial-view failure. If `real-humanize` improves in cycle 5, the explanation is wrong and the
+result is noise.
+
+This is the first failure in the set attributable to **numerical reasoning** rather than to a tool,
+a budget or a rig fault. No tooling change addresses it.
+
+---
+
+## Cycle 5 — `read_file` returns a contiguous window — PARTIAL, NOT YET DECIDED
+
+**Change (one):** `read_file` sizes its own window so the result fits under the existing cap,
+instead of letting `shrink()` take head+tail out of it afterwards.
+
+`shrink()` exists for UNEXPECTEDLY large output. A paged read is the opposite - a deliberate,
+bounded request - and eliding its middle deletes exactly what was asked for.
+
+Measured on `rich/console.py` (101,228 chars, 2,689 lines):
+
+| | before | after |
+|---|---|---|
+| lines per read | 50 (30 head + 20 tail) | **164 contiguous** |
+| middle elided | yes | no |
+| reads to see the whole file | 54 | **17** |
+| result size | 6,000 cap | 5,839 |
+
+**NFR-104 is untouched** - results still fit the cap. Only the SHAPE changed. No spec amendment was
+needed, which is why this was chosen over raising `MAX_RESULT_CHARS`.
+
+### Result so far: INCOMPLETE - 2 of 9 runs
+
+```
+real-rich  run0 PASS 1->0   (18 turns, 8 reads, tampered=0)
+real-rich  run1 FAIL 1->1
+```
+
+Stopped early at the user's request; `real-click` and `real-cachetools` - the regression guards -
+have NOT run.
+
+**`real-rich` has now passed for the first time.** It was 0/3 with `edit_file` alone and 0/3 again
+with cycle 4's ambiguity fix. The passing run found and fixed the bug in **8 reads**, against 15-18
+in the failing runs before it - the shape the hypothesis predicted.
+
+**This is not yet a kept change.** 1 of 2 is not a result: the project's own rule is 3 runs per case,
+and the guards exist precisely to catch the case where the explanation is wrong.
+
+### Pre-registered predictions, still unchecked
+
+- `real-rich` improves - **so far consistent** (1/2, was 0/3 twice)
+- `real-cachetools` and `real-click` do NOT move - their files are 776 and 945 lines and already
+  mostly fit. **If they move, the explanation is wrong and the result is noise.**
+- `real-humanize` does NOT improve - its failure is numerical reasoning (Item 27), not partial view.
+
+### To resume
+
+```
+python eval/harness.py --case real-rich       --runs 3
+python eval/harness.py --case real-click      --runs 3
+python eval/harness.py --case real-cachetools --runs 3
+```
