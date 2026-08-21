@@ -1802,3 +1802,60 @@ from it. The cheap, targeted improvement is to **name where the matches are** - 
 numbers of each occurrence - so the model knows which region to extend. That is one change, testable
 on `real-rich` where the failure is 6/6, and it belongs in its own cycle rather than bolted onto this
 one.
+
+---
+
+## Cycle 4 — "name where the matches are" — REVERTED
+
+**Bucket:** `real-rich`, 0/3 with **6 of 6 `edit_file` calls rejected**, five for ambiguity. The
+largest concentrated failure in the set.
+
+**Hypothesis:** *"include more of the surrounding lines"* is true but unactionable - in a 2,689-line
+file the agent does not know WHICH occurrences collided, so it cannot tell which direction to
+extend. Naming the line numbers should make it actionable, exactly as naming `ls` fixed the
+directory-read error that once cost three turns a run.
+
+**Change (one):** the ambiguity error reports the line number of each match.
+
+| | pass | edit attempts | edit errors | progress |
+|---|---|---|---|---|
+| before | 0/3 | 6 | **6/6 (100%)** | 1->1, 1->1, 1->1 |
+| after | 0/3 | **2** | 1/2 (50%) | **1->4**, 1->1, 1->1 |
+
+**REVERTED.** Zero delta on the pass rate. The error rate looks better, but on two attempts against
+six - and **attempts fell**, which is not a win. One run also regressed 1->4, breaking three
+previously-passing tests.
+
+Keeping it would have been rationalising a neutral change on a flattering secondary metric, which is
+precisely what the revert rule exists to stop.
+
+### What the traces show instead - three failures, none of them the edit tool
+
+1. **It edits a file it cannot see.** `console.py` is 101,232 characters and `shrink()` caps every
+   tool result at **6,000** - about 6% of the file. The agent pages through fragments and edits from
+   a partial view.
+2. **Plausible but wrong edits.** Run 0 replaced `objects = (NewLine(),)` with `objects =
+   (Text(end),)`: reasonable-looking, incorrect, and it broke three passing tests.
+3. **No verify-and-revert.** It re-ran the tests, saw 1 -> 4, and left the change in place.
+
+Run 1 did something different again: 18 reads, **zero** edits.
+
+### Checked against Hermes and OpenClaw, not assumed
+
+- **Hermes** scopes hunks with `@@ context hint @@` rather than relying on uniqueness, and
+  `tools/file_state.py` warns explicitly on a **"partial read hazard"** - *"was last read with
+  offset/limit pagination (partial view)"*. They flag the exact situation `real-rich` is in.
+- **OpenClaw** has the same tool shape (exec / read / write / **edit**) and additionally edits inside
+  a **managed worktree**, so the main checkout is untouched until the change is reviewed - a bad
+  edit is recoverable by construction.
+
+Neither has a mechanism that makes a model choose the RIGHT edit. What they have is better
+scaffolding around it, and frontier models behind it.
+
+### The fourth fixture-era premise to expire
+
+`MAX_RESULT_CHARS = 6,000` was sized for 10-file practice projects with short output. On a
+2,689-line file it is now the binding constraint, and it joins whole-file writes, `shrink()`'s
+line-based bound, and the untimed check as decisions whose stated premises did not survive real code.
+
+**Next cycle target: the read cap, not the edit tool.**
