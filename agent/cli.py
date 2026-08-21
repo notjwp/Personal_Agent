@@ -23,7 +23,7 @@ import uuid
 from langgraph.types import Command
 
 from agent import config as settings
-from agent import mcp
+from agent import mcp, memory
 from agent.graph import get_app, new_state
 
 RULE = "-" * 64
@@ -220,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     # server subprocess never outlives the session that asked for it. --resume needs
     # it as much as a fresh goal does: a thread that used an MCP tool and is resumed
     # without one would have that tool refused as unknown, mid-task.
+    memory.activate()
     try:
         started = mcp.activate()
     except (mcp.McpUnavailable, mcp.ToolBudgetExceeded) as exc:
@@ -234,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch(args, app, parser)
     finally:
         mcp.shutdown()
+        memory.deactivate()
 
 
 def _dispatch(args, app, parser) -> int:

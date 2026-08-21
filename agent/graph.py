@@ -23,9 +23,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import RunnableConfig, interrupt
 
 from agent import config as settings
+from agent import memory
 from agent.context import shrink
 from agent.policy import classify
 from agent.provider import call_model
+from agent import registry
 from agent.tools import toolset
 
 SOUL = Path(__file__).resolve().parent.parent / "prompts" / "SOUL.md"
@@ -80,10 +82,20 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
     cfg = config.get("configurable", {})
     system = SOUL.read_text(encoding="utf-8")   # CE-05: read here, not at import
 
+    # Retrieved memory goes in the SYSTEM PROMPT, not the message list. A message
+    # appended per turn would add a fresh copy each turn and grow quadratically;
+    # the system prompt is one fixed cost per request. It is still charged EVERY
+    # request on a provider that caches nothing, which is why context_for() caps it.
+    recalled = memory.context_for(_goal(state["messages"]))
+    if recalled:
+        system = f"{system}\n\n{recalled}"
+        trace = cfg.get("trace")
+        if trace is not None:
+            trace.append({"kind": "memory", "chars": len(recalled)})
+
     # Rebuilt per turn rather than bound at import: which tools exist depends on
-    # whether MCP activated for THIS run, and CE-05 forbids deciding that at import.
-    schemas = [entry["schema"] for entry in toolset().values()]
-    reply = call_model(state["messages"], system, schemas, cfg.get("on_text"))
+    # what activated for THIS run, and CE-05 forbids deciding that at import.
+    reply = call_model(state["messages"], system, registry.schemas(), cfg.get("on_text"))
 
     trace = cfg.get("trace")
     if trace is not None:
@@ -182,12 +194,35 @@ def reflect(state: AgentState) -> dict:
 
 
 def finish(state: AgentState, config: RunnableConfig) -> dict:
-    """Terminal. Writing durable memory arrives with the memory layer; at v1 this
-    records the outcome so a run is reconstructible from the trace alone."""
-    trace = config.get("configurable", {}).get("trace")
+    """Terminal. Records the outcome, and writes the episode memory will recall.
+
+    Still a DETERMINISTIC node: everything written is already in `messages`, so no
+    model call is needed. A model-written summary was considered and rejected on
+    exactly that ground - it would make a fourth node that touches a model, and the
+    ratio of deterministic to model-driven nodes is the most important design
+    property in this system.
+    """
+    cfg = config.get("configurable", {})
+    trace = cfg.get("trace")
     if trace is not None:
         trace.append({"kind": "terminal", "verdict": state["verdict"],
                       "turns": state["turns"], "spent_tokens": state["spent_tokens"]})
+
+    if settings.MEMORY_ENABLED:
+        outcomes = _outcomes(state["messages"])
+        memory.write_episode(
+            thread_id=str(cfg.get("thread_id", "")),
+            goal=_goal(state["messages"]),
+            verdict=state["verdict"],
+            answer=_final_text(state["messages"]),
+            # §4.3's list: files touched and commands that WORKED. Failed calls are
+            # excluded deliberately - recalling a command that did not work is worse
+            # than recalling nothing, because it reads as advice.
+            files=sorted({c["input"]["path"] for c, ok in outcomes
+                          if ok and isinstance(c["input"].get("path"), str)}),
+            commands=[c["input"]["command"] for c, ok in outcomes
+                      if ok and c["name"] == "run_shell"
+                      and isinstance(c["input"].get("command"), str)])
     return {}
 
 
@@ -200,6 +235,43 @@ def _tool_calls(message: dict) -> list[dict]:
     return [{"id": b["id"], "name": b["name"], "input": b.get("input", {})}
             for b in message["content"]
             if isinstance(b, dict) and b.get("type") == "tool_use"]
+
+
+def _goal(messages: list[dict]) -> str:
+    """The user's opening message - which for this agent IS what the user said."""
+    first = messages[0].get("content") if messages else ""
+    return first if isinstance(first, str) else json.dumps(first, default=str)
+
+
+def _final_text(messages: list[dict]) -> str:
+    """The last thing the agent said in words, not tool calls."""
+    for message in reversed(messages):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        texts = [b.get("text", "") for b in content or []
+                 if isinstance(b, dict) and b.get("type") == "text"]
+        joined = "\n".join(t for t in texts if t).strip()
+        if joined:
+            return joined
+    return ""
+
+
+def _outcomes(messages: list[dict]) -> list[tuple[dict, bool]]:
+    """Every tool call paired with whether its result succeeded.
+
+    Derived from `messages` rather than the trace: the trace is optional - the CLI
+    may not pass one - and memory must not silently record less depending on who
+    invoked the graph.
+    """
+    errors = {b["tool_use_id"]: bool(b.get("is_error"))
+              for m in messages if isinstance(m.get("content"), list)
+              for b in m["content"]
+              if isinstance(b, dict) and b.get("type") == "tool_result"}
+    return [(call, not errors.get(call["id"], False))
+            for m in messages for call in _tool_calls(m)]
 
 
 def _made_a_call(messages: list[dict]) -> bool:

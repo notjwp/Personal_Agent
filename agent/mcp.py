@@ -37,17 +37,19 @@ class McpUnavailable(RuntimeError):
     """
 
 
-class ToolBudgetExceeded(RuntimeError):
-    """The exposed schemas cost more than config.MAX_SCHEMA_CHARS allows.
-
-    Fatal rather than blocked: retrying cannot fix it, and it is a decision to take
-    deliberately - by removing a tool or by re-measuring the cap - never by letting
-    a run proceed and quietly spending the difference on every turn.
-    """
+# Re-exported: this lived here while MCP was the only extra source of tools, which
+# stopped being true when memory.py added one. Callers still catch
+# `mcp.ToolBudgetExceeded`, so the name stays put and the definition moved.
+from agent.registry import ToolBudgetExceeded  # noqa: E402,F401  (re-export)
 
 
 _ACTIVE: dict[str, dict] = {}
 _RUNNER: _Runner | None = None
+# Names this module put into policy.RISK, so shutdown() removes exactly those.
+# Tracked per-module rather than diffed against a snapshot of the built-ins:
+# memory.py registers too, and a snapshot taken by whichever imported first would
+# silently own the other's entries and strip them on shutdown.
+_REGISTERED: list[str] = []
 
 
 class _Runner:
@@ -172,25 +174,6 @@ def _bind(runner: _Runner, session, name: str, input_schema: dict):
     return call
 
 
-def check_budget(schemas: list[dict]) -> int:
-    """Refuse to start when the exposed schemas cost more than the cap allows.
-
-    Loud, at startup, naming the overrun - never a warning. The schemas are re-sent
-    on EVERY request and this provider caches nothing, so an overrun is not a
-    one-off: it is a tax on every turn of every run, and its symptom is a slow cost
-    drift that nobody attributes to the day a tool was added.
-    """
-    size = len(json.dumps(schemas))
-    if size > config.MAX_SCHEMA_CHARS:
-        raise ToolBudgetExceeded(
-            f"tool schemas are {size:,} chars against a cap of "
-            f"{config.MAX_SCHEMA_CHARS:,} ({len(schemas)} tools). They are re-sent on "
-            f"every request, so this is charged per turn. Remove a tool, or "
-            f"re-measure the cap against the current provider and raise it "
-            f"deliberately in config.py.")
-    return size
-
-
 def activate() -> list[str]:
     """Start the configured servers and register their tools. Returns tool names.
 
@@ -222,6 +205,7 @@ def activate() -> list[str]:
             # server declares and config.py does not is recorded `destructive` by
             # register(), so it surfaces as an approval prompt rather than running.
             risk = policy.register(tool.name, declared.get(tool.name))
+            _REGISTERED.append(tool.name)
             schema = {"name": tool.name,
                       "description": tool.description or "",
                       "input_schema": tool.inputSchema or {"type": "object"}}
@@ -235,16 +219,17 @@ def activate() -> list[str]:
     # Checked with the servers already up, so the error can name what was actually
     # discovered rather than what config.py hoped for. Discovery is cheap; the
     # per-turn cost of keeping them is what the cap exists to refuse.
-    from agent.tools import TOOLS
+    #
+    # Registered into _ACTIVE first, so the check sees the REAL merged set - built-ins
+    # plus memory's tool plus these - rather than a hand-assembled approximation of it.
+    from agent.registry import check_budget
 
     try:
-        check_budget([e["schema"] for e in TOOLS.values()]
-                     + [e["schema"] for e in _ACTIVE.values()])
+        check_budget()
     except ToolBudgetExceeded:
         _ACTIVE.clear()
         runner.stop()
-        for name in [n for n in policy.RISK if n not in _BUILTIN_RISK]:
-            policy.RISK.pop(name, None)
+        _unregister()
         raise
 
     _RUNNER = runner
@@ -262,13 +247,12 @@ def shutdown() -> None:
         _RUNNER.stop()
         _RUNNER = None
     _ACTIVE.clear()
-    for name in [n for n, r in policy.RISK.items() if n not in _BUILTIN_RISK]:
-        policy.RISK.pop(name, None)
+    _unregister()
 
 
-# Captured at import, before any registration, so shutdown() can restore exactly
-# the built-in set rather than a list that drifts as tools are added.
-_BUILTIN_RISK = dict(policy.RISK)
+def _unregister() -> None:
+    while _REGISTERED:
+        policy.RISK.pop(_REGISTERED.pop(), None)
 
 
 def tools() -> dict[str, dict]:

@@ -254,14 +254,12 @@ SCHEMAS = [entry["schema"] for entry in TOOLS.values()]
 
 
 def toolset() -> dict:
-    """The built-in tools, plus any MCP tools active for this run (Phase L).
+    """Kept as the name every caller already uses; the merge itself moved.
 
-    Two callers - `act` needs the schemas, `execute` needs the functions - which is
-    what earns it a function instead of the same merge written out twice (CE-01).
-
-    Built-ins win a name collision, deliberately: a server must not be able to
-    shadow `run_shell` with its own implementation.
+    Three modules contribute tools now (built-ins, MCP, memory), so who owns the
+    merged view became a real question and `agent/registry.py` is the answer -
+    §12's "add at tool six" trigger, fired by `remember`.
     """
-    from agent import mcp
+    from agent.registry import toolset as merged
 
-    return {**mcp.tools(), **TOOLS}
+    return merged()

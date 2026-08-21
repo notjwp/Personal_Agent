@@ -27,5 +27,11 @@ def fresh_app(tmp_workspace, monkeypatch):
     from agent import graph
 
     monkeypatch.setattr(config, "STATE_DB", tmp_workspace / ".agent" / "state.db")
+    # Memory too (Phase M). `finish` now writes an episode and `act` reads one back,
+    # so without redirecting these the unit suite would read and write the REAL
+    # agent home - contaminating a developer's own memory and, worse, making a test
+    # pass or fail depending on what happened in an unrelated session.
+    monkeypatch.setattr(config, "MEMORY_DB", tmp_workspace / ".agent" / "memory.db")
+    monkeypatch.setattr(config, "PROFILE", tmp_workspace / ".agent" / "AGENT.md")
     monkeypatch.setattr(graph, "_APP", None)
     return graph.get_app()

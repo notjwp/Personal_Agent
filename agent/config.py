@@ -176,3 +176,29 @@ MCP_ENABLED = os.environ.get("AGENT_MCP", "on").strip().lower() not in ("0", "of
 # the same failure wearing a different name, so it gets the same treatment.
 MCP_STARTUP_TIMEOUT = float(os.environ.get("AGENT_MCP_STARTUP_TIMEOUT", "30"))
 MCP_CALL_TIMEOUT = float(os.environ.get("AGENT_MCP_CALL_TIMEOUT", "60"))
+
+# --- memory (Phase M) ------------------------------------------------------
+
+# Both live in the agent home, which is the whole reason Phase K created it:
+# reset.sh wipes the workspace between runs by design, so anything learned has to
+# sit outside it.
+MEMORY_DB = AGENT_HOME / "memory.db"          # episodes, FTS5 (FR-407)
+PROFILE = AGENT_HOME / "AGENT.md"             # durable user profile (FR-406)
+
+# The kill switch, and the reason the comparison in eval/CHANGELOG.md is a
+# controlled one rather than two separate numbers: with this off the agent must be
+# byte-identical to the one without memory - same prompt, same tools, no injection.
+MEMORY_ENABLED = os.environ.get("AGENT_MEMORY", "on").strip().lower() not in (
+    "0", "off", "false")
+
+# What retrieval may inject, in CHARACTERS.
+#
+# Budgeted for the same reason MAX_SCHEMA_CHARS is: the injected text goes into the
+# system prompt, which is re-sent on every request, and the measured provider
+# returned cache_read_tokens of 0 on every row of a scored run. So this is charged
+# per turn - 1,500 chars is ~500 tokens, ~4,500 per run at 9 model calls.
+#
+# It is a budget, not a guess, and `memory_chars` is recorded on every row so a
+# recall win bought with a large token increase shows up as the trade it is.
+MEMORY_INJECT_CHARS = 1_500
+MEMORY_EPISODES = 3           # how many past sessions retrieval may return

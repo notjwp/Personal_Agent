@@ -276,6 +276,42 @@ tamper check that would have caught it *repairs after the fact*, and a kernel re
 Verified in both directions before it was believed; the probe and its output are in
 `eval/CHANGELOG.md`.
 
+### Memory
+
+The agent remembers across sessions. Two stores, both in the agent home so they survive `reset.sh`:
+
+| | holds | written by |
+|---|---|---|
+| `/state/memory.db` | past sessions - goal, outcome, files touched, commands that worked | `finish`, automatically |
+| `/state/AGENT.md` | durable facts about you and how you work | the agent, via `remember` |
+
+Retrieval is **keyword only** (SQLite FTS5). Vectors are forbidden by the spec until keyword recall
+is measured and found wanting, and it was not. Retrieved context goes into the **system prompt**, not
+the message list - a message appended per turn would add a fresh copy each turn and grow
+quadratically - and is capped at 1,500 characters, with `memory_chars` recorded on every row.
+
+**Measured, six cases x three runs x two sessions, one flag apart:**
+
+| | memory off | memory on |
+|---|---|---|
+| recall a fact | 0/9 | **9/9** |
+| act on a standing preference | 0/9 | **6/9** |
+| median tokens | 8,744 | **6,220** |
+| mean turns | 5.4 | **2.7** |
+| runs ending `stuck` | 7 | **0** |
+
+**Memory was budgeted as a cost and came out a 40% saving.** Injected context is charged on every
+request, and the run still got cheaper, because an agent that remembers stops searching for what it
+was already told. Every `stuck` verdict disappeared.
+
+The baseline being **0/18** is what makes that delta mean anything, and it was not assumed - the
+agent can write to `/state` through `run_shell` today, so it could have passed with no memory layer
+at all. It did not; it tried to leave a note in the workspace instead, which `reset.sh` wipes between
+sessions by design. Three of the nine profile runs failed on a check that was matching whitespace
+rather than memory; the amended check and its provenance are in `eval/CHANGELOG.md`.
+
+`AGENT_MEMORY=off` restores the pre-memory agent exactly. The dev suite is unmoved at 14/15.
+
 ### Tools, and what they cost
 
 Four built-in tools (`read_file`, `write_file`, `edit_file`, `run_shell`) plus **MCP**, which

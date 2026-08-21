@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Phases A-E, K and L are built. What exists: the measurement rig, the
+Phases A-E and K-M are built. What exists: the measurement rig, the
 `act -> gate -> execute -> reflect` loop, a two-provider model adapter, the interactive CLI with
 approval and resume, kernel-enforced sandboxing, and a committed baseline.
 
 - **Baseline: 14/15**, 3 runs per dev case, 0 blocked, on `nvidia/nemotron-3-super-120b-a12b`.
   Per-case table in `README.md`; conditions and trust checks in `eval/CHANGELOG.md`.
-- **202 unit tests**, green with no API key, no network, a read-only root filesystem, and
+- **225 unit tests**, green with no API key, no network, a read-only root filesystem, and
   without the `mcp` package installed.
 - **The model was the constraint, not the loop.** An earlier baseline of 4/15 on
   `llama-3.1-70b` was diagnosed as loop defects - 9 of 15 runs never called `read_file`, all 15
@@ -82,6 +82,16 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
 - **`registry.py` still does not exist, and that is deliberate.** §12's trigger is "add at tool six";
   four built-ins plus `fetch` is five. The merge is nine lines in `tools.toolset()`. A deferred layer
   with a numeric trigger does not fire because the phase that would use it turned up.
+
+- **Memory is in, and it is the project's cleanest result (Phase M).** Episodes in SQLite FTS5 at
+  `/state/memory.db`, a profile at `/state/AGENT.md` written by the agent through `remember`.
+  Recall split **0/18 -> 15/18**, and **40% CHEAPER** - it was budgeted as a cost and came out a
+  saving, because an agent that remembers stops thrashing (7 `stuck` verdicts -> 0). `AGENT_MEMORY=off`
+  restores the pre-memory agent exactly. Dev suite unmoved at 14/15.
+- **`registry.py` exists but the `@tool` decorator still does not.** §12's "tool six" trigger
+  fired; the decorator's own arithmetic did not. Five of six schemas are hand-written (fetch's
+  comes from the server), break-even is above eight, and **the descriptions are load-bearing** -
+  `edit_file`'s text coaches the model and is what took real repos 0/9 -> 4/7.
 
 ### Standing lessons, each paid for once
 

@@ -72,6 +72,9 @@ FORWARDED_ENV = (
     # Phase L's kill switch. Forwarded so a scored suite can be run with MCP off
     # without editing config.py - and every row records which it was.
     "AGENT_MCP",
+    # Phase M's. Same reason, and the reason its comparison is controlled: with
+    # this off the agent must be identical to the one without memory.
+    "AGENT_MEMORY",
 )
 
 # --------------------------------------------------------------- egress (H)
@@ -856,7 +859,7 @@ def inner(args) -> int:
     _, _, before = run_check(case)
 
     # Imported after setup so a rig failure needs no agent.
-    from agent import mcp
+    from agent import mcp, memory
     from agent.graph import get_app, new_state
     from agent.provider import ProviderMisconfigured, ProviderUnavailable
 
@@ -864,6 +867,7 @@ def inner(args) -> int:
     # nothing. A server that will not start is BLOCKED - infrastructure failure is
     # not a score - while a schema budget overrun is MISCONFIGURED, since retrying
     # cannot fix it and every retry would spend the overrun again.
+    memory.activate()
     try:
         mcp_tools = mcp.activate()
     except mcp.ToolBudgetExceeded as exc:
@@ -879,19 +883,36 @@ def inner(args) -> int:
     if budget != case["budget"] or max_turns != case["max_turns"]:
         print(f"  overridden: budget {case['budget']:,} -> {budget:,}, "
               f"turns {case['max_turns']} -> {max_turns}", file=sys.stderr)
-    state = new_state(case["goal"], max_turns, budget)
+    # A case is either one goal or a CHAIN of sessions (Phase M). Each session gets
+    # its own thread_id, because within one thread the checkpointer already carries
+    # the conversation - a same-thread test would measure the checkpointer, not
+    # memory. The workspace is reset between sessions and the agent home is NOT,
+    # which is the whole point: what survives is what was learned, not what was left
+    # lying in a directory.
+    goals = case.get("sessions") or [case["goal"]]
     trace: list[dict] = []          # nodes append here; see agent/graph.py _log()
     # Captured while the tool set is LIVE. record() runs after shutdown(), so reading
     # the exposure back then would report the built-ins alone and silently understate
     # every MCP run. Carried on the trace, like `tamper` and `model` already are.
-    trace.append({"kind": "tools", **tool_exposure(), "mcp": mcp_tools})
+    trace.append({"kind": "tools", **tool_exposure(), "mcp": mcp_tools,
+                  "memory": bool(os.environ.get("AGENT_MEMORY", "on").strip().lower()
+                                 not in ("0", "off", "false")),
+                  "sessions": len(goals)})
     started = time.monotonic()
     try:
-        final = get_app().invoke(state, {"configurable": {
-            "thread_id": f"{case['id']}-{args.run_index}",
-            "autonomous": True,     # every `confirm` becomes `deny`; nothing blocks
-            "trace": trace,
-        }})
+        for index, goal in enumerate(goals):
+            if index:
+                # Between sessions only. The first setup already ran above, and
+                # re-running it here would also re-run it for ordinary cases.
+                subprocess.run(case["setup"], shell=True, cwd=REPO,
+                               check=True, capture_output=True)
+                trace.append({"kind": "session", "index": index, "goal": goal[:200]})
+            state = new_state(goal, max_turns, budget)
+            final = get_app().invoke(state, {"configurable": {
+                "thread_id": f"{case['id']}-{args.run_index}-s{index}",
+                "autonomous": True,  # every `confirm` becomes `deny`; nothing blocks
+                "trace": trace,
+            }})
         note = ""
     except ProviderMisconfigured as exc:
         # No row at all. Nothing was measured, and writing a row would imply
@@ -915,6 +936,7 @@ def inner(args) -> int:
     # The early-return paths above are covered by activate()'s atexit hook, which is
     # what makes this safe to call in one place rather than four.
     mcp.shutdown()
+    memory.deactivate()
 
     tampered = restore_protected_tests(case)
     if tampered:
@@ -944,10 +966,10 @@ def tool_exposure() -> dict:
     calls per run that was already 23% of a median run - on a provider returning
     cache_read_tokens of 0 for every row, so nothing is amortised.
     """
-    from agent.tools import toolset
+    from agent import registry
 
-    schemas = [entry["schema"] for entry in toolset().values()]
-    return {"schema_chars": len(json.dumps(schemas)), "tools": sorted(toolset())}
+    return {"schema_chars": len(json.dumps(registry.schemas())),
+            "tools": sorted(registry.toolset())}
 
 
 def failing_tests(output: str) -> int | None:
@@ -1033,6 +1055,14 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # request and this provider caches nothing, so exposure is charged per turn
         # whether a tool is used or not - and a capability win paid for with a large
         # token increase is a trade that has to stay visible.
+        # What memory COST, on the same row as what it did. Injected context sits in
+        # the system prompt and is re-sent every request on a provider that caches
+        # nothing, so a recall win bought with a large token rise is a trade that has
+        # to stay visible - the same rule the schema budget is reported under.
+        "memory": exposure.get("memory", False),
+        "memory_chars": max((t.get("chars", 0) for t in trace
+                             if t.get("kind") == "memory"), default=0),
+        "sessions": exposure.get("sessions", 1),
         "schema_chars": exposure.get("schema_chars", 0),
         "schema_tokens_est": exposure.get("schema_chars", 0) // 3 * max(len(models), 1),
         # Which tools were exposed, so a row can never be compared against one

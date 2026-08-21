@@ -2494,3 +2494,193 @@ per run, so no future comparison can mix a 4-tool measurement with a 5-tool one 
 | **what was actually bought** | **−50% turns, −37% tokens on web tasks; +3.3% on everything else** |
 
 **Kept.** Not for the reason it was proposed.
+
+---
+
+## Phase M — Memory: 0/18 without it, 15/18 with it, and 40% cheaper
+
+**The cleanest result this project has produced.** A benchmark that scores zero before the feature
+and moves after it is the thing Phases J through L kept failing to build — and it very nearly did
+not happen here either.
+
+**Scope was chosen deliberately and against advice:** episodic recall *and* a durable profile. The
+profile was flagged as the harder half — a second store, with no obvious pass/fail — and taken
+anyway. So it was given its own deterministic score rather than shipped on vibes.
+
+### The baseline, which is the whole reason this number means anything
+
+Phase L was meant to take a web split from 0 to 18 and the baseline came back **18/18** — the agent
+could already do it. That result made this one non-negotiable, and the trap was verified to be
+present here before the run, not assumed absent:
+
+```
+gate verdict: ('auto', 'run_shell classified write')
+run_shell(command='echo "deploy key kx-9920" > /state/notes.md && cat /state/notes.md')
+  -> exit 0, "deploy key kx-9920"
+```
+
+`run_shell`'s only argument is `command`, which is not in `PATH_ARGS`, so no workspace check applies
+to it — and Phase K made `/state` writable. **The agent could have passed this benchmark with no
+memory layer at all.** It was left open on purpose: patching it before measuring would have destroyed
+the evidence of whether it mattered.
+
+It did not fire. **memory OFF scored 0/18**, and the traces say why:
+
+```
+session 1:  write_file deploy_key.txt      <- its instinct WAS to persist...
+                                              ...into the workspace, which reset.sh wipes
+session 2:  grep -r "deploy" .
+            env | grep -i deploy
+            find . -type f  (x4)
+            -> nothing. guessed.
+```
+
+The agent tried to persist — to the workspace, not to `/state`. **Resetting the workspace between
+sessions is what made this benchmark valid**, and that was a design decision taken before the data
+existed, not a lucky one.
+
+**The two families fail differently, and that is worth keeping:**
+
+| family | turns | tokens | verdicts |
+|---|---|---|---|
+| `recall-*` (a fact) | 10/10/10, at the cap | ~23,000 | mostly `stuck` |
+| `profile-*` (a habit) | 2-5 | ~6,000 | all `done` |
+
+Asked for a fact it does not have, the agent **thrashes**. Asked to honour a preference it was never
+told, it finishes fast and **confidently wrong**. One missing capability, two symptoms.
+
+### The result
+
+Six cases, three runs each, two sessions per case-run, one flag apart.
+
+| | memory OFF | memory ON |
+|---|---|---|
+| `recall-*` (facts) | 0/9 | **9/9** |
+| `profile-*` (habits) | 0/9 | **6/9** |
+| **total** | **0/18** | **15/18** |
+| median tokens | 8,744 | **6,220** (−29%) |
+| total tokens | 233,544 | **139,347** (−40%) |
+| mean turns | 5.4 | **2.7** (−50%) |
+| runs ending `stuck` | 7 | **0** |
+
+**Memory was budgeted as a cost and came out a saving.** Injected context is charged on every request
+(697 chars at most, and `memory_chars` is on every row), and the run still finished 40% cheaper,
+because the thrashing stops. Every `stuck` verdict disappeared.
+
+Trust checks both ways: 18 rows each, 0 blocked, 0 tampered, 0 write violations, one model,
+`memory: false/true` and `sessions: 2` recorded per row.
+
+### The mechanism, read from the traces rather than assumed
+
+```
+session 1:  write_file ORIGIN.txt          <- still tries the workspace first
+            remember {"note": "The user has a standing rule that every file
+                       I create must start with ORIGIN: quartzite-desk"}
+session 2:  write_file notes.txt           <- with the line, unprompted
+```
+
+**The agent adopted `remember` on its own.** `prompts/SOUL.md` never mentions it — it was discovered
+from the tool schema alone, exactly as `fetch` was in Phase L. Both stores are live and it picks
+between them situationally: `profile-marker` went through `AGENT.md`, while `profile-units` recalled
+the rule from an episode with `AGENT.md` left empty.
+
+### A fixture defect, and the fix recorded as a separate cycle
+
+`profile-units` scored 0/3. Not a memory failure — all three runs wrote **`200cs`**, while the check
+was `grep -qF "200 cs"`. The conversion (two seconds → 200 centiseconds), the unit and the label were
+all correct. **The case was measuring whitespace.**
+
+This is the cost of deterministic scoring, taken deliberately over an LLM judge: a judge would have
+passed it, but a judge whose agreement with a human has never been measured is an opinion with a
+number printed on it.
+
+The check was **not** touched during the run. It was amended afterwards, on request, to
+`grep -qE "200 ?cs"` and **re-verified in both directions before being trusted**:
+
+```
+untouched                 -> fail        '2 seconds'  -> still fails
+'200cs'                   -> pass        'the build took 2s' -> still fails
+'Build took 200 cs'       -> pass        '20 cs'      -> still fails
+'build took 200cs total'  -> pass        '2000cs'     -> still fails
+```
+
+The last column is the one that matters: a loosened check must not make the case passable by writing
+any number at all.
+
+**Both numbers stand on the record. 15/18 is the score as measured. The amended-check re-run is a
+separate, later cycle, made after seeing the data, and is labelled as such** — a number that improved
+after its scorer was adjusted has to say so.
+
+### `registry.py` — created, but not the thing §12 describes
+
+§12's trigger is *"add at tool six"*. Phase L counted five and correctly declined. `remember` is the
+sixth, so it fires.
+
+**The `@tool` decorator it names is still not built, and the arithmetic says so.** §13 costed that
+machinery at ~25 lines plus ~5 per tool against ~8 per tool written out, which breaks even above
+eight *hand-written* tools; there are five, because `fetch`'s schema arrives from the server. The
+stronger reason is that the descriptions are load-bearing: the text in `edit_file`'s schema coaches
+the model on choosing a unique snippet, and that coaching is what took real repositories from 0/9 to
+4/7. Deriving a schema from a signature either loses it or takes it as a decorator argument, at which
+point the schema has been written anyway.
+
+What the file **does** own is a real misplacement the sixth tool exposed: `check_budget()` bounds the
+whole tool set and was living in `agent/mcp.py`, which stopped being right the moment a second source
+of tools appeared.
+
+### The prompt was NOT widened, and the result argues it did not need to be
+
+The plan's M0 said to widen `prompts/SOUL.md`, which opens *"You fix broken code"*. It was left
+alone: widening it in the same cycle as adding memory is two variables, and the Iron Law forbids
+that. The agent then discovered and used `remember` with no prompt support at all.
+
+**The evidence for a future prompt cycle is now on the record, though.** In session 1 the agent
+runs `which git`, `pytest -q` and `git status` when it has simply been *told a fact* — it treats a
+conversational statement as a repository to investigate. That costs turns and is exactly what a
+widened prompt would fix. It is a separate cycle with its own measurement.
+
+### Tests
+
+**225 offline**, up from 202 — no API key, no network, read-only root. The suite caught a real
+defect introduced here: `finish` now writes episodes, so the node tests were about to read and write
+the **real** agent home. `tests/conftest.py` redirects `MEMORY_DB` and `PROFILE` alongside
+`STATE_DB`, and a test that passes or fails depending on an unrelated session is exactly the failure
+that redirect prevents.
+
+The re-run, on the amended check: **`profile-units` 3/3**, 0 blocked, 0 tampered, 0 write violations.
+That puts the recall split at an amended **18/18** against a **0/18** baseline — with the amendment's
+provenance stated above, and the as-measured 15/18 left standing beside it.
+
+### The dev regression guard
+
+| dev suite | K (4 tools) | L (+mcp) | M (+memory) |
+|---|---|---|---|
+| pass | 14/15 | 15/15 | **14/15** |
+| total tokens | 383,489 | 396,025 | **444,481** |
+| median tokens | 26,600 | 27,266 | 31,582 |
+| mean turns | 8.4 | 8.0 | 8.6 |
+| schema chars | 1,997 | 3,159 | **3,553** |
+| memory chars | 0 | 0 | **0** |
+| tamper / violations | 0/0 | 0/0 | **0/0** |
+
+**No regression** - 14/15 is the original baseline, and L's 15/15 was already recorded as noise on
+`add-endpoint` rather than an improvement.
+
+`memory_chars: 0` across the whole dev suite is correct and worth stating: scored case-runs get a
+FRESH agent home (Phase K), so on a single-session case there is never anything to recall. Memory's
+cost on coding work is therefore the `remember` schema alone - 394 chars, ~131 tokens per call, which
+accounts for roughly 18k of the 61k rise. **The rest is run-to-run variance at n=3**: mean turns moved
+8.0 -> 8.6 and `add-endpoint` alone burned 43k. Not attributed further than that.
+
+### Phase M scoreboard
+
+| | result |
+|---|---|
+| recall benchmark built before the feature | met - and the baseline was 0/18, not a derivable zero |
+| episodic recall | **0/9 -> 9/9** |
+| the profile, given a real pass/fail | **0/9 -> 6/9 as measured, 9/9 on the amended check** |
+| cost reported beside recall | met - and it was a 40% SAVING, not a cost |
+| dev regression | met - 14/15, unmoved |
+| vectors (FR-408) | **not built.** Keyword recall was measured and did not fall short |
+
+**Kept.**

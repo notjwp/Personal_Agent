@@ -197,7 +197,17 @@ The schema got 58% dearer per request and the run still got 37% cheaper: four di
 
 ---
 
-## Phase M — Memory: remembers across sessions, and can prove it
+## Phase M — Memory: remembers across sessions, and can prove it — **BUILT**
+
+> **Result: 0/18 without memory, 15/18 with it, and 40% cheaper.** Episodic recall went 0/9 ->
+> 9/9; the profile 0/9 -> 6/9 as measured, and 9/9 after a fixture check that was measuring
+> whitespace was amended and re-verified. Dev suite unmoved at 14/15. Full evidence, including
+> the provenance of the amended check, in `eval/CHANGELOG.md`.
+>
+> **Two deviations from the plan below, both deliberate.** M0's prompt widening was NOT done -
+> two variables in one cycle - and the agent adopted `remember` from its schema alone anyway.
+> M5 created `agent/registry.py` but NOT the `@tool` decorator §12 names: five of six schemas
+> are hand-written, break-even is above eight, and the descriptions are load-bearing.
 
 ### Context — why this phase, and what changed in the planning of it
 

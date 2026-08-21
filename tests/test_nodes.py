@@ -461,7 +461,9 @@ def test_trace_captures_model_and_tool_activity(fresh_app, tmp_workspace, monkey
     assert kinds.count("model") == 2
     assert kinds.count("tool") == 1
     assert kinds[-1] == "terminal"
-    assert trace[0]["billed_tokens"] == 150
+    # Found by kind, not by position: `act` emits a `memory` event ahead of the
+    # model one whenever anything was recalled, so trace[0] is not always the model.
+    assert next(t for t in trace if t["kind"] == "model")["billed_tokens"] == 150
 
 
 def test_checkpoint_persists_and_resumes(fresh_app, tmp_workspace, monkeypatch):

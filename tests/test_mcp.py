@@ -13,7 +13,7 @@ coroutine that needs it, never at module level.
 """
 import pytest
 
-from agent import config, mcp, policy
+from agent import config, mcp, policy, registry
 
 
 @pytest.fixture(autouse=True)
@@ -162,9 +162,10 @@ def test_an_empty_error_still_raises_something_actionable():
 # ============================================================ the schema budget
 
 def test_the_budget_accepts_the_current_tool_set():
-    from agent.tools import SCHEMAS
-
-    assert mcp.check_budget(SCHEMAS) <= config.MAX_SCHEMA_CHARS
+    """The check now lives in agent/registry.py - it bounds the WHOLE tool set, and
+    kept living in mcp.py only until a second source of tools appeared. It is still
+    exercised from here because mcp.activate() is what calls it."""
+    assert registry.check_budget() <= config.MAX_SCHEMA_CHARS
 
 
 def test_an_overrun_is_fatal_and_names_the_size():
@@ -177,7 +178,7 @@ def test_an_overrun_is_fatal_and_names_the_size():
     bloat = [{"name": f"t{i}", "description": "x" * 500, "input_schema": {}}
              for i in range(50)]
     with pytest.raises(mcp.ToolBudgetExceeded) as caught:
-        mcp.check_budget(bloat)
+        registry.check_budget(bloat)
     assert "against a cap of" in str(caught.value)
     assert f"{config.MAX_SCHEMA_CHARS:,}" in str(caught.value)
 
@@ -208,10 +209,29 @@ def test_a_built_in_cannot_be_shadowed_by_a_server(monkeypatch):
     assert toolset()["run_shell"]["fn"] is TOOLS["run_shell"]["fn"]
 
 
-def test_shutdown_leaves_the_risk_map_exactly_as_it_found_it():
-    """With MCP off the agent must be byte-identical to the four-tool one, and a
-    lingering RISK entry would leave a tool classified that no longer exists."""
-    before = dict(policy.RISK)
-    policy.register("fetch", "read")
+def test_shutdown_removes_only_what_mcp_itself_registered():
+    """Two modules register tools now - mcp.py and memory.py.
+
+    This used to snapshot the risk map at import and strip anything not in it,
+    which meant whichever module imported first silently owned the other's entries
+    and deleted them on shutdown. The symptom would have been `remember` refused as
+    an unknown tool, mid-run, only when MCP happened to be on.
+    """
+    from agent import memory
+
+    memory.activate()                       # registers `remember`
+    mcp._REGISTERED.append("pretend_tool")  # as mcp.activate() would
+    policy.register("pretend_tool", "read")
+
     mcp.shutdown()
-    assert policy.RISK == before
+
+    assert "pretend_tool" not in policy.RISK
+    assert policy.RISK.get("remember") == "write", "mcp stripped memory's tool"
+    memory.deactivate()
+
+
+def test_shutdown_leaves_the_built_in_risk_map_intact():
+    """With everything off the agent must be the four-tool one exactly."""
+    builtins = {"read_file", "write_file", "edit_file", "run_shell"}
+    mcp.shutdown()
+    assert builtins <= set(policy.RISK)

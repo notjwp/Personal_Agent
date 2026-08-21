@@ -780,6 +780,12 @@ speculative code and will rot.
       runs/<ts>/         summary.jsonl + <case-id>.json full traces
       CHANGELOG.md       one row per tuning cycle
     tests/
+      test_memory.py     ADDED Phase M, the FIFTH stated deviation. Justified on
+                         the same standard: memory is the one component whose
+                         failure is SILENT by construction. A broken tool throws;
+                         a memory that never retrieves just makes the agent look
+                         forgetful, which is indistinguishable from a model
+                         having a bad day.
       test_mcp.py        ADDED Phase L, the FOURTH stated deviation from the
                          three-file tests/ allowlist. Justification, to the same
                          standard as the other three: agent/mcp.py is the first
@@ -808,15 +814,32 @@ DEFERRED FILES — create each only when its layer is earned
   agent/registry.py    the @tool decorator and schema derivation. Break-even
                        against hand-written schemas is five tools; v1 has
                        three. Add at tool six.
-                       STILL DEFERRED after Phase L, counted honestly: four
-                       built-ins (edit_file landed with the real repositories)
-                       plus MCP's `fetch` is FIVE, and five is not six. The
-                       merge is nine lines in tools.toolset(), two callers.
+                       ADDED Phase M: `remember` is the sixth tool, so the
+                       trigger fires. It owns the merged tool view and the
+                       schema budget - check_budget() had been living in mcp.py,
+                       which stopped being right once a second source of tools
+                       appeared.
+                       The @tool DECORATOR is still NOT built, and section 13's
+                       own arithmetic is why: ~25 lines + ~5/tool against ~8/tool
+                       hand-written breaks even above EIGHT hand-written tools,
+                       and there are five (fetch's schema comes from the server).
+                       The descriptions are also load-bearing - edit_file's text
+                       coaches the model and is what took real repositories from
+                       0/9 to 4/7. A derived schema loses it.
   agent/mcp.py         ADDED Phase L. The MCP client: stdio transport, servers
                        as subprocesses inside the sandbox, tools registered
                        through policy.register(). Earned by the §11 amendment
                        above, which permits it under three stated conditions.
-  agent/memory.py      when episodic recall has something worth recalling
+  agent/memory.py      ADDED Phase M. Its trigger - "when episodic recall has
+                       something worth recalling" - fired once sessions could
+                       chain. Episodes in SQLite FTS5 at /state/memory.db plus
+                       the AGENT.md profile below. FR-406 and FR-407 are [S],
+                       and section 9 puts [S] in scope once the [M] set passes
+                       evaluation, which it has (Definition of Done 9/9): this
+                       is scope arriving on schedule, not a liberty.
+                       FR-408 (vectors) NOT built - keyword recall was measured
+                       and did not fall short, which is the only thing that
+                       earns them.
   agent/web.py         when FR-501/502 enter scope
   agent/worker.py      when FR-6xx enters scope. NOT in v1 — section 9 lists
                        the scheduler and worker as explicitly out of scope.
