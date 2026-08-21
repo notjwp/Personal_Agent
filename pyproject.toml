@@ -7,6 +7,10 @@ dependencies = [
   "langgraph==1.2.11",
   "langgraph-checkpoint-sqlite==3.1.1",
   "openai==3.2.0",
+  # Phase L. mcp is held below 2.0.0 because mcp-server-fetch declares mcp<2 -
+  # measured, not assumed: 2.0.0 fails with ResolutionImpossible.
+  "mcp==1.29.0",
+  "mcp-server-fetch==2026.8.18",
 ]
 
 [project.optional-dependencies]

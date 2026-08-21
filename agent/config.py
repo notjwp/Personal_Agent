@@ -123,3 +123,56 @@ MAX_RESULT_CHARS = 6_000
 TOOL_CAPS = {"read_file": 6_000, "write_file": 400, "run_shell": 6_000}
 HEAD_LINES = 30
 TAIL_LINES = 20
+
+# --- tools (Phase L) -------------------------------------------------------
+
+# The tool schemas are re-sent on EVERY request, so their size is a per-turn tax
+# on every run, paid whether a tool is used or not. Measured on this project
+# before any of MCP was built:
+#
+#   4 built-in tools     1,997 chars  ~665 tokens
+#   x 9.1 model calls    ~6,050 tokens per run, against a median run of 26,600
+#                        - so 23% of a run was already tool schema
+#   cache_read_tokens    0 on all 15 rows of the Phase K regression run
+#
+# That last line is why this cap exists. On a provider that caches prompts the
+# schema is paid once; on this one it is paid every turn, which makes tool breadth
+# the most expensive thing the project can buy. At ~254 chars-per-token-ish rates
+# measured against a real MCP server, 24 exposed tools would add ~61,500 tokens per
+# run and breach NFR-402's 60,000 median ceiling on schema ALONE.
+#
+# 6,000 chars is ~2,000 tokens/call and ~18,000/run, which leaves the median well
+# inside NFR-402. It is roughly eight tools.
+#
+# If the provider changes, RE-MEASURE before raising this: the number is a
+# consequence of one endpoint's caching behaviour on one day, not a law.
+MAX_SCHEMA_CHARS = 6_000
+
+# MCP servers started for a run, and the risk of every tool they expose.
+#
+# Declared here rather than discovered, because §11's non-goal on dynamic tool
+# loading is amended only for servers that are baked into the image at build time
+# and whose tools are risk-classified BEFORE they are offered to the model. A
+# server that offers a tool absent from `risk` gets that tool refused, never
+# defaulted - see policy.register().
+#
+# `fetch` is "read": it retrieves a URL and cannot modify anything. Where it may
+# go is bounded by the egress allowlist, which is per case-run (Phase K), not by
+# this classification.
+MCP_SERVERS = {
+    "fetch": {
+        "command": ["python", "-m", "mcp_server_fetch"],
+        "risk": {"fetch": "read"},
+    },
+}
+
+# The kill switch. A capability that cannot be turned off cannot be attributed
+# either: every scored row records whether MCP was on, and with it off the agent
+# must fall back to exactly the four built-in tools.
+MCP_ENABLED = os.environ.get("AGENT_MCP", "on").strip().lower() not in ("0", "off", "false")
+
+# Bounds on a third party's process. `run_shell` already carries this scar: an
+# unbounded check command held a scored suite for 25 minutes. A hung MCP server is
+# the same failure wearing a different name, so it gets the same treatment.
+MCP_STARTUP_TIMEOUT = float(os.environ.get("AGENT_MCP_STARTUP_TIMEOUT", "30"))
+MCP_CALL_TIMEOUT = float(os.environ.get("AGENT_MCP_CALL_TIMEOUT", "60"))

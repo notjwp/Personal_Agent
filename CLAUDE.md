@@ -4,13 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Phases A-E and K are built. What exists: the measurement rig, the
+Phases A-E, K and L are built. What exists: the measurement rig, the
 `act -> gate -> execute -> reflect` loop, a two-provider model adapter, the interactive CLI with
 approval and resume, kernel-enforced sandboxing, and a committed baseline.
 
 - **Baseline: 14/15**, 3 runs per dev case, 0 blocked, on `nvidia/nemotron-3-super-120b-a12b`.
   Per-case table in `README.md`; conditions and trust checks in `eval/CHANGELOG.md`.
-- **182 unit tests**, green with no API key, no network, and a read-only root filesystem.
+- **202 unit tests**, green with no API key, no network, a read-only root filesystem, and
+  without the `mcp` package installed.
 - **The model was the constraint, not the loop.** An earlier baseline of 4/15 on
   `llama-3.1-70b` was diagnosed as loop defects - 9 of 15 runs never called `read_file`, all 15
   ended `done` (11 wrongly), 5 rewrote their own tests. **All three vanished on a stronger model
@@ -73,7 +74,27 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   successful write to `/app` would not even have counted as a violation. Scored case-runs get a
   **blank** agent home; the interactive CLI keeps a persistent one.
 
+- **MCP is in, and it bought efficiency rather than capability (Phase L).** One server
+  (`mcp-server-fetch`, one tool), baked into the image at build time, stdio, running as a subprocess
+  so Phase K's boundary already contains it. Same web split, one flag apart: **18/18 both ways**, but
+  turns 6.2 -> 3.1 and median tokens 11,528 -> 7,293. `AGENT_MCP=off` restores the four-tool agent
+  exactly, and every row records `mcp` and `schema_chars`.
+- **`registry.py` still does not exist, and that is deliberate.** §12's trigger is "add at tool six";
+  four built-ins plus `fetch` is five. The merge is nine lines in `tools.toolset()`. A deferred layer
+  with a numeric trigger does not fire because the phase that would use it turned up.
+
 ### Standing lessons, each paid for once
+
+- **Tool schemas are rent, charged per turn, and this provider caches nothing.** `cache_read_tokens`
+  was 0 on all 15 rows of a scored run, so the four built-in schemas were already ~23% of a median
+  run. At a real MCP server's ~254 tokens/tool, 24 exposed tools would breach NFR-402 on schema
+  ALONE. **Measure whether the provider caches before assuming tool breadth is cheap**;
+  `MAX_SCHEMA_CHARS` now refuses a run that exceeds the budget.
+- **A "derivable zero" baseline must still be measured.** The web split was supposed to score 0
+  without a fetch tool. It scored **18/18**: `run_shell` plus Python's `urllib` already reaches the
+  web, because the harness sets `HTTP_PROXY` in the container. Skipping that run as obvious would
+  have shipped a false capability claim, unfalsifiable afterwards because the split would have
+  looked like it went 0 -> 18.
 
 - **A default that asserts the safe answer is how a row comes to claim a condition nobody checked.**
   `os.environ.get("AGENT_EGRESS", "restricted")` - and nothing anywhere set `AGENT_EGRESS`. Every

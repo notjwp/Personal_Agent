@@ -29,13 +29,46 @@ DANGER = re.compile(
 
 # The single source of a tool's risk. `run_shell` is `write` here and is escalated
 # only by DANGER above — so this map is the live path, not a dead declaration.
+#
+# MCP tools are added by register() at run start. They are added HERE rather than
+# consulted from a second map, because a second source of risk is a second thing
+# that can disagree — and the spec's own fix to the v1 skeleton was that RISK must
+# be the single path through classify().
 RISK = {"read_file": "read", "write_file": "write", "edit_file": "write",
         "run_shell": "write"}
 
 VERDICT_BY_RISK = {"read": "auto", "write": "auto", "destructive": "confirm"}
 
 # Arguments whose value is a filesystem path and must stay inside the workspace.
-PATH_ARGS = ("path", "file", "cwd")
+#
+# The first three are the names THIS PROJECT's tools happen to use, and that was
+# enough while the tool set was closed. It is not enough once a third party can
+# register a tool: a server calling its argument `filename` or `directory` would
+# have walked straight past this check. Widened deliberately, and tested for the
+# bypass rather than assumed closed.
+#
+# `url` and `uri` are deliberately NOT here. They are not filesystem paths, and
+# running one through the workspace check would resolve "https://x/y" into a
+# subdirectory of the workspace and quietly approve it — a check that produces a
+# confident wrong answer is worse than no check.
+PATH_ARGS = ("path", "file", "filename", "filepath", "cwd", "dir", "directory",
+             "folder", "source", "destination", "dest", "target", "output")
+
+
+def register(name: str, risk: str | None) -> str:
+    """Declare an MCP tool's risk before its schema is ever shown to the model.
+
+    Returns the risk actually recorded, which is not always the one requested.
+
+    An unknown or missing risk becomes `destructive`, never `read`. That makes an
+    unclassified tool VISIBLE — it pauses for approval interactively and is refused
+    unattended — instead of silently trusted. This is the same failure Phase K
+    recorded from the other side: `AGENT_EGRESS` defaulted to "restricted", so every
+    trace row claimed a condition nobody had checked. A default that asserts the
+    safe-looking answer hides exactly what it should surface.
+    """
+    RISK[name] = risk if risk in VERDICT_BY_RISK else "destructive"
+    return RISK[name]
 
 
 def classify(name: str, args: dict, autonomous: bool) -> tuple[str, str]:

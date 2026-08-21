@@ -2332,3 +2332,165 @@ which is why it never showed on the real-repository set the column was built for
 **Left unfixed deliberately.** It is not a Phase K defect and fixing it here would change the dev
 table in a way unrelated to the sandbox, muddying the regression comparison this run exists to make.
 It is one regex, and it should be its own change.
+
+---
+
+## Phase L — MCP: one server, and a capability claim that did not survive its own baseline
+
+**Headline: MCP bought efficiency, not capability.** The web split scored 18/18 *without* MCP, so
+the thing this phase was built to add turned out to already exist. What it did buy is a **50% cut in
+turns and a 38% cut in tokens**, which is worth having and is not what was planned for.
+
+### Three measurements taken while planning, before any code
+
+They reshaped the phase, and each would have cost a week of quota to discover afterwards.
+
+**1. Prompt caching is not happening.** All 15 rows of the Phase K regression run report
+`cache_read_tokens: 0`. The `SCHEMAS` comment in `tools.py` — *"tools render first in the prompt, so
+reordering them invalidates the entire prompt cache"* — is sound reasoning that buys nothing here.
+Every schema is paid in full, on every request, at a mean of **9.1 model calls per run**.
+
+**2. Tool schemas were already 23% of a run.** Four built-ins are 1,997 chars ≈ 665 tokens; × 9.1
+calls ≈ 6,050 tokens against a median run of 26,600.
+
+**3. The ecosystem is not reachable.** `node ABSENT, npx ABSENT, uvx ABSENT`, `import mcp` fails, and
+`/etc/pip.conf` is `no-index`. The npx-based majority of public MCP servers cannot run in this image,
+and nothing installs at run time.
+
+Together these killed the ROADMAP's stated strategy — *"inherit an ecosystem instead of hand-writing
+37 tools"*. At a real server's ~254 tokens/tool, **24 exposed tools would add ~61,500 tokens/run and
+breach NFR-402's 60,000 ceiling on schema alone.** Breadth is the most expensive thing this project
+could buy, and it is charged per turn whether a tool is used or not.
+
+So Phase L shipped **one** server, and `config.MAX_SCHEMA_CHARS = 6_000` now refuses to start a run
+that exceeds the budget — loudly, naming the overrun, because a budget that can be exceeded with a
+printed warning is not a budget.
+
+### The pin, measured not assumed
+
+`mcp==2.0.0` + `mcp-server-fetch==2026.8.18` fails with `ResolutionImpossible`: the server declares
+`mcp<2,>=1.29.0`. Pinned to **1.29.0**. The server also prints *"node executable not found, reverting
+to pure-Python mode"* on every start — expected, and the reason it was chosen: it degrades rather
+than failing.
+
+### `registry.py` was NOT created, and that is the finding
+
+§12 deferred it with an unusually specific trigger: *"Break-even against hand-written schemas is five
+tools; v1 has three. **Add at tool six.**"*
+
+Counted honestly: four built-ins (`edit_file` landed during the real-repo work) plus `fetch` is
+**five**. Five is not six. The file was not created, and the merge lives in `tools.toolset()` — nine
+lines with two callers, which is what CE-01 asks for. **A deferred layer with a numeric trigger does
+not get to fire because the phase that would use it has arrived.**
+
+### The zero baseline was not zero — the most important result here
+
+The plan said to record the web split's zero baseline *before* the capability, and to **verify it was
+zero for the right reason**. It was not zero. It was **18/18**.
+
+`web-release` run 0, with `AGENT_MCP=off`:
+
+```
+run_shell  | curl -s http://fixture-web/release.html      <- not in the image
+run_shell  | which wget                                    <- not in the image
+run_shell  | python3 --version
+run_shell  | python3 -c "import urllib.request; ..."       <- worked
+write_file | answer.txt
+read_file  | answer.txt
+```
+
+`run_shell` plus Python's `urllib` reaches the web already, because `spawn()` sets `HTTP_PROXY` in the
+container and urllib honours it. The agent found that in four calls, in every case, in all 18 runs.
+
+**Had the baseline been skipped as "derivable zero", this phase would have shipped a false capability
+claim** — and it would have been unfalsifiable afterwards, because the split would have looked like it
+went 0 → 18. That is exactly what the measurement-before-capability rule exists to catch, and it is
+the first time in this project that it has actually caught something.
+
+### The comparison that Phase L can honestly make
+
+Same 6 cases, 3 runs each, one flag apart. The kill switch is what makes this a controlled
+comparison rather than two separate measurements.
+
+| | MCP off | MCP on | delta |
+|---|---|---|---|
+| pass | 18/18 | 18/18 | — |
+| turns (mean) | 6.2 | **3.1** | **−50%** |
+| tokens (median) | 11,528 | **7,293** | **−37%** |
+| tokens (total) | 217,213 | **133,951** | **−38%** |
+| tool calls (mean) | 6.2 | 3.1 | −50% |
+| tool errors | 0 | 0 | — |
+| schema per request | 1,997 | 3,159 | **+58%** |
+
+**The schema got 58% more expensive per request and the run still got 37% cheaper.** The saving is
+not subtle and it is not in the model: it is four discovery calls that stop happening. `fetch` also
+returns extracted text rather than raw HTML, which is why the largest single result fell from 1,081
+to 234 chars.
+
+Trust checks on both: 18 rows, 0 blocked, 0 tampered, 0 write violations, one model, and
+`mcp: []` versus `mcp: ["fetch"]` recorded per row so the two can never be confused.
+
+**This was also the first scored use of Phase K's per-case egress.** Every row records
+`fixture-web,integrate.api.nvidia.com` — the case declared the host, and the allowlist was narrowed
+back afterwards.
+
+### The gate, and one gap that was real
+
+`PATH_ARGS` guarded `path`, `file`, `cwd` — the argument names *this project's own tools* use. That
+was sufficient only while the tool set was closed. A server calling its argument `filename`,
+`directory`, `destination`, `target` or `output` would have walked straight past the workspace check.
+Widened, and the bypass is now a test rather than an assumption.
+
+`url` is deliberately **not** in the list: running one through the workspace check resolves
+`https://x/y` into a subdirectory of the workspace and approves it, and a check that produces a
+confident wrong answer is worse than no check.
+
+`policy.register()` refuses to default an unclassified tool to `read` — it records `destructive`, so
+such a tool prompts interactively and is refused unattended. That is Phase K's `AGENT_EGRESS` lesson
+applied from the other side: a default that asserts the safe-looking answer hides what it should
+surface.
+
+### Tests
+
+**202 offline**, up from 182 — no API key, no network, read-only root, and **without the `mcp`
+package installed**, because `agent/mcp.py` imports the third-party client inside the coroutine that
+needs it rather than at module level.
+
+### The dev regression guard — no regression, and the cost of carrying a tool you do not use
+
+The +58% schema is charged on the bug-fixing split too, where nothing ever calls `fetch`. That is
+where an unearned tool shows up as pure cost, so this is the guard that mattered.
+
+| dev suite | Phase K (no MCP) | Phase L (MCP on) |
+|---|---|---|
+| pass | 14/15 | **15/15** |
+| total tokens | 383,489 | 396,025 (**+3.3%**) |
+| median tokens | 26,600 | 27,266 (+2.5%) |
+| mean turns | 8.4 | 8.0 |
+| schema per request | 1,997 | 3,159 (+58%) |
+| tampered / write violations | 0 / 0 | 0 / 0 |
+
+**15/15 is NOT a Phase L improvement and must not be reported as one.** The extra pass is
+`add-endpoint`, which scored 2/3 in the 2026-08-19 baseline and 2/3 again in Phase K. It is the
+suite's known-flaky case and one run at n=3 is inside its own variance. Nothing in MCP could plausibly
+help a case with no network in it. **What the guard establishes is the absence of a regression, which
+is all it was ever asked to establish.**
+
+The cost answer is the useful one: **a tool you never call costs about 3% of a long run**, not 58%.
+The schema is a fixed per-request charge and bug-fixing runs are long, so it dilutes. On the web
+split, where the tool IS called, the same exposure saved 37%.
+
+That is the whole trade, and both halves are now on the row: `schema_chars` and `mcp` are recorded
+per run, so no future comparison can mix a 4-tool measurement with a 5-tool one by accident.
+
+### Phase L scoreboard
+
+| | result |
+|---|---|
+| exit criterion (capability) | **not met, and the criterion was wrong** — the agent already had the web |
+| exit criterion (boundary) | met: server inside the sandbox, unknown tools denied, 0 violations |
+| exit criterion (cost) | met: NFR-402 never approached; budget enforced at 6,000 chars |
+| dev regression | met: no regression |
+| **what was actually bought** | **−50% turns, −37% tokens on web tasks; +3.3% on everything else** |
+
+**Kept.** Not for the reason it was proposed.

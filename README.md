@@ -276,6 +276,36 @@ tamper check that would have caught it *repairs after the fact*, and a kernel re
 Verified in both directions before it was believed; the probe and its output are in
 `eval/CHANGELOG.md`.
 
+### Tools, and what they cost
+
+Four built-in tools (`read_file`, `write_file`, `edit_file`, `run_shell`) plus **MCP**, which
+contributes one server and one tool (`fetch`). The server is baked into the image, runs as a
+subprocess **inside** the sandbox, and every tool it offers is risk-classified before its schema
+reaches the model. `AGENT_MCP=off` restores the four-tool agent exactly.
+
+**Tool schemas are re-sent on every request and this provider caches nothing** — `cache_read_tokens`
+was 0 on all 15 rows of a scored run. Four schemas were already ~23% of a median run, so breadth is
+the most expensive thing this project can buy: at a real MCP server's ~254 tokens/tool, 24 exposed
+tools would breach NFR-402's cost ceiling on schema alone. `config.MAX_SCHEMA_CHARS` refuses to start
+a run that exceeds 6,000 chars, and every row records `schema_chars` and `mcp`.
+
+**What MCP actually bought.** Six web cases, three runs each, one flag apart:
+
+| | MCP off | MCP on |
+|---|---|---|
+| pass | 18/18 | 18/18 |
+| turns (mean) | 6.2 | **3.1** |
+| tokens (median) | 11,528 | **7,293** |
+
+**No capability gain — the agent could already reach the web.** With MCP off it fell back to
+`run_shell` and Python's `urllib`, which works because the container has proxy variables set. It
+found that in four calls (`curl`, `which wget`, `python3 --version`, then urllib) and scored 18/18.
+The saving is those four calls, and it more than pays for a schema that grew 58%. On the bug-fixing
+split, where `fetch` is never called, carrying it costs **+3.3%**.
+
+That baseline is the reason the claim here is "cheaper" and not "it can now browse the web". It was
+expected to score 0 and was measured anyway.
+
 ### Interactive
 
 ```bash

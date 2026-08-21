@@ -26,7 +26,7 @@ from agent import config as settings
 from agent.context import shrink
 from agent.policy import classify
 from agent.provider import call_model
-from agent.tools import SCHEMAS, TOOLS
+from agent.tools import toolset
 
 SOUL = Path(__file__).resolve().parent.parent / "prompts" / "SOUL.md"
 
@@ -80,7 +80,10 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
     cfg = config.get("configurable", {})
     system = SOUL.read_text(encoding="utf-8")   # CE-05: read here, not at import
 
-    reply = call_model(state["messages"], system, SCHEMAS, cfg.get("on_text"))
+    # Rebuilt per turn rather than bound at import: which tools exist depends on
+    # whether MCP activated for THIS run, and CE-05 forbids deciding that at import.
+    schemas = [entry["schema"] for entry in toolset().values()]
+    reply = call_model(state["messages"], system, schemas, cfg.get("on_text"))
 
     trace = cfg.get("trace")
     if trace is not None:
@@ -136,7 +139,7 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
     for call in state["approved"]:
         started = time.monotonic()
         try:
-            raw = str(TOOLS[call["name"]]["fn"](**call["input"]))
+            raw = str(toolset()[call["name"]]["fn"](**call["input"]))
             is_error = False
         except Exception as exc:                    # FR-208: never propagates out
             raw = f"{type(exc).__name__}: {exc}"

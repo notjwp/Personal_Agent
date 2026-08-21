@@ -23,6 +23,7 @@ import uuid
 from langgraph.types import Command
 
 from agent import config as settings
+from agent import mcp
 from agent.graph import get_app, new_state
 
 RULE = "-" * 64
@@ -213,8 +214,29 @@ def main(argv: list[str] | None = None) -> int:
     app = get_app()
 
     if args.list:
-        return list_threads(app)
+        return list_threads(app)          # no model, so no tools, so no startup
 
+    # Started before EITHER path that calls a model, and torn down in `finally` so a
+    # server subprocess never outlives the session that asked for it. --resume needs
+    # it as much as a fresh goal does: a thread that used an MCP tool and is resumed
+    # without one would have that tool refused as unknown, mid-task.
+    try:
+        started = mcp.activate()
+    except (mcp.McpUnavailable, mcp.ToolBudgetExceeded) as exc:
+        print(f"MCP: {exc}", file=sys.stderr)
+        print("Run with AGENT_MCP=off to continue with the built-in tools only.",
+              file=sys.stderr)
+        return 2
+    if started:
+        print(f"MCP tools: {', '.join(started)}")
+
+    try:
+        return _dispatch(args, app, parser)
+    finally:
+        mcp.shutdown()
+
+
+def _dispatch(args, app, parser) -> int:
     if args.resume:
         if args.resume not in _thread_ids(app):
             # Say what exists rather than raising a traceback at someone who

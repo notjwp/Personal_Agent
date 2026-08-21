@@ -245,4 +245,23 @@ TOOLS = {
 
 # Order must stay deterministic: tools render first in the prompt, so reordering
 # them invalidates the entire prompt cache on every request.
+#
+# Measured in Phase L, and worth knowing before relying on that: the current
+# provider returned cache_read_tokens of 0 on all 15 rows of a scored run, so the
+# cache this ordering protects is not currently being hit at all. The ordering
+# costs nothing to keep and pays off the day the provider changes.
 SCHEMAS = [entry["schema"] for entry in TOOLS.values()]
+
+
+def toolset() -> dict:
+    """The built-in tools, plus any MCP tools active for this run (Phase L).
+
+    Two callers - `act` needs the schemas, `execute` needs the functions - which is
+    what earns it a function instead of the same merge written out twice (CE-01).
+
+    Built-ins win a name collision, deliberately: a server must not be able to
+    shadow `run_shell` with its own implementation.
+    """
+    from agent import mcp
+
+    return {**mcp.tools(), **TOOLS}

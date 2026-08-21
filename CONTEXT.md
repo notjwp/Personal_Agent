@@ -725,6 +725,19 @@ scope rather than pushing through.
   - A web UI. CLI/TUI only.
   - Voice (FR-704 is explicitly [W]).
   - A general-purpose plugin marketplace or dynamic tool loading.
+    AMENDED 2026-08-21 (Phase L): dynamic tool loading is permitted ONLY through
+    MCP servers meeting all three of the following. A marketplace, and run-time
+    installation of a server, remain non-goals.
+      (a) baked into the image at BUILD time - /etc/pip.conf sets no-index, so a
+          server cannot be introduced mid-run;
+      (b) run INSIDE the sandbox, as a subprocess of the agent, inheriting the
+          container's mounts and network namespace. A server on the host would
+          have host access and would make the container decorative;
+      (c) every tool risk-classified BEFORE its schema reaches the model.
+          policy.register() records an unclassified tool as `destructive`, never
+          `read`, so it prompts interactively and is refused unattended.
+    Bounded by config.MAX_SCHEMA_CHARS, because schemas are re-sent on every
+    request. Reason and evidence: ROADMAP.md Phase L, eval/CHANGELOG.md.
   - Vector search before keyword recall has been measured and found wanting.
   - Fine-tuning or local model hosting for the orchestrator.
   - Windows-native support outside WSL2.
@@ -766,6 +779,15 @@ speculative code and will rot.
       fixtures/<id>/     the broken repo for each case, committed
       runs/<ts>/         summary.jsonl + <case-id>.json full traces
       CHANGELOG.md       one row per tuning cycle
+    tests/
+      test_mcp.py        ADDED Phase L, the FOURTH stated deviation from the
+                         three-file tests/ allowlist. Justification, to the same
+                         standard as the other three: agent/mcp.py is the first
+                         component that puts a THIRD PARTY's code inside the
+                         trust boundary, and its failure mode is not a crash but
+                         a tool that quietly does something other than its
+                         schema says, or one trusted because nobody classified
+                         it. Neither shows up in the other suites.
     scripts/
       reset.sh           restore workspace to a fixture's known state
     .agent/              RUNTIME STATE, gitignored
@@ -786,6 +808,14 @@ DEFERRED FILES — create each only when its layer is earned
   agent/registry.py    the @tool decorator and schema derivation. Break-even
                        against hand-written schemas is five tools; v1 has
                        three. Add at tool six.
+                       STILL DEFERRED after Phase L, counted honestly: four
+                       built-ins (edit_file landed with the real repositories)
+                       plus MCP's `fetch` is FIVE, and five is not six. The
+                       merge is nine lines in tools.toolset(), two callers.
+  agent/mcp.py         ADDED Phase L. The MCP client: stdio transport, servers
+                       as subprocesses inside the sandbox, tools registered
+                       through policy.register(). Earned by the §11 amendment
+                       above, which permits it under three stated conditions.
   agent/memory.py      when episodic recall has something worth recalling
   agent/web.py         when FR-501/502 enter scope
   agent/worker.py      when FR-6xx enters scope. NOT in v1 — section 9 lists

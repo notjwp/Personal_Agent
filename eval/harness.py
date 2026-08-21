@@ -69,6 +69,9 @@ FORWARDED_ENV = (
     # at 281k tokens, answering nothing.
     "AGENT_BUDGET",
     "AGENT_MAX_TURNS",
+    # Phase L's kill switch. Forwarded so a scored suite can be run with MCP off
+    # without editing config.py - and every row records which it was.
+    "AGENT_MCP",
 )
 
 # --------------------------------------------------------------- egress (H)
@@ -142,6 +145,52 @@ def model_hosts() -> list[str]:
     if (values.get("AGENT_PROVIDER") or settings.PROVIDER) == "anthropic":
         hosts.add("api.anthropic.com")
     return sorted(h for h in hosts if h)
+
+
+# The web split's server: fixed content, on the egress network, started by the
+# harness. Deliberately NOT the live internet - a case that fetches a real page
+# fails on someone else's outage, changes its answer without warning, and cannot be
+# re-verified a month later. Every one of those is a property this rig exists to
+# refuse.
+FIXTURE_WEB = "fixture-web"
+FIXTURE_WEB_IMAGE = "python:3.12-slim"
+FIXTURE_WEB_DIR = REPO / "eval" / "fixtures" / "web-content"
+
+
+def ensure_fixture_web() -> bool:
+    """Serve the web split's content on the egress network. Idempotent.
+
+    Resolvable by container name: the proxy pins its resolvers to 8.8.8.8/1.1.1.1
+    (the Phase H DNS fix), and it was NOT obvious that a container name would still
+    resolve through that. Measured before relying on it - `getent ahosts fixture-web`
+    inside the proxy returns 172.19.0.2 for both STREAM and DGRAM.
+    """
+    if _docker("inspect", "-f", "{{.State.Running}}", FIXTURE_WEB).stdout.strip() == "true":
+        return True
+    _docker("rm", "-f", FIXTURE_WEB)
+    started = _docker(
+        "run", "-d", "--name", FIXTURE_WEB, "--network", EGRESS_NET,
+        # Read-only, like everything else here: the fixture serves content and has
+        # no business being writable by anything that reaches it.
+        "-v", f"{FIXTURE_WEB_DIR.as_posix()}:/srv:ro",
+        "-w", "/srv", FIXTURE_WEB_IMAGE,
+        "python", "-m", "http.server", "80")
+    if started.returncode != 0:
+        print((started.stderr or started.stdout).strip()[-300:], file=sys.stderr)
+        return False
+    # Running is not the same as serving - the lesson the egress proxy taught at the
+    # cost of a scored pass. Probe the operation, not the state.
+    for _ in range(20):
+        probe = _docker("run", "--rm", "--network", EGRESS_NET, FIXTURE_WEB_IMAGE,
+                        "python", "-c",
+                        "import urllib.request as u;"
+                        f"print(u.urlopen('http://{FIXTURE_WEB}/index.html',"
+                        "timeout=3).status)")
+        if probe.stdout.strip() == "200":
+            return True
+        time.sleep(1)
+    print(f"{FIXTURE_WEB} is running but not serving", file=sys.stderr)
+    return False
 
 
 def allowlist_for(case: dict) -> list[str]:
@@ -722,6 +771,11 @@ def outer(args) -> int:
         print("no cases matched", file=sys.stderr)
         return 2
 
+    if any(FIXTURE_WEB in c.get("egress", ()) for c in cases) and not ensure_fixture_web():
+        print("the web split needs its fixture server and it would not start.",
+              file=sys.stderr)
+        return 2
+
     if NETWORK == EGRESS_NET and not ensure_egress():
         print("egress proxy could not be started, and a scored run must not reach "
               "the network unrestricted (NFR-205).", file=sys.stderr)
@@ -802,8 +856,23 @@ def inner(args) -> int:
     _, _, before = run_check(case)
 
     # Imported after setup so a rig failure needs no agent.
+    from agent import mcp
     from agent.graph import get_app, new_state
     from agent.provider import ProviderMisconfigured, ProviderUnavailable
+
+    # Tools before the model, because a run whose tools never came up measured
+    # nothing. A server that will not start is BLOCKED - infrastructure failure is
+    # not a score - while a schema budget overrun is MISCONFIGURED, since retrying
+    # cannot fix it and every retry would spend the overrun again.
+    try:
+        mcp_tools = mcp.activate()
+    except mcp.ToolBudgetExceeded as exc:
+        print(f"FATAL: {exc}", file=sys.stderr)
+        return MISCONFIGURED
+    except mcp.McpUnavailable as exc:
+        record(out, case, args.run_index, passed=False, verdict="blocked",
+               seconds=0.0, state=None, note=str(exc), status="blocked")
+        return BLOCKED
 
     budget = int(os.environ.get("AGENT_BUDGET") or case["budget"])
     max_turns = int(os.environ.get("AGENT_MAX_TURNS") or case["max_turns"])
@@ -812,6 +881,10 @@ def inner(args) -> int:
               f"turns {case['max_turns']} -> {max_turns}", file=sys.stderr)
     state = new_state(case["goal"], max_turns, budget)
     trace: list[dict] = []          # nodes append here; see agent/graph.py _log()
+    # Captured while the tool set is LIVE. record() runs after shutdown(), so reading
+    # the exposure back then would report the built-ins alone and silently understate
+    # every MCP run. Carried on the trace, like `tamper` and `model` already are.
+    trace.append({"kind": "tools", **tool_exposure(), "mcp": mcp_tools})
     started = time.monotonic()
     try:
         final = get_app().invoke(state, {"configurable": {
@@ -837,6 +910,11 @@ def inner(args) -> int:
         # request - and must be scored. Only the two cases above are excused.
         final, note = state, f"{type(exc).__name__}: {exc}"
     seconds = time.monotonic() - started
+    # Before the check runs: a live server subprocess holding the workspace open
+    # while the suite is scored is the orphan-container failure in miniature.
+    # The early-return paths above are covered by activate()'s atexit hook, which is
+    # what makes this safe to call in one place rather than four.
+    mcp.shutdown()
 
     tampered = restore_protected_tests(case)
     if tampered:
@@ -856,6 +934,20 @@ def inner(args) -> int:
                   verdict=final.get("verdict") or "none", seconds=seconds,
                   state=final, note=note or check_out[-2000:], trace=trace,
                   failures_before=before, failures_after=after)
+
+
+def tool_exposure() -> dict:
+    """What the exposed tool set costs per request.
+
+    Recorded on every row because the cost is invisible otherwise. Measured before
+    Phase L built anything: four built-in tools are 1,997 chars, and at 9.1 model
+    calls per run that was already 23% of a median run - on a provider returning
+    cache_read_tokens of 0 for every row, so nothing is amortised.
+    """
+    from agent.tools import toolset
+
+    schemas = [entry["schema"] for entry in toolset().values()]
+    return {"schema_chars": len(json.dumps(schemas)), "tools": sorted(toolset())}
 
 
 def failing_tests(output: str) -> int | None:
@@ -903,6 +995,7 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
     calls = [t for t in trace if t.get("kind") == "tool"]
     models = [t for t in trace if t.get("kind") == "model"]
     violations = write_violations(state.get("messages", []))
+    exposure = next((t for t in trace if t.get("kind") == "tools"), {})
 
     # Recorded per row, not once per suite: the row is what survives, and a score
     # whose model is unknown cannot be compared to anything.
@@ -936,6 +1029,15 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # Non-zero means the agent edited the assertions it is judged by.
         "tampered": sum(len(t.get("files", [])) for t in trace
                         if t.get("kind") == "tamper"),
+        # What the tool set COST, not just what it did. Schemas are re-sent on every
+        # request and this provider caches nothing, so exposure is charged per turn
+        # whether a tool is used or not - and a capability win paid for with a large
+        # token increase is a trade that has to stay visible.
+        "schema_chars": exposure.get("schema_chars", 0),
+        "schema_tokens_est": exposure.get("schema_chars", 0) // 3 * max(len(models), 1),
+        # Which tools were exposed, so a row can never be compared against one
+        # measured with a different set.
+        "mcp": exposure.get("mcp", []),
         # Non-zero means the agent tried to write outside the workspace (NFR-201).
         "write_violations": len(violations),
         # Where, not just how many: /usr is confusion, /app/eval/fixtures is the

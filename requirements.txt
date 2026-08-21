@@ -24,6 +24,23 @@ langgraph==1.2.11
 langgraph-checkpoint-sqlite==3.1.1
 openai==3.2.0
 
+# --- MCP (Phase L) -----------------------------------------------------------
+# The client half plus the ONE server this phase ships. Both are installed in the
+# image ahead of the /etc/pip.conf line, because that line sets no-index and
+# nothing can be installed at run time - which is also the security property: a
+# server cannot be introduced mid-run.
+#
+# mcp is pinned to 1.29.0 and NOT 2.0.0. Measured, not assumed: 2.0.0 fails with
+# `ResolutionImpossible`, because mcp-server-fetch declares `mcp<2,>=1.29.0`.
+#
+# mcp-server-fetch prints "node executable not found, reverting to pure-Python
+# mode" on every start. That is expected and deliberate - there is no Node in the
+# image, and it degrades from Readability.js to a pure-Python extractor rather
+# than failing. Adding a Node runtime is a decision to take on evidence, not on
+# the way past.
+mcp==1.29.0
+mcp-server-fetch==2026.8.18
+
 # --- tests -------------------------------------------------------------------
 # Mirrors [project.optional-dependencies].dev. The unit suite runs with no API
 # key, no network, and a read-only root filesystem.

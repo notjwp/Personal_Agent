@@ -21,6 +21,16 @@ RUN pip install --no-cache-dir "anthropic==0.122.0" "langgraph==1.2.11" "langgra
 # nothing. Must stay ahead of the pip.conf line below, like everything else here.
 RUN pip install --no-cache-dir "freezegun" "attrs" "pygments" "markdown-it-py"
 
+# MCP (Phase L). The client half plus the ONE server this phase ships.
+#
+# Baked at BUILD time because /etc/pip.conf below sets no-index: nothing can be
+# installed at run time, so every server must be here or it does not exist. That
+# is also the security property - a server cannot be introduced mid-run.
+#
+# mcp is pinned to 1.29.0 and NOT 2.0.0. Measured, not assumed: 2.0.0 fails with
+# `ResolutionImpossible`, because mcp-server-fetch declares `mcp<2,>=1.29.0`.
+RUN pip install --no-cache-dir "mcp==1.29.0" "mcp-server-fetch==2026.8.18"
+
 # The `missing-dep` case must be solvable with networking off: stage the wheel
 # but deliberately do NOT install it.
 RUN pip download --no-cache-dir tabulate -d /wheels
