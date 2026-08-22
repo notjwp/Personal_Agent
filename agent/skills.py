@@ -256,8 +256,114 @@ def unusable() -> list[str]:
     return broken
 
 
+# ------------------------------------------------------- authoring (Phase O)
+
+_SLUG_OK = "abcdefghijklmnopqrstuvwxyz0123456789-"
+
+
+def _slug(name: str) -> str:
+    """A directory name derived from the skill's name, never taken from input.
+
+    This is the enforcement, not a validation rule that could be argued with:
+    `learn` has no path argument, and the one directory it can reach is built here
+    from an alphabet that cannot express a separator or a parent reference.
+    """
+    text = "".join(c if c in _SLUG_OK else "-" for c in str(name).strip().lower())
+    slug = "-".join(part for part in text.split("-") if part)[:48]
+    if not slug:
+        raise ValueError("give the skill a name, in words - for example "
+                         'name="cutting-a-release".')
+    return slug
+
+
+def home() -> Path:
+    """Where authored skills live: the agent's own root, not the project's."""
+    return config.SKILLS_DIRS[-1]
+
+
+def authored() -> list[str]:
+    """Names of skills the agent wrote for itself."""
+    root = home()
+    if not root.is_dir():
+        return []
+    return sorted(d.name for d in root.iterdir()
+                  if d.is_dir() and (d / SKILL_FILE).is_file())
+
+
+def learn(name: str, description: str, body: str) -> str:
+    """Write a skill for future sessions to load. TEXT ONLY.
+
+    The agent supplies prose and this function writes the file, so the frontmatter
+    is correct by construction - the malformed-document failure Phase N had to add
+    a fallback parser for cannot happen to an authored skill.
+
+    **No path argument and no file argument.** Phase N left the provenance question
+    open ("when Phase O gives the agent that power, this must be re-opened"), and
+    the answer is that the agent may write documents and not scripts. A wrong
+    document gives advice a later session can second-guess; a wrong script is
+    executed by a session that has already accepted it as procedure. Running one
+    would still pass through classify() - this is not a gate bypass - but the
+    mistake would outlive the session that made it, and that is the difference.
+
+    Rewriting is allowed. Deleting is not: an agent that can drop skills can
+    quietly erase the evidence of its own bad ones.
+    """
+    description = " ".join(str(description).split())
+    body = str(body).strip()
+    if not description:
+        raise ValueError(
+            "a skill needs a description saying WHEN to use it - that sentence is "
+            "all a future session sees until it opens the document. For example: "
+            'description="Use when asked to cut or prepare a release."')
+    if not body:
+        raise ValueError("a skill needs a body - the steps a future session should "
+                         "follow. Keep it short and specific.")
+
+    slug = _slug(name)
+    existing = authored()
+    if slug not in existing and len(existing) >= config.MAX_AUTHORED_SKILLS:
+        raise ValueError(
+            f"you already have {len(existing)} skills, the limit. Every skill's "
+            f"description is sent on every request, so the library is capped. "
+            f"Rewrite an existing one instead: {', '.join(existing)}.")
+
+    directory = home() / slug
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / SKILL_FILE).write_text(
+        f"---\nname: {slug}\ndescription: {description}\n---\n\n{body}\n",
+        encoding="utf-8", newline="\n")
+    return (f"{'rewrote' if slug in existing else 'wrote'} skill {slug!r}. "
+            f"Future sessions will see its description and can open it.")
+
+
+LEARN_SCHEMA = {
+    "name": "learn",
+    "description": (
+        "Record a reusable procedure so future sessions know it without working it "
+        "out again. Use it after solving something whose method would apply to "
+        "similar work later - not for facts about this one task, which `remember` "
+        "covers. Writes a document; it cannot create scripts."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string",
+                     "description": "A few words, e.g. \"cutting a release\"."},
+            "description": {"type": "string",
+                            "description": ("One sentence saying WHEN to use it. This is "
+                                            "all a future session sees until it opens "
+                                            "the skill, so say what kind of task it "
+                                            "covers, not what it contains.")},
+            "body": {"type": "string",
+                     "description": "The steps to follow, in markdown."},
+        },
+        "required": ["name", "description", "body"],
+    },
+}
+
+
 def activate() -> list[str]:
-    """Register the skill tool for this run. A no-op when skills are off."""
+    """Register the skill tools for this run. A no-op when skills are off."""
     if not config.SKILLS_ENABLED:
         return []
     # Said once, at startup, rather than never. A silently dropped skill looks
@@ -272,6 +378,11 @@ def activate() -> list[str]:
         # script is a separate run_shell call, classified on its own merits.
         policy.register("load_skill", "read")
         _REGISTERED.append("load_skill")
+    # Registered separately, because the Phase O control has LOADING on and
+    # authoring off - one flag has to be able to move without the other.
+    if config.SKILL_AUTHORING and "learn" not in _REGISTERED:
+        policy.register("learn", "write")
+        _REGISTERED.append("learn")
     return sorted(catalogue())
 
 
@@ -285,4 +396,7 @@ def tools() -> dict[str, dict]:
     """The skill tools active for this run. Empty when skills are off."""
     if not config.SKILLS_ENABLED or "load_skill" not in _REGISTERED:
         return {}
-    return {"load_skill": {"fn": load_skill, "schema": LOAD_SCHEMA, "risk": "read"}}
+    active = {"load_skill": {"fn": load_skill, "schema": LOAD_SCHEMA, "risk": "read"}}
+    if config.SKILL_AUTHORING and "learn" in _REGISTERED:
+        active["learn"] = {"fn": learn, "schema": LEARN_SCHEMA, "risk": "write"}
+    return active

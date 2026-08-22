@@ -2851,3 +2851,123 @@ path-escape attempts and the parser defect above.
 | authoring | **not built** - Phase O, with its own measurement |
 
 **Kept.**
+
+---
+
+## Phase O — Authoring: NOT SHIPPED. The agent will not write a skill.
+
+**Result: `learn` called ZERO times in 15 valid sessions**, with the tool exposed, an explicit
+instruction in `SOUL.md` telling it to, three different turn budgets, and a task small enough to
+finish with turns to spare. The kill switch stays off and the feature does not ship.
+
+### What was actually eliminated
+
+| hypothesis | how it was ruled out |
+|---|---|
+| runs out of turns | finished `done` at 7-9 of 12, with 3-5 turns spare |
+| runs out of budget | 25k of a 100k budget used |
+| task too complex to converge | reduced to ONE file and ONE rule; still nothing |
+| tool not exposed | `schema_chars` 4,853 = 8 tools, `authoring: true` on every row |
+| prompt does not ask | `SOUL.md` amended to say it explicitly; three variants |
+
+What is left is the finding: **the model does not treat "record this for later" as part of the job.**
+It completes the work and stops, which is exactly what it was told to do. Consolidation is not
+something it elects to do.
+
+The clearest single trace is the tiny probe's second session:
+
+```
+session 1:  read_file  CONVENTIONS.md          <- brief present, read it, wrote the file, DONE at 7 turns
+session 2:  read_file  CONVENTIONS.md   ERR    <- reached for it; the workspace was reset
+```
+
+It remembers that a conventions file existed. It does not remember what the file said, and it has no
+skill to fall back on - which is precisely the gap authoring was built to close.
+
+### Four attempts were discarded before the benchmark was sound
+
+Recorded because they are the phase's real cost, and because three of the four are rig defects of a
+kind this project keeps producing as the benchmarks get more elaborate.
+
+1. **Inherited Phase N's skill library.** The harness pointed every scored run at
+   `eval/fixtures/skills-library`, and the authoring cases reused the same four conventions - so the
+   agent loaded the human-written `qz-release` and passed on knowledge the case existed to withhold.
+   Fixed: `AGENT_SKILLS_DIR` is per-case, and the authoring split starts from `skills-empty`.
+2. **`inner()` ran `case["setup"]` and consulted `setups` only from session 2 onward.** So session 1
+   got the WRONG fixture and **no session ever received `CONVENTIONS.md`**. Every run before this was
+   measuring an agent with nothing to learn. The offline verifier missed it because it tested
+   `setups[0]` directly while the harness used a different code path for that same session -
+   **verifying the data is not verifying the path that consumes it.**
+3. **Operator error, and the worst of the four.** With a run waiting on
+   `await_exclusive_workspace()`, the blocking container was force-removed by hand to unblock it.
+   That guard exists because case-runs share one `/workspace`; defeating it is exactly how one run's
+   `reset.sh` lands in another's directory. This project had already invalidated three runs that way.
+   **When the log says "waiting for N agent container(s)", let it wait.**
+4. **No headroom.** With `max_turns: 12`, session 1 spent 11-12 turns on the task alone. Raising it
+   to 20 only moved the wall from the turn cap to the token budget (`compact` at 18-19 turns, 60k a
+   run) - the agent expands task work to fill whatever it is given. The tiny probe removed this
+   variable entirely.
+
+### The tiny probe, which is what settled it
+
+One case, three runs, two sessions, and session 1 is a single file write against a single rule
+(`# owner: unassigned`). Verified three ways first, and the brief-gap check confirmed present in
+session 1 and gone in session 2.
+
+```
+run 0   done   9/12 turns   26,929 tok   authored=[]
+run 1   done   8/12 turns   25,449 tok   authored=[]
+run 2   done                             authored=[]
+```
+
+**Finishing cleanly with headroom and still not authoring is what makes this a finding rather than a
+budget problem.**
+
+### What this says about the design, and it matches a deferral already on record
+
+**Authoring-on-completion is the wrong hook.** It depends on the agent electing to reflect after the
+work is done, and it does not. The ROADMAP already deferred "self-improvement of skills during use"
+as a separate capability; that deferral now looks like the load-bearing decision rather than a
+scoping convenience.
+
+Two designs do not depend on the agent's choice:
+
+- **Amend during use** - capture at the moment the knowledge is acquired. Needs a model call inside
+  the loop and its own measurement.
+- **Deterministic extraction at `finish`** - and this is the cheap one. The convention was READ FROM
+  A FILE, so its content is already in the trace. `finish` can write the skill with **no model call,
+  no fourth model-calling node, and no reliance on the agent's judgement.** The benchmark, fixtures
+  and instrumentation all exist and are now verified, so this is one function plus a call.
+
+Try the free version before the expensive one.
+
+### What is kept, and what is reverted
+
+**Kept:**
+- **The `setups[0]` fix in `inner()`** - a real harness defect that would silently break any future
+  per-session case, quite apart from Phase O.
+- **Per-case `AGENT_SKILLS_DIR`**, and `eval/fixtures/skills-empty` - a scored split can now declare
+  the library it was measured against, rather than inheriting another phase's.
+- **`learn` in `agent/skills.py`**, text-only, behind `AGENT_SKILL_AUTHORING=off`. Enforcement is an
+  ABSENT parameter rather than a rule: no path or file argument exists, and the slug alphabet cannot
+  express a separator, so `../../etc/passwd` becomes a directory called `etc-passwd`.
+- **The `authoring` and `authoring-tiny` splits**, three-way verified, with the brief-gap check.
+- **256 offline tests**, up from 247.
+
+**Reverted:**
+- **`prompts/SOUL.md`.** The widening was measured and did not work; it touches every split and was
+  never regression-tested. Keeping an unearned prompt change would be exactly the drift the Iron Law
+  exists to prevent.
+- **`max_turns: 20`** on the authoring cases, back to 12. It was a probe, not a finding.
+
+### Phase O scoreboard
+
+| | result |
+|---|---|
+| authoring rate | **0 in 15 valid sessions** |
+| reuse rate | not reached - nothing was ever authored |
+| delta in success or cost | not reached |
+| **verdict** | **NOT SHIPPED.** `AGENT_SKILL_AUTHORING=off` is the default |
+
+**The exit criterion said "without all three numbers this phase does not ship". It has one, and that
+one is zero.**

@@ -230,3 +230,66 @@ def test_the_project_library_wins_a_name_collision(tmp_path, monkeypatch):
 def _root():
     """The temp library root the autouse fixture installed."""
     return config.SKILLS_DIRS[0]
+
+
+# ================================================== authoring (Phase O)
+
+def test_learn_writes_a_loadable_skill(monkeypatch):
+    """Written by the module, not the model, so the frontmatter is correct by
+    construction - the malformed-document failure cannot happen to an authored one."""
+    monkeypatch.setattr(config, "SKILL_AUTHORING", True)
+    skills.learn(name="Cutting a Release",
+                 description="Use when asked to cut or prepare a release.",
+                 body="1. bump VERSION")
+    cat = skills.catalogue()
+    assert cat["cutting-a-release"]["description"].startswith("Use when asked to cut")
+    assert "bump VERSION" in skills.load_skill("cutting-a-release")
+
+
+@pytest.mark.parametrize("name", ["../../etc/passwd", "/abs/path", "a/b", r"..\x"])
+def test_authoring_cannot_express_a_path(name, monkeypatch):
+    """The enforcement is an ABSENT parameter plus a slug alphabet, not a rule that
+    could be argued with: `learn` has no path argument at all."""
+    monkeypatch.setattr(config, "SKILL_AUTHORING", True)
+    skills.learn(name=name, description="Use when x.", body="step")
+    for directory in skills.home().iterdir():
+        assert directory.parent == skills.home()
+        assert "/" not in directory.name and ".." != directory.name
+
+
+def test_learn_refuses_a_skill_with_no_description(monkeypatch):
+    monkeypatch.setattr(config, "SKILL_AUTHORING", True)
+    with pytest.raises(ValueError, match="WHEN to use it"):
+        skills.learn(name="x", description="  ", body="step")
+
+
+def test_learn_caps_the_library(monkeypatch):
+    """The index is charged on every request and overflowing it is fatal, so an
+    agent writing one skill per session would otherwise brick its own runs."""
+    monkeypatch.setattr(config, "SKILL_AUTHORING", True)
+    monkeypatch.setattr(config, "MAX_AUTHORED_SKILLS", 2)
+    skills.learn(name="one", description="Use when one.", body="a")
+    skills.learn(name="two", description="Use when two.", body="b")
+    with pytest.raises(ValueError, match="the limit"):
+        skills.learn(name="three", description="Use when three.", body="c")
+
+
+def test_rewriting_is_allowed_but_the_cap_still_applies(monkeypatch):
+    """Rewriting must stay possible at the cap, or the agent is stuck with its own
+    early mistakes and cannot correct them."""
+    monkeypatch.setattr(config, "SKILL_AUTHORING", True)
+    monkeypatch.setattr(config, "MAX_AUTHORED_SKILLS", 1)
+    skills.learn(name="one", description="Use when one.", body="first")
+    skills.learn(name="one", description="Use when one, revised.", body="second")
+    assert "second" in skills.load_skill("one")
+    assert skills.authored() == ["one"]
+
+
+def test_authoring_off_removes_the_tool_but_not_loading(monkeypatch):
+    """Phase O's control: loading ON, authoring OFF. One flag has to move without
+    the other or the comparison measures the wrong thing."""
+    monkeypatch.setattr(config, "SKILL_AUTHORING", False)
+    skills.activate()
+    assert "learn" not in skills.tools()
+    assert "load_skill" in skills.tools()
+    assert "learn" not in policy.RISK

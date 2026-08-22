@@ -252,3 +252,25 @@ SKILLS_INDEX_CHARS = 1_600
 # MAX_RESULT_CHARS so a long document spills to an artifact rather than arriving
 # whole - shrink() already does that, this just makes the intent explicit.
 SKILL_BODY_CHARS = 6_000
+
+# --- authoring (Phase O) ----------------------------------------------------
+
+# Separate from SKILLS_ENABLED on purpose: Phase O's control has LOADING on and
+# authoring off, so the two must be switchable independently or the comparison
+# measures the wrong thing.
+# DEFAULT OFF. Phase O measured `learn` called ZERO times in 15 valid sessions - tool
+# exposed, an explicit instruction in SOUL.md, three turn budgets, and a task small
+# enough to finish with turns to spare. The model does not treat "record this for
+# later" as part of the job. The code stays because the NEXT attempt reuses it, but a
+# capability with no measured effect does not ship on by default.
+SKILL_AUTHORING = os.environ.get("AGENT_SKILL_AUTHORING", "off").strip().lower() not in (
+    "0", "off", "false")
+
+# How many skills the agent may write for itself.
+#
+# Not arbitrary: the index is charged on EVERY request and overflowing
+# SKILLS_INDEX_CHARS is fatal by design, so an agent writing one skill per session
+# would eventually brick its own runs. At ~150 chars per index line, 12 authored
+# skills is ~1,800 chars - already past the 1,600 cap on its own, so this bound
+# and that one have to be read together. Past the cap `learn` refuses and says so.
+MAX_AUTHORED_SKILLS = 8

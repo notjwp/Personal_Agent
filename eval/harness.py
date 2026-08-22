@@ -82,6 +82,7 @@ FORWARDED_ENV = (
     # run - the benchmark's skills are FIXTURES describing a fictional project,
     # and they must not be mistaken for this repository's own conventions.
     "AGENT_SKILLS_DIR",
+    "AGENT_SKILL_AUTHORING",
 )
 
 # --------------------------------------------------------------- egress (H)
@@ -732,9 +733,12 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
         "-v", f"{(REPO / 'eval' / 'runs').as_posix()}:/app/eval/runs",
         "-v", f"{(REPO / 'eval' / 'workspace').as_posix()}:/workspace",
         "-v", f"{agent_home(case, run_index).as_posix()}:/state",
-        # The skill library every scored row was measured against. Inside /app, so
-        # it is already mounted read-only by the line above.
-        "-e", "AGENT_SKILLS_DIR=/app/eval/fixtures/skills-library",
+        # The skill library this row was measured against. Per case, because the
+        # authoring split must start EMPTY - its first control run loaded Phase N's
+        # human-written `qz-release` and passed on knowledge the case existed to
+        # test. Inside /app, so already mounted read-only above.
+        "-e", "AGENT_SKILLS_DIR=/app/eval/fixtures/"
+              + case.get("skills_dir", "skills-library"),
     ]
     # .env first, then the real environment, so an exported variable
     # deliberately overrides the file rather than the other way round.
@@ -854,8 +858,13 @@ def inner(args) -> int:
     # shell=True is deliberate: `setup` and `check` are shell command strings by
     # specification (the check contains `&&`), and their only source is the
     # committed tasks.jsonl. Never build these strings from model output.
-    setup = subprocess.run(case["setup"], shell=True, cwd=REPO,
-                           capture_output=True, text=True)
+    # setups[0] when the case defines per-session setup, `setup` otherwise. The
+    # first version of this ran `case["setup"]` here and only consulted `setups` for
+    # session 2 onwards - so session 1 silently got the WRONG fixture, and a Phase O
+    # benchmark built on "session 1 has the reference material" never gave the agent
+    # any reference material at all. Every run was measuring nothing.
+    setup = subprocess.run((case.get("setups") or [case["setup"]])[0], shell=True,
+                           cwd=REPO, capture_output=True, text=True)
     if setup.returncode != 0:
         # A broken rig, not a failed agent. Recorded distinctly so it can never be
         # mistaken for the agent missing the case.
@@ -907,6 +916,10 @@ def inner(args) -> int:
     # which is the whole point: what survives is what was learned, not what was left
     # lying in a directory.
     goals = case.get("sessions") or [case["goal"]]
+    # Per-session setup (Phase O). Session 1 may have reference material in the
+    # workspace that later sessions do not - which is the whole mechanism: memory
+    # remembers THAT a file was read, only a skill remembers what it said.
+    setups = case.get("setups") or [case["setup"]] * len(goals)
     trace: list[dict] = []          # nodes append here; see agent/graph.py _log()
     # Captured while the tool set is LIVE. record() runs after shutdown(), so reading
     # the exposure back then would report the built-ins alone and silently understate
@@ -921,7 +934,7 @@ def inner(args) -> int:
             if index:
                 # Between sessions only. The first setup already ran above, and
                 # re-running it here would also re-run it for ordinary cases.
-                subprocess.run(case["setup"], shell=True, cwd=REPO,
+                subprocess.run(setups[index], shell=True, cwd=REPO,
                                check=True, capture_output=True)
                 trace.append({"kind": "session", "index": index, "goal": goal[:200]})
             state = new_state(goal, max_turns, budget)
@@ -1089,6 +1102,14 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
                                   if t.get("kind") == "skills"), default=0),
         "skills_loaded": sorted({t.get("summary", "") for t in trace
                                  if t.get("tool") == "load_skill"}),
+        # Phase O's three numbers live here: what it WROTE, what it LOADED, and
+        # (with memory_chars above) what memory gave it on the same run. A high
+        # authoring rate with a low load rate is the classic failure of these
+        # systems - files accumulate, nothing changes - and only both catch it.
+        "authoring": bool(os.environ.get("AGENT_SKILL_AUTHORING", "on").strip().lower()
+                          not in ("0", "off", "false")),
+        "skills_authored": sorted({t.get("summary", "") for t in trace
+                                   if t.get("tool") == "learn"}),
         # Which skill the case NEEDED. Three outcomes, not two: the right one, the
         # WRONG one, or none - and the middle is invisible in a pass rate while
         # being the thing that says the descriptions do not discriminate.
