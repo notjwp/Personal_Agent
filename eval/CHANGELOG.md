@@ -3216,3 +3216,76 @@ no `budget` verdict at all. `compact` cannot stop being terminal until the compa
 (Stage 3), and mapping it to "budget exhausted" would be a lie: it fires at 60% of budget, not at
 exhaustion. **NFR-304 was deliberately built to avoid making this worse** - running out of
 wall-clock terminates as `stuck` rather than as a fifth verdict.
+
+---
+
+## Stage 2a — two latency NFRs measured for the first time, both pass
+
+**Never measured once** - not failed, never attempted. Both are now numbers, and both are
+tests, because a latency figure nobody re-runs stops being true.
+
+```
+                                        n       p50      p95      p99      max
+  NFR-102 framework per iteration     140      0.09     6.53     7.18    23.05   / 250 ms  OK
+  NFR-103 checkpoint write            180      2.49    11.40    14.25    15.01   /  50 ms  OK
+```
+
+**38x and 4.4x of headroom.** Measured with no model, no network and no quota, which is the
+whole reason these two came first: with a stand-in model and a stubbed tool, everything left
+IS the framework.
+
+### Where the framework's time actually goes
+
+```
+  per node (wall time, model and tool time INCLUDED)
+    finish       20   p50   6.08   p95   7.07     <- the memory episode write
+    act          40   p50   4.33   p95   5.06
+    execute      20   p50   0.09   p95   0.13
+    reflect      40   p50   0.04   p95   0.09
+    gate         20   p50   0.01   p95   0.05
+```
+
+`gate` and `reflect` are 40 and 90 MICROseconds - they wait on nothing, and a test now pins
+them under 25 ms so a future layer cannot quietly spend NFR-102's headroom there. The single
+largest framework cost in the system is **`finish` writing the memory episode**, which is
+worth knowing before anyone optimises anything else.
+
+### What was built
+
+- **`_timed()` wraps each node in `_build()`**, which is the only function that knows all six.
+  The nodes are untouched and carry no stopwatch code.
+- **`_TimedSaver`** subclasses `SqliteSaver` and times `put()`. It lands on the trace of the run
+  that caused it with no plumbing, because `put()` already receives the `RunnableConfig`. The
+  only measurement here that reaches into a dependency's surface, so a test pins that the
+  subclass still round-trips state - one that timed writes while dropping one would make every
+  latency figure look excellent.
+- **`act` records the model's own ms**, so NFR-102's "excluding model and tool time" is a
+  subtraction over recorded facts rather than an estimate. Tool time was already on the trace.
+- **`overhead_ms` and `checkpoint_ms` on every harness row**, so the first sign of a regression
+  is a drift rather than a discovery two phases later.
+
+### What Hermes contributed: a reporting habit, and no algorithm
+
+Checked rather than assumed. `scripts/profile-tui.py` drives a **Node** TUI (`node dist/entry.js`)
+and is irrelevant to a Python one; `cli.py`'s `first_token` is path-argument parsing, not
+time-to-first-token. The only latency code in the repository is `scripts/iso-certify.py:70-90`,
+and its `percentile()` is **equivalent to `statistics.quantiles(method="inclusive")`** - stdlib,
+already imported here.
+
+What was worth taking is `summarize()`'s SHAPE: every latency figure reported with its sample
+size beside it. A p95 over four samples is not a p95, and printing one without the count invites
+exactly that reading. Twelve lines, attributed in `NOTICE`.
+
+### NFR-101 is still unmeasurable, and that is a finding
+
+`_call_openai_compatible` sends no `stream=True` and fires `on_text` only once the whole reply
+has arrived. **On the provider every number in this project was measured on, there is no first
+token** - there is one block at the end. Measuring NFR-101 today would report full-reply latency
+under a name that means something else.
+
+It also means the TUI's status line, which exists to show a reply arriving, fills in one go on
+NIM rather than word by word. The README never claimed otherwise - that overstatement was in a
+progress report, not in the file - but the behaviour was undocumented, so it is written down now
+rather than left for someone to discover and mistrust.
+
+**368 offline tests**, plus 11 for this stage.

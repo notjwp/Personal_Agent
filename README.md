@@ -372,6 +372,11 @@ button focused so a reflexive Enter refuses.
 The plain CLI is unchanged and remains the scriptable path; `textual` is imported only inside
 the `--tui` branch, so the CLI, the harness and the unit suite still run without it.
 
+One thing the screen does not do on the default provider: the line above the input shows the
+model's reply, but it **arrives whole rather than word by word**. The OpenAI-compatible path
+sends no `stream=True`, so there is no first token to show - see NFR-101 in `CONTEXT.md`. The
+Anthropic path does stream, and the same line fills in progressively there.
+
 ### Planning — built, and **off by default**
 
 `AGENT_PLAN=on` turns it on. It is off because it does not yet do what it says: across nine

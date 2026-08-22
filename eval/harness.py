@@ -610,6 +610,67 @@ def summarise(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def percentile(values: list[float], pct: float) -> float:
+    """Linear interpolation on rank, with the degenerate cases handled.
+
+    Shape from Hermes Agent's scripts/iso-certify.py (Nous Research, MIT); the
+    arithmetic is statistics.quantiles(method="inclusive"), which is stdlib and
+    already imported here. What is borrowed is the reporting habit below, not an
+    algorithm: an empty sample answers 0.0 rather than raising, because a latency
+    table that crashes on a run with no checkpoints is worse than one that says
+    so with a count of 0.
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * (pct / 100.0)
+    low = int(rank)
+    high = min(low + 1, len(ordered) - 1)
+    frac = rank - low
+    return ordered[low] * (1.0 - frac) + ordered[high] * frac
+
+
+def latency(values: list[float]) -> dict[str, float]:
+    """count, p50, p95, p99 and max together, and COUNT is the load-bearing one.
+
+    A p95 over four samples is not a p95. Reporting the figure without the
+    sample size beside it invites exactly that reading, which is the whole
+    reason this returns a dict instead of a number.
+    """
+    return {"count": len(values),
+            "p50_ms": round(percentile(values, 50), 2),
+            "p95_ms": round(percentile(values, 95), 2),
+            "p99_ms": round(percentile(values, 99), 2),
+            "max_ms": round(max(values), 2) if values else 0.0}
+
+
+def overheads(trace) -> list[float]:
+    """Framework cost per loop iteration, in ms - NFR-102's wording exactly.
+
+    One iteration is one node. Its wall time minus whatever it spent waiting on
+    something that is not the framework: the model for `act`, the tools for
+    `execute`. Everything left is the loop itself, and gate/reflect/finish have
+    nothing to subtract because they wait on nothing.
+    """
+    out, pending = [], 0.0
+    for entry in trace:
+        kind = entry.get("kind")
+        if kind in ("model", "tool"):
+            # A tool records duration_ms; the model records ms. Both are time the
+            # framework was waiting rather than working.
+            pending += entry.get("ms", entry.get("duration_ms", 0.0))
+        elif kind == "node":
+            out.append(max(entry.get("ms", 0.0) - pending, 0.0))
+            pending = 0.0
+    return out
+
+
+def checkpoint_ms(trace) -> list[float]:
+    return [e["ms"] for e in trace if e.get("kind") == "checkpoint"]
+
+
 def previous_run(out: Path) -> Path | None:
     """The most recent EARLIER run over the same population, or None.
 
@@ -1229,6 +1290,11 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
                      not in ("0", "off", "false")),
         "plan_steps": state.get("plan", []),
         "plan_turns": state.get("plan_turns", 0),
+        # NFR-102 and NFR-103, on every row rather than in a one-off script.
+        # A latency number nobody re-runs stops being true, and the first sign of
+        # a regression here is a drift nobody attributes to the day it started.
+        "overhead_ms": latency(overheads(trace)),
+        "checkpoint_ms": latency(checkpoint_ms(trace)),
         "plan_denied": sorted({c.get("summary", "") for c in calls
                                if c.get("verdict") == "deny"
                                and "planning" in str(c.get("reason", ""))}),

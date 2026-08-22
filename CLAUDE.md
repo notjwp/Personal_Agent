@@ -156,6 +156,19 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   node exists, and calling it "budget exhausted" would be a lie at 60% of budget. So the
   wall-clock cap terminates as `stuck` rather than adding a fifth verdict.
 
+- **Stage 2a: two latency NFRs measured for the first time, both pass with room.**
+  `NFR-102` framework cost per iteration **6.53 ms p95 against 250** (n=140); `NFR-103`
+  checkpoint write **11.40 ms p95 against 50** (n=180). Free - with a stand-in model and a
+  stubbed tool, everything left IS the framework, so no quota and no network.
+  **The biggest framework cost in the system is `finish` writing the memory episode** (6.1 ms
+  p50); `gate` and `reflect` are 10 and 40 MICROseconds, and a test now pins them under 25 ms
+  so a later layer cannot quietly spend the headroom.
+  **`NFR-101` cannot be measured at all on this provider** - the OpenAI-compatible path sends no
+  `stream=True` and fires `on_text` only once the whole reply lands, so there IS no first token.
+  It also means the TUI's status line fills in one go on NIM rather than word by word - the
+  README says so now rather than leaving it to be discovered. Streaming is Stage 2b, and it is a
+  change to the tool-call path with a revert condition, not instrumentation.
+
 ### Standing lessons, each paid for once
 
 - **Tool schemas are rent, charged per turn, and this provider caches nothing.** `cache_read_tokens`

@@ -461,7 +461,11 @@ def test_trace_captures_model_and_tool_activity(fresh_app, tmp_workspace, monkey
     kinds = [t["kind"] for t in trace]
     assert kinds.count("model") == 2
     assert kinds.count("tool") == 1
-    assert kinds[-1] == "terminal"
+    # Timing entries are excluded: `node` fires around every node and `checkpoint`
+    # after each write, so the last raw entry is a stopwatch reading. What this
+    # asserts is that the run ends with a terminal RECORD.
+    substantive = [k for k in kinds if k not in ("node", "checkpoint")]
+    assert substantive[-1] == "terminal"
     # Found by kind, not by position: `act` emits a `memory` event ahead of the
     # model one whenever anything was recalled, so trace[0] is not always the model.
     assert next(t for t in trace if t["kind"] == "model")["billed_tokens"] == 150
@@ -1414,3 +1418,133 @@ def test_run_python_is_actually_exposed_to_the_model(tmp_workspace):
     entry = TOOLS["run_python"]
     assert entry["risk"] == "write"
     assert entry["schema"]["input_schema"]["required"] == ["code"]
+
+
+# ================================ Stage 2a: the latency NFRs (NFR-102, NFR-103)
+#
+# Never measured once - not failed, never attempted. Both are measurable with no
+# model and no network, which is why they are tests rather than a script: with a
+# stand-in model and a stubbed tool, everything left IS the framework, and a
+# latency number nobody re-runs stops being true.
+
+from eval.harness import checkpoint_ms, latency, overheads, percentile
+
+
+def _cycling(monkeypatch):
+    """A model that alternates one tool call, then a text reply.
+
+    Each session is therefore act -> gate -> execute -> reflect -> act ->
+    reflect -> finish: seven nodes, one tool, two model calls. Ten sessions give
+    a sample large enough for a p95 to mean something.
+    """
+    step = {"n": 0}
+
+    def cycling(messages, system, tools, on_text=None):
+        step["n"] += 1
+        return (tool_turn("run_shell", command="echo ok") if step["n"] % 2
+                else text_turn("Done."))
+
+    monkeypatch.setattr("agent.graph.call_model", cycling)
+
+
+def _drive(app, monkeypatch, sessions=10):
+    spy_on_run_shell(monkeypatch)
+    _cycling(monkeypatch)
+    trace = []
+    for i in range(sessions):
+        app.invoke(state(), {"configurable": {
+            "thread_id": f"perf-{i}", "autonomous": True, "trace": trace}})
+    return trace
+
+
+# --- the helper ------------------------------------------------------------
+
+def test_percentile_handles_the_degenerate_samples():
+    """An empty sample answers rather than raising: a latency table that crashes
+    on a run with no checkpoints is worse than one reporting a count of 0."""
+    assert percentile([], 95) == 0.0
+    assert percentile([7.0], 95) == 7.0
+    assert percentile([0.0, 10.0], 50) == 5.0
+
+
+def test_latency_reports_the_sample_size_beside_the_figure():
+    """count is the load-bearing field. A p95 over four samples is not a p95, and
+    printing one without the count invites exactly that reading."""
+    stats = latency([1.0, 2.0, 3.0, 4.0])
+    assert stats["count"] == 4
+    assert stats["p50_ms"] == 2.5 and stats["max_ms"] == 4.0
+
+
+def test_overheads_subtract_model_and_tool_time():
+    """NFR-102's wording exactly: framework cost EXCLUDING model and tool time.
+    A node that spent 200ms of its 210ms waiting on the model cost 10."""
+    trace = [{"kind": "model", "ms": 200.0},
+             {"kind": "node", "node": "act", "ms": 210.0},
+             {"kind": "tool", "duration_ms": 40.0},
+             {"kind": "tool", "duration_ms": 10.0},
+             {"kind": "node", "node": "execute", "ms": 55.0},
+             {"kind": "node", "node": "reflect", "ms": 2.0}]
+    assert overheads(trace) == [10.0, 5.0, 2.0]
+
+
+def test_overheads_never_go_negative():
+    """Two clocks, read at different moments. A node reading marginally shorter
+    than the work inside it is measurement noise, not a negative cost."""
+    trace = [{"kind": "model", "ms": 100.0},
+             {"kind": "node", "node": "act", "ms": 99.9}]
+    assert overheads(trace) == [0.0]
+
+
+# --- NFR-102 ---------------------------------------------------------------
+
+def test_framework_overhead_per_iteration_is_within_its_cap(
+        fresh_app, tmp_workspace, monkeypatch):
+    """NFR-102: <= 250 ms per loop iteration, excluding model and tool time."""
+    trace = _drive(fresh_app, monkeypatch)
+    stats = latency(overheads(trace))
+
+    assert stats["count"] >= 50, f"too small a sample for a p95: {stats}"
+    assert stats["p95_ms"] <= 250, f"NFR-102 breached: {stats}"
+
+
+def test_the_pure_python_nodes_are_effectively_free(
+        fresh_app, tmp_workspace, monkeypatch):
+    """gate and reflect wait on nothing - no model, no tool, no disk. If either
+    is measurable in milliseconds the loop has grown something it should not
+    have, and NFR-102's headroom is being spent somewhere invisible."""
+    trace = _drive(fresh_app, monkeypatch)
+    for node in ("gate", "reflect"):
+        stats = latency([e["ms"] for e in trace
+                         if e.get("kind") == "node" and e.get("node") == node])
+        assert stats["count"] >= 10, node
+        assert stats["p95_ms"] <= 25, f"{node} got expensive: {stats}"
+
+
+# --- NFR-103 ---------------------------------------------------------------
+
+def test_checkpoint_writes_are_within_their_cap(
+        fresh_app, tmp_workspace, monkeypatch):
+    """NFR-103: <= 50 ms at p95. State is written after every node transition,
+    so this is paid more often than any other cost in the system."""
+    trace = _drive(fresh_app, monkeypatch)
+    stats = latency(checkpoint_ms(trace))
+
+    assert stats["count"] >= 50, f"too small a sample for a p95: {stats}"
+    assert stats["p95_ms"] <= 50, f"NFR-103 breached: {stats}"
+
+
+def test_the_timed_saver_still_round_trips_state(fresh_app, tmp_workspace, monkeypatch):
+    """The one measurement that reaches into a dependency's surface. A subclass
+    that timed writes but dropped one would lose the checkpointer's whole point,
+    and every latency figure would look excellent."""
+    spy_on_run_shell(monkeypatch)
+    use_fake(monkeypatch, [tool_turn("run_shell", command="echo ok"),
+                           text_turn("Done.")])
+    cfg = {"configurable": {"thread_id": "saver-1", "autonomous": True, "trace": []}}
+
+    fresh_app.invoke(state(), cfg)
+    restored = fresh_app.get_state(cfg).values
+
+    assert restored["verdict"] == "done"
+    assert restored["turns"] == 1
+    assert restored["messages"][0]["content"] == "fix it"

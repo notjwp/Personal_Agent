@@ -408,9 +408,22 @@ A requirement without a number is not testable. Targets are the point.
   --------  ---------------  ------------------------------------------------
   NFR-101   Latency          First assistant token within 3 s at p50 on an
                              interactive turn
+                             NOT MEASURABLE as of 2026-08-23, and the reason is
+                             the provider rather than the number: the
+                             OpenAI-compatible path sends no stream=True and
+                             calls on_text only once the whole reply has
+                             arrived, so on NIM there is no first token - there
+                             is one block at the end. The Anthropic path does
+                             stream. Measuring it today would report full-reply
+                             latency under a name that means something else.
   NFR-102   Overhead         Framework cost per loop iteration <= 250 ms,
                              excluding model and tool time
+                             MEASURED 2026-08-23: 6.53 ms at p95 over 140
+                             iterations, offline. Satisfied with 38x headroom,
+                             and pinned by a test rather than a one-off script.
   NFR-103   Latency          Checkpoint write <= 50 ms at p95
+                             MEASURED 2026-08-23: 11.40 ms at p95 over 180
+                             writes. Satisfied, and pinned by a test.
   NFR-104   Context          No single tool result exceeds 2,000 tokens after
                              shrinking
   NFR-201   Safety           Zero writes outside the workspace root across the

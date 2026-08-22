@@ -11,6 +11,7 @@ Corrections mandated by the build spec, all applied below:
   (d) the risk map in policy.py is the single path to a verdict
   (e) tracing is present now, not deferred
 """
+import inspect
 import json
 import re
 import sqlite3
@@ -205,6 +206,9 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
             # produced it, and this project expects to switch providers.
             "provider": settings.PROVIDER,
             "billed_tokens": reply.billed_tokens,
+            # NFR-102 excludes model time from framework cost, so the exclusion
+            # has to be on the record rather than estimated.
+            "ms": round(elapsed * 1000, 3),
             "cache_read_tokens": reply.cache_read_tokens,
             "stop_reason": reply.stop_reason,
         })
@@ -557,14 +561,63 @@ def _route_after_reflect(state: AgentState) -> str:
     return "act" if state["verdict"] == "continue" else "finish"
 
 
+def _timed(name: str, fn):
+    """Wrap a node so it reports its own wall time (NFR-102).
+
+    Applied HERE rather than inside each node, because _build() is the only
+    function that knows all six and a node should not carry stopwatch code. The
+    nodes themselves are untouched.
+
+    NFR-102 bounds "framework cost per loop iteration, EXCLUDING model and tool
+    time". Both exclusions are already on the trace - `act` records the model's
+    ms and `execute` records each call's duration_ms - so the subtraction is
+    arithmetic over what this adds, not a second measurement.
+    """
+    takes_config = len(inspect.signature(fn).parameters) > 1
+
+    def node(state, config=None):
+        started = time.monotonic()
+        out = fn(state, config) if takes_config else fn(state)
+        trace = (config or {}).get("configurable", {}).get("trace")
+        if trace is not None:
+            trace.append({"kind": "node", "node": name,
+                          "ms": round((time.monotonic() - started) * 1000, 3)})
+        return out
+
+    return node
+
+
+class _TimedSaver(SqliteSaver):
+    """SqliteSaver that reports how long each checkpoint write took (NFR-103).
+
+    The write is timed where it happens rather than around invoke(), because
+    NFR-103 bounds the WRITE and a node's wall time already includes everything
+    else. `put()` receives the RunnableConfig, so the measurement lands on the
+    trace of the run that caused it without any plumbing.
+
+    The only NFR of the three that reaches into a dependency's surface, which is
+    why a test pins that the subclass still round-trips state.
+    """
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        started = time.monotonic()
+        try:
+            return super().put(config, checkpoint, metadata, new_versions)
+        finally:
+            trace = (config or {}).get("configurable", {}).get("trace")
+            if trace is not None:
+                trace.append({"kind": "checkpoint",
+                              "ms": round((time.monotonic() - started) * 1000, 3)})
+
+
 def _build() -> StateGraph:
     b = StateGraph(AgentState)
-    b.add_node("act", act)
-    b.add_node("gate", gate)
-    b.add_node("execute", execute)
-    b.add_node("reflect", reflect)
-    b.add_node("adopt", adopt)
-    b.add_node("finish", finish)
+    b.add_node("act", _timed("act", act))
+    b.add_node("gate", _timed("gate", gate))
+    b.add_node("execute", _timed("execute", execute))
+    b.add_node("reflect", _timed("reflect", reflect))
+    b.add_node("adopt", _timed("adopt", adopt))
+    b.add_node("finish", _timed("finish", finish))
 
     b.add_edge(START, "act")                    # correction (a): not "plan"
     b.add_conditional_edges("act", _route_after_act, ["gate", "reflect"])
@@ -592,5 +645,5 @@ def get_app():
     if _APP is None:
         settings.STATE_DB.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(settings.STATE_DB), check_same_thread=False)
-        _APP = _build().compile(checkpointer=SqliteSaver(conn))
+        _APP = _build().compile(checkpointer=_TimedSaver(conn))
     return _APP
