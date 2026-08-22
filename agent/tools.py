@@ -33,6 +33,33 @@ def _int(value, default: int) -> int:
         return default
 
 
+SEARCH_HINT = "Search wider with run_shell(command='find . -type f | head -50')."
+
+
+def _nearby(target) -> str:
+    """What IS in the directory the agent guessed at, so the retry can be informed.
+
+    Walks up to the nearest directory that exists, because a wrong guess deep in a
+    tree ("src/models/user.py" when there is no "models") would otherwise report
+    nothing at all. Bounded: a workspace of a thousand files must not produce a
+    thousand-name error, which would only breach the result cap in a new way.
+    """
+    directory = target.parent
+    while not directory.is_dir() and config.WORKSPACE in directory.parents:
+        directory = directory.parent
+    try:
+        names = sorted(p.name + ("/" if p.is_dir() else "")
+                       for p in directory.iterdir())
+        where = directory.relative_to(config.WORKSPACE).as_posix() or "."
+    except OSError:
+        return SEARCH_HINT
+    if not names:
+        return f"{where} is empty. {SEARCH_HINT}"
+    shown = ", ".join(names[:25])
+    more = f" (+{len(names) - 25} more)" if len(names) > 25 else ""
+    return f"{where} contains: {shown}{more}. {SEARCH_HINT}"
+
+
 def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read `limit` lines starting at `offset` (0-based)."""
     offset, limit = _int(offset, 0), _int(limit, 500)
@@ -46,6 +73,14 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
         raise IsADirectoryError(
             f"{path} is a directory, not a file. "
             f"List it with run_shell(command='ls -la {path}').")
+    if not target.exists():
+        # The same lesson as the directory error above, applied to the failure that
+        # is FOUR TIMES more common. Across the trace archive, 82 of 112 read_file
+        # errors are a missing file: the agent guesses a name, gets
+        # "[Errno 2] No such file or directory", learns nothing about what to guess
+        # next, and guesses again. Naming the siblings turns a retry loop into one
+        # read - the same trade that took a case from 12 turns to 11.
+        raise FileNotFoundError(f"{path} does not exist. {_nearby(target)}")
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     window = lines[offset:offset + limit]
 

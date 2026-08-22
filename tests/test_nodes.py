@@ -876,3 +876,40 @@ def test_reading_a_directory_says_what_to_do_instead(tmp_workspace):
     assert "run_shell" in message and "ls" in message, (
         "the error must name the tool that WOULD work")
     assert "pkg" in message, "and the path it was asked about"
+
+
+def test_reading_a_missing_file_says_what_DOES_exist(tmp_workspace):
+    """The most common tool failure in the whole trace archive: 82 of 112 read_file
+    errors are FileNotFoundError, four times the directory case that was already
+    fixed.
+
+    A bare `[Errno 2] No such file or directory: '/workspace/stats.py'` tells the
+    agent the guess was wrong and nothing about what to guess next, so it guesses
+    again. Naming the siblings converts a retry loop into one read.
+    """
+    (tmp_workspace / "calc.py").write_text("x = 1", encoding="utf-8")
+    (tmp_workspace / "helpers.py").write_text("y = 2", encoding="utf-8")
+    with pytest.raises(FileNotFoundError) as caught:
+        read_file("stats.py")
+    message = str(caught.value)
+    assert "stats.py" in message, "name what was asked for"
+    assert "calc.py" in message and "helpers.py" in message, (
+        "and what is actually there - that is the part it can act on")
+
+
+def test_a_missing_file_in_a_subdirectory_lists_that_subdirectory(tmp_workspace):
+    """Sibling listing has to follow the path the agent guessed, or a wrong guess
+    deep in a tree gets the workspace root listed at it - noise, not help."""
+    (tmp_workspace / "src").mkdir()
+    (tmp_workspace / "src" / "parser.py").write_text("x = 1", encoding="utf-8")
+    with pytest.raises(FileNotFoundError) as caught:
+        read_file("src/parsr.py")
+    assert "parser.py" in str(caught.value)
+
+
+def test_a_missing_file_under_a_missing_directory_does_not_crash(tmp_workspace):
+    """The parent may not exist either. Listing it must not raise a SECOND error
+    on top of the one being reported."""
+    with pytest.raises(FileNotFoundError) as caught:
+        read_file("nope/also-nope/file.py")
+    assert "file.py" in str(caught.value)
