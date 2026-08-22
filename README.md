@@ -353,12 +353,50 @@ docker run --rm -it --env-file .env \
   personal-agent python -m agent "Fix the failing tests."
 
 # same mounts, different argument
+python -m agent --tui               # full-screen chat
+python -m agent --tui --resume <id> # ...opened on one thread
 python -m agent --list              # past threads
 python -m agent --resume <id>       # continue one
 ```
 
 Destructive commands pause for approval and show the full argument set; a task's
 identity is its thread id, so resuming is re-invocation rather than a restart.
+
+`--tui` is the same loop behind a Textual front end, and it is what makes FR-701's word
+**chat** true: the input box stays live, so a message sent to a finished thread re-enters it
+with its history intact instead of starting over. Turn, tokens and verdict sit in the header,
+tool calls stream in coloured by outcome, `tab` picks a past thread, and approval is a modal
+that **denies on every dismissal** - escape, a click outside, a closed window - with the deny
+button focused so a reflexive Enter refuses.
+
+The plain CLI is unchanged and remains the scriptable path; `textual` is imported only inside
+the `--tui` branch, so the CLI, the harness and the unit suite still run without it.
+
+### Planning — built, and **off by default**
+
+`AGENT_PLAN=on` turns it on. It is off because it does not yet do what it says: across nine
+scored runs the plan was **never written**. This provider keeps emitting tool calls once its
+history holds them — proven with `tools` absent from the request and `finish_reason: tool_calls`
+still coming back — so the planning phase never reaches a text-only reply and the fallback (the
+goal copied verbatim as a single step) fires every time. Full write-up in `eval/CHANGELOG.md`.
+
+What *does* work is the half that needed no cooperation from the model: writes are **refused by
+the gate** while it looks, so read-only research is a property rather than a promise, and
+research turns are capped separately (`PLAN_MAX_TURNS`) so they cannot eat the run's budget.
+
+```
+  +-- PLAN ------------------------------------------------------+
+  | 1. Read tests/test_export.py to find the expected CSV shape  |
+  | 2. Add a CSV writer beside the JSON one in ledger/export.py  |
+  | 3. Run pytest -q until the suite is green                    |
+  +--------------------------------------------------------------+
+    [a]ccept  [r]evise  [q]uit >
+```
+
+Research turns are capped separately (`PLAN_MAX_TURNS`) and are **not** charged against the
+run's turn budget — at `MAX_TURNS = 12`, a shared counter would let four turns of reading starve
+the cases planning exists to help. Every row records `plan_steps`, `plan_turns` and
+`plan_denied`, so the cost is reported beside the effect.
 
 The interactive home is **persistent**; scored case-runs each get a **blank** one, because a
 memory carried from case 1 into case 2 is the same contamination that forced one container per

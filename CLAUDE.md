@@ -93,6 +93,43 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   comes from the server), break-even is above eight, and **the descriptions are load-bearing** -
   `edit_file`'s text coaches the model and is what took real repos 0/9 -> 4/7.
 
+- **The TUI is in, and it needed no spec amendment (FR-701).** `--tui` is a Textual front
+  end over the same loop: the graph runs in a thread worker, `trace.append` and `on_text`
+  cross back through `call_from_thread`, and the approval pause blocks that worker on
+  `call_from_thread(push_screen_wait, ...)`. Safe only because `get_app()` already opened
+  SQLite with `check_same_thread=False`. **`textual` pulls in `rich`, and `eval/fixtures/
+  real-rich` IS the rich source tree** - checked rather than assumed: that fixture has
+  `tests/__init__.py`, so pytest puts `/workspace` ahead of site-packages, and the pins
+  differ on purpose (14.3.3 installed, 14.3.4 vendored) so the check is decisive. Verified
+  after the rebuild: `import rich` resolves to `/workspace/rich/__init__.py` and the
+  untouched fixture still fails with the same single failure.
+  The one graph change is `continue_state()`, a pure function: it resets `turns` (or
+  `reflect` returns `stuck` before the model is called once) and deliberately OMITS
+  `spent_tokens`, so the budget still binds across a whole conversation.
+
+- **Planning is BUILT and DEFAULT OFF: the plan is never written (FR-101 NOT satisfied).**
+  Nine scored runs across three cycles, and `adopt` fell back to the goal copied verbatim in
+  every one. The pass rate went 1/3 -> 3/3 -> 2/3 on `add-endpoint`, which was already 1/3 and
+  is the same shape as the pilot case this project once wrote up at 1/3 and re-measured at 3/3
+  unchanged. **Nothing is attributable, and would not be even if it held: the mechanism never
+  fired, and a pass rate is not evidence for a mechanism that did not run.**
+  **The cause was proven directly, not inferred.** Cycle 3 sent the final planning turn with NO
+  tool schemas and the model called a tool anyway. One request settled it - `tools` absent from
+  the payload, a history holding two prior tool calls, `finish_reason: tool_calls` came back.
+  **On this provider a tool-call history keeps producing tool calls whether or not a tool is
+  offered.** Neither an instruction nor an absence stops it.
+  **That refutes MY design decision, and CE-04 is where it went wrong.** Planning was built as a
+  PHASE of the existing loop on the ground that two nodes which never branch apart are one node.
+  They do branch apart, in the one way that mattered: **the message list.** A phase inherits the
+  tool-call history, and that history is what prevents the plan from being written. §3 drew
+  `PLAN` as a node with its own model call for exactly this reason. Next test: a real plan node
+  with a FRESH short context - the goal plus a digest of what was read.
+  **What does work, and is kept:** the read-only gate refused every write across nine runs, and
+  `plan_denied` recorded `pytest -q` on all nine - the predicted failure, written down before
+  the first run. `PLAN_MAX_TURNS` is separate from `MAX_TURNS` because at a 12-turn cap a shared
+  counter would starve the very case this targeted. **NFR-402 was breached** at 60-66k median
+  against 60,000, which is the other reason the default is off.
+
 - **Skills are in, LOADING only (Phase N).** agentskills.io layout, three disclosure levels, one
   tool (`load_skill`). Split **0/18 -> 17/18**, load rate **17/18 correct, 0 wrong** - the two
   distractor skills are what make that number mean anything. Dev suite **+0.9%** while paying a
@@ -102,6 +139,22 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   the suffix, a deps.txt already showing the format. Found by a control run passing when it should
   have scored zero. Verify THREE ways: untouched fails, a plausible answer WITHOUT the knowledge
   fails, the correct answer passes.
+
+- **Stage 1 of the audit closures is in: six requirements, no third-party code, no quota.**
+  `NFR-601` (risk declared beside the schema - **the DoD item that had never been true**),
+  `FR-201` (`read_file` on a directory returns the listing), `FR-203` (`run_python`, which returns
+  the final expression's value - `python -c` throws it away), `NFR-203` (`redact()` inside
+  `shrink()`, covering the spilled artifact too), `NFR-304` (working seconds accumulated, capped),
+  `FR-804` (delta against the previous run). 368 tests, schema 3,518/6,000.
+  **Hermes had nothing to copy for four of the six** - it hand-writes all 84 of its schemas, its
+  code tool discards the final value, it has no list-directory tool, and its seven `_redact_*`
+  helpers are each tool-specific.
+  **A tool the model cannot see is a function, not a capability**: `run_python` and its five tests
+  were green for a while with no `TOOLS` entry, so the model was never offered it. Found by a live
+  toolset check, not by the suite.
+  **FR-104 stays open on purpose** - `compact` cannot stop being terminal until the compaction
+  node exists, and calling it "budget exhausted" would be a lie at 60% of budget. So the
+  wall-clock cap terminates as `stuck` rather than adding a fifth verdict.
 
 ### Standing lessons, each paid for once
 
@@ -231,6 +284,7 @@ import. Nodes return the full `messages` list; compaction is then an ordinary re
 
 ```bash
 python -m agent "goal"            # interactive run; destructive calls pause for approval
+python -m agent --tui             # full-screen Textual chat; --tui --resume <id> opens one
 python -m agent --list            # past threads, newest first, with verdict and turn count
 python -m agent --resume <id>     # continue a thread; a task's identity IS its thread id
 

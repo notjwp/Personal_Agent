@@ -5,13 +5,47 @@ text, where the model can act on it. That is the only place it was ever useful.
 
 CE-05: the artifacts directory is created at call time, never at import.
 """
+import os
 from hashlib import sha256
 
 from agent import config
 
+# NFR-203: secrets never enter model context. Env-var indirection was already true
+# - the key is read from the environment and never appears in a prompt - but the
+# requirement's second half, output redaction, did not exist at all. A tool can
+# echo a secret straight back: `run_shell(command="env")`, a traceback carrying a
+# URL with credentials in it, a config file the agent was asked to read.
+#
+# Applied inside shrink() rather than at each tool, because shrink() is the ONE
+# place every tool result passes through on its way into context (FR-401). Here it
+# cannot be forgotten by a tool added later.
+SECRET_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASSWD",
+                   "_CREDENTIALS")
+
+# Below this length a value is likelier to be a coincidence than a secret: a
+# two-character token would rewrite half of any English output.
+MIN_SECRET_CHARS = 8
+
+
+def redact(text: str) -> str:
+    """Replace secret-shaped environment values with a named marker.
+
+    Named rather than blanked. `[redacted:NVIDIA_API_KEY]` tells the model a
+    credential was there and which one, so it can reason about what it read; a
+    bare row of asterisks looks like data and gets copied into the next command.
+    """
+    for name, value in os.environ.items():
+        if len(value) >= MIN_SECRET_CHARS and name.upper().endswith(SECRET_SUFFIXES):
+            text = text.replace(value, f"[redacted:{name}]")
+    return text
+
 
 def shrink(tool: str, text: str) -> str:
     """Cap `text` for `tool`, spilling the full output to disk when it overflows."""
+    # Before the cap AND before the spill: the artifact is readable with read_file,
+    # so redacting only the returned string would leave the secret sitting on disk
+    # inside the workspace, one tool call away.
+    text = redact(text)
     cap = min(config.TOOL_CAPS.get(tool, config.MAX_RESULT_CHARS), config.MAX_RESULT_CHARS)
     if len(text) <= cap:
         return text

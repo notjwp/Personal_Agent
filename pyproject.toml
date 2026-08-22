@@ -13,6 +13,10 @@ dependencies = [
   "mcp-server-fetch==2026.8.18",
   # Phase N: agentskills.io SKILL.md frontmatter.
   "pyyaml==6.0.2",
+  # The TUI (FR-701). rich is pinned BELOW the version vendored in
+  # eval/fixtures/real-rich, so a run that picks the wrong one is visible.
+  "textual==8.0.1",
+  "rich==14.3.3",
 ]
 
 [project.optional-dependencies]

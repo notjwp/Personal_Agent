@@ -709,7 +709,12 @@ scope rather than pushing through.
   [ ] Every deterministic node has unit tests that run without an API key
   [ ] A SIGKILL mid-task, followed by resume, completes without duplicated
       side effects (NFR-302)
-  [ ] Adding a new tool touches exactly one file (NFR-601)
+  [x] Adding a new tool touches exactly one file (NFR-601)
+      TRUE SINCE 2026-08-23, and it was NOT before: TOOLS carried the function
+      and the schema while RISK was a literal in policy.py, so every built-in
+      since v1 touched two files. A tool now declares `risk` beside its schema
+      and policy.risk_of() reads it, falling back to tools.TOOLS so a tool added
+      after import is classifiable without a sync() call.
   [ ] eval/runs/ contains at least three dated runs, each with per-case trace
       files, showing the improvement trajectory
   [ ] eval/CHANGELOG.md records every tuning cycle: hypothesis, change,
@@ -761,12 +766,71 @@ speculative code and will rot.
       config.py          SINGLE source of truth: WORKSPACE root, MODEL, per-
                          tool output caps, turn/token budgets, compaction
                          threshold, head/tail line counts
-      tools.py           the three v1 tool functions plus their hand-written
-                         schemas, nothing else
+      tools.py           the v1 tool functions plus their hand-written schemas
+                         and, since 2026-08-23, each tool's RISK - which is what
+                         makes NFR-601 true. run_python added for FR-203: it
+                         returns the value of the final expression, which
+                         run_shell("python -c ...") cannot, because -c discards
+                         it. read_file on a directory returns the listing rather
+                         than an error, which is FR-201 without a second schema
+                         charged on every request.
       policy.py          classify() — the gate's entire logic, no side effects
       context.py         shrink()
       graph.py           AgentState, node functions, graph wiring
+                         PLANNING ADDED (FR-101, FR-105, UR-02): `phase`, `plan`,
+                         `cursor` and `plan_turns` on the state, one DETERMINISTIC
+                         node (`adopt`), and section 9 step 2 (b)'s cursor check
+                         restored - it said to do so "only when the plan node is
+                         added", and this is that moment.
+                         Section 3 draws PLAN as a node that calls a model. It is
+                         built as a PHASE of the existing loop instead, and CE-04
+                         is why: two nodes that never branch apart are one node,
+                         and planning differs from working only in the prompt act
+                         injects, what the gate refuses, and how reflect exits.
+                         Section 13 governs the code shape where the two disagree.
+                         The result is BETTER than section 3's own count - it
+                         budgets three model-calling nodes and this adds none.
+                         NOT justified by `replan`, which fired ONCE in 712
+                         recorded rows. The justification is FR-101, FR-105 and
+                         FR-702, plus UR-02 and UR-05.
+                         DEFAULT OFF, and FR-101 is NOT SATISFIED. Across nine
+                         scored runs the plan was never written: this provider
+                         keeps emitting tool calls once its history holds them -
+                         measured with `tools` absent from the request entirely -
+                         so the phase never reaches a text-only reply and `adopt`
+                         falls back to the goal as a single step every time.
+                         THE CE-04 ARGUMENT ABOVE IS REFUTED BY THAT. Planning and
+                         working DO branch apart, in the one way that mattered:
+                         the MESSAGE LIST. A phase inherits the tool-call history,
+                         and that history is what prevents the plan being written.
+                         Section 3 drew PLAN as its own model-calling node for
+                         exactly this reason. The next attempt gives it a fresh
+                         short context - the goal plus a digest of what was read.
+                         What survives measurement: the read-only gate refused
+                         every write across nine runs, and PLAN_MAX_TURNS kept
+                         research off the working budget. NFR-402 was breached at
+                         60-66k median against 60,000. See eval/CHANGELOG.md.
       cli.py             entrypoint: python -m agent "goal"
+      tui.py             ADDED with the Textual front end. NOT new scope: FR-701
+                         is [M] and reads "Provide a CLI/TUI chat with streamed
+                         output", and section 11's non-goals say "A web UI.
+                         CLI/TUI only." The CLI half shipped in v1; the TUI half
+                         had no implementation and FR-701's word "chat" had no
+                         answer at all - a follow-up meant killing the process
+                         and resuming with nothing new to say.
+                         Earned under CE-01 as the SECOND implementation of the
+                         interface layer, which is the standard provider.py met
+                         with a second provider. cli.py stays the headless,
+                         scriptable path. textual is imported INSIDE the --tui
+                         branch, never at module top, so the CLI, the eval
+                         harness and the unit suite all still run where it is
+                         not installed (NFR-602).
+                         FR-702's MACHINERY is in - the header carries
+                         "step 2/4" beside turn, tokens and verdict, and the plan
+                         modal shows every step before anything is written - but
+                         the requirement is NOT satisfied, because the plan being
+                         displayed is `adopt`'s fallback: the goal copied verbatim
+                         as one step. See the planning note under graph.py.
     prompts/
       SOUL.md            system prompt, version controlled (NFR-603)
     tests/
@@ -780,6 +844,15 @@ speculative code and will rot.
       runs/<ts>/         summary.jsonl + <case-id>.json full traces
       CHANGELOG.md       one row per tuning cycle
     tests/
+      test_tui.py        ADDED with the TUI, the SIXTH stated deviation. Same
+                         ground as test_cli.py - the approval prompt is where
+                         consent is decided - but a NEW risk rather than a second
+                         copy of that one: a modal has dismissal paths a keystroke
+                         loop cannot have (escape, a click outside, a closed
+                         window), and one that answers "allow" when dismissed is
+                         a security defect that manual testing finds only by
+                         accident. Driven through Textual's own headless pilot,
+                         so it needs no terminal and no API key.
       test_memory.py     ADDED Phase M, the FIFTH stated deviation. Justified on
                          the same standard: memory is the one component whose
                          failure is SILENT by construction. A broken tool throws;

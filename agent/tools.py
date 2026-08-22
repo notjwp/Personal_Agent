@@ -14,6 +14,7 @@ one risk is what §13 cut the INSTALL set for.
 Adding a tool touches this file only (NFR-601).
 """
 import subprocess
+import sys
 
 from agent import config
 
@@ -65,14 +66,18 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     offset, limit = _int(offset, 0), _int(limit, 500)
     target = config.WORKSPACE / path
     if target.is_dir():
-        # Measured cost of NOT saying this: the only failure in the 14/15 baseline.
-        # The agent asked for a directory, got a bare "[Errno 21] Is a directory",
-        # retried the same path with a trailing slash, got the identical message,
-        # and spent 3 of its 12 turns on it. That case passes in 11 turns.
-        # An error the model cannot act on costs a turn every time it is retried.
-        raise IsADirectoryError(
-            f"{path} is a directory, not a file. "
-            f"List it with run_shell(command='ls -la {path}').")
+        # FR-201 names "list directories" as a must-have and there was no tool for
+        # it. There still is not, deliberately: a separate tool costs ~582 chars of
+        # schema on EVERY request against a 6,000 cap, to answer a question this
+        # tool is already being asked.
+        #
+        # It used to raise and tell the agent to run `ls`, which was already an
+        # improvement on the bare "[Errno 21] Is a directory" that cost 3 of 12
+        # turns on the only failure in the 14/15 baseline. But it still spends a
+        # turn on a round trip, and the planning traces showed exactly that:
+        # read_file on a directory, error, then `ls -la` on the same path. Two
+        # turns for one answer. Returning the listing costs nothing and saves one.
+        return f"{path} is a directory.\n{_nearby(target / '_')}"
     if not target.exists():
         # The same lesson as the directory error above, applied to the failure that
         # is FOUR TIMES more common. Across the trace archive, 82 of 112 read_file
@@ -189,9 +194,72 @@ def run_shell(command: str, timeout: int = 120) -> str:
     )
 
 
+# FR-203 wants three things back: stdout, the traceback if it raised, AND the
+# value of the final expression. The last one is why this driver exists at all -
+# `python -c` discards it, so `run_shell("python -c ...")` can never satisfy the
+# requirement. Hermes does not do this either; its code tool is a subprocess
+# runner like any other.
+#
+# The body is exec'd and a trailing EXPRESSION is eval'd separately, which is how
+# a REPL distinguishes `x = 1` from `x`. A trailing statement is not an
+# expression and correctly yields no value.
+#
+# ON THE exec/eval PAIR, since it looks alarming out of context: running arbitrary
+# code IS this tool, and `ast.literal_eval` cannot satisfy FR-203 - it evaluates
+# literals, not `sum(row.total for row in rows)`. The eval runs on an AST node
+# parsed from the same source exec already ran, so it widens nothing. The boundary
+# is elsewhere and unchanged: classify() gates the call at risk `write`, and it
+# executes in the container, which `run_shell` already permits strictly more of -
+# `run_shell(command="python -c ...")` was always available and is not gated any
+# more tightly than this.
+_PYTHON_DRIVER = """
+import ast, sys, traceback
+
+source = sys.stdin.read()
+try:
+    tree = ast.parse(source)
+except SyntaxError:
+    traceback.print_exc()
+    raise SystemExit(1)
+
+tail = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
+scope = {"__name__": "__main__"}
+try:
+    exec(compile(tree, "<agent>", "exec"), scope)
+    if tail is not None:
+        value = eval(compile(ast.Expression(tail.value), "<agent>", "eval"), scope)
+        if value is not None:
+            print("--- value ---")
+            print(repr(value))
+except BaseException:
+    # Returned as text, never raised: FR-208 makes the execute node the one place
+    # that turns an exception into an observation, and a traceback IS the answer
+    # here rather than a failure of the tool.
+    traceback.print_exc()
+    raise SystemExit(1)
+"""
+
+
+def run_python(code: str, timeout: int = 120) -> str:
+    """Execute `code` in the workspace and report what it did (FR-203)."""
+    done = subprocess.run(
+        [sys.executable, "-c", _PYTHON_DRIVER],
+        input=code, cwd=config.WORKSPACE,
+        capture_output=True, text=True, timeout=_int(timeout, 120),
+    )
+    return (
+        f"exit code: {done.returncode}\n"
+        f"--- stdout ---\n{done.stdout}\n"
+        f"--- stderr ---\n{done.stderr}"
+    )
+
+
 TOOLS = {
     "read_file": {
         "fn": read_file,
+        # NFR-601: declared HERE, beside the function and the schema, so adding a
+        # tool touches this file and no other. policy.sync() reads it.
+        "risk": "read",
         "schema": {
             "name": "read_file",
             "description": (
@@ -214,6 +282,7 @@ TOOLS = {
     },
     "write_file": {
         "fn": write_file,
+        "risk": "write",
         "schema": {
             "name": "write_file",
             "description": (
@@ -234,6 +303,7 @@ TOOLS = {
     },
     "edit_file": {
         "fn": edit_file,
+        "risk": "write",
         "schema": {
             "name": "edit_file",
             "description": (
@@ -257,8 +327,37 @@ TOOLS = {
             },
         },
     },
+    "run_python": {
+        "fn": run_python,
+        "risk": "write",
+        "schema": {
+            "name": "run_python",
+            "description": (
+                "Run Python in the workspace. Returns stdout, the traceback if it "
+                "raised, and the VALUE of the final expression - so end with a bare "
+                "expression to see what it evaluates to, as in a REPL. Prefer this "
+                "over run_shell for anything that computes: `python -c` throws the "
+                "value away."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string",
+                             "description": "Python source. The last line may be a "
+                                            "bare expression to return its value."},
+                    "timeout": {"type": "integer",
+                                "description": "Seconds before it is killed. Default 120."},
+                },
+                "required": ["code"],
+            },
+        },
+    },
     "run_shell": {
         "fn": run_shell,
+        # `write` and NOT `destructive`: the DANGER regex in policy.py escalates
+        # the dangerous commands, so declaring the whole tool destructive would
+        # pause on every `ls`.
+        "risk": "write",
         "schema": {
             "name": "run_shell",
             "description": (

@@ -17,3 +17,10 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
+
+# A 928 MB third-party checkout kept for reference (Hermes Agent, MIT).
+# The directory itself, not its contents: `hermes_copy/*` leaves the folder
+# trackable, and it is only absent from `git status` today because the nested
+# hermes-agent/.git makes git skip it. Delete that and 928 MB becomes
+# committable.
+hermes_copy/

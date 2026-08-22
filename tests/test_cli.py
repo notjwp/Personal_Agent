@@ -5,6 +5,7 @@ A prompt that reads a mistyped key as approval is a security defect, and the
 only way that surfaces in manual testing is by accident.
 """
 import builtins
+from types import SimpleNamespace
 
 import pytest
 
@@ -140,3 +141,137 @@ def test_resumed_session_continues_the_turn_count(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "resumed at turn 8" in out and "42,000 tokens" in out
     assert "turn 9/" in out, "the next turn must be 9, not 1"
+
+
+# ================================================================== live trace
+
+def test_a_sink_receives_every_entry_and_the_counters_still_advance():
+    """The TUI swaps the RENDERING, not the bookkeeping.
+
+    Had the counters stayed inside the printer, a sink would receive every entry
+    while the header it feeds sat at turn 0 forever - and nothing would fail.
+    """
+    seen = []
+    trace = cli.LiveTrace(sink=seen.append)
+    trace.append({"kind": "model", "billed_tokens": 900})
+    trace.append({"kind": "tool", "tool": "read_file"})
+    trace.append({"kind": "model", "billed_tokens": 100})
+
+    assert [e["kind"] for e in seen] == ["model", "tool", "model"]
+    assert (trace.turn, trace.tokens) == (2, 1_000)
+    # Still a list. Subclassing one is the entire live-output mechanism, and
+    # graph.py must keep seeing nothing but `trace.append(...)`.
+    assert len(trace) == 3
+
+
+def test_the_default_sink_still_prints(capsys):
+    """No sink means the CLI's own renderer, unchanged."""
+    trace = cli.LiveTrace()
+    trace.append({"kind": "terminal", "verdict": "done", "turns": 3,
+                  "spent_tokens": 42})
+    assert "done" in capsys.readouterr().out
+
+
+# ===================================================================== threads
+
+class FakeApp:
+    """The checkpointer surface `_thread_ids` and `_thread_rows` actually use."""
+
+    def __init__(self, states: dict):
+        self._states = states
+        tuples = [SimpleNamespace(config={"configurable": {"thread_id": tid}})
+                  for tid in states]
+        # Listed twice on purpose: the checkpointer yields one tuple per
+        # checkpoint, not per thread, and _thread_ids has to dedupe.
+        self.checkpointer = SimpleNamespace(list=lambda _: tuples + tuples)
+
+    def get_state(self, cfg):
+        return SimpleNamespace(
+            values=self._states[cfg["configurable"]["thread_id"]])
+
+
+def test_thread_rows_returns_data_the_picker_and_the_printer_share():
+    app = FakeApp({
+        "aaa11111": {"messages": [{"role": "user", "content": "fix the tests"}],
+                     "verdict": "done", "turns": 7},
+        "bbb22222": {},
+    })
+    rows = cli._thread_rows(app)
+
+    assert rows == [
+        {"id": "aaa11111", "verdict": "done", "turns": 7, "goal": "fix the tests"},
+        # A thread with no state yet still appears, with a dash rather than a
+        # crash: an interrupted first turn is exactly when you want to find it.
+        {"id": "bbb22222", "verdict": "-", "turns": 0, "goal": ""},
+    ]
+
+
+def test_list_threads_prints_exactly_those_rows(capsys):
+    """One traversal, two presentations. If these ever drift, --list and the
+    TUI picker start disagreeing about what a thread was for."""
+    app = FakeApp({"aaa11111": {"messages": [{"role": "user", "content": "fix it"}],
+                                "verdict": "stuck", "turns": 12}})
+    assert cli.list_threads(app) == 0
+    out = capsys.readouterr().out
+    for field in ("aaa11111", "stuck", "12", "fix it"):
+        assert field in out
+
+
+# ======================================================== the plan prompt
+
+PLAN_PAUSE = {"plan": ["Read tests/test_export.py",
+                       "Add a CSV writer to ledger/export.py",
+                       "Run pytest -q until green"],
+              "reason": "plan ready for review"}
+
+
+@pytest.mark.parametrize("keystroke", ["a", "accept", "A", "  a  "])
+def test_accept_variants_adopt_the_plan(monkeypatch, keystroke):
+    answers(monkeypatch, keystroke)
+    assert cli.ask_plan(PLAN_PAUSE) == "accept"
+
+
+def test_revise_asks_why_and_carries_the_answer_back(monkeypatch):
+    """The note travels back as an ordinary user message, so it is worth a
+    second prompt - 'revise' alone tells the planner nothing."""
+    answers(monkeypatch, "r", "use edit_file, not write_file")
+    assert cli.ask_plan(PLAN_PAUSE) == "use edit_file, not write_file"
+
+
+def test_revise_with_no_reason_still_revises(monkeypatch):
+    answers(monkeypatch, "r", "")
+    assert cli.ask_plan(PLAN_PAUSE) == "revise"
+
+
+def test_unrecognised_input_reprompts_rather_than_adopting(monkeypatch):
+    remaining = answers(monkeypatch, "yes", "ok", "", "a")
+    assert cli.ask_plan(PLAN_PAUSE) == "accept"
+    assert remaining == []
+
+
+def test_no_terminal_quits_rather_than_looping(monkeypatch):
+    """The one place this differs from the tool prompt. There, silence denies
+    and the run continues. Here `revise` would send the graph back to planning
+    and ask again - with nothing on stdin that is an infinite loop, so the safe
+    answer is to stop."""
+    def raise_eof(_=""):
+        raise EOFError
+    monkeypatch.setattr(builtins, "input", raise_eof)
+    assert cli.ask_plan(PLAN_PAUSE) == cli.QUIT
+
+
+def test_every_step_is_shown(monkeypatch, capsys):
+    """UR-05: see what it is about to do. A plan shown three steps short is not
+    the plan that will run."""
+    answers(monkeypatch, "a")
+    cli.ask_plan(PLAN_PAUSE)
+    out = capsys.readouterr().out
+    for step in PLAN_PAUSE["plan"]:
+        assert step in out
+
+
+def test_ask_human_routes_a_plan_payload_to_the_plan_prompt(monkeypatch):
+    """One interrupt channel, two payload shapes. Telling them apart by key is
+    what lets the graph keep a single suspension mechanism."""
+    answers(monkeypatch, "a")
+    assert cli.ask_human(PLAN_PAUSE) == "accept"

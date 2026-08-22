@@ -158,12 +158,15 @@ def _call_openai_compatible(messages, system, tools, on_text) -> Reply:
         )
         # Deliberately no thinking, no effort, no cache_control: those are Anthropic-only
         # and sending them here produces confusing 400s rather than a clear failure.
-        response = client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            max_tokens=settings.MAX_TOKENS,
-            messages=to_openai_messages(system, messages),
-            tools=to_openai_tools(tools),
-        )
+        # `tools` is omitted rather than sent empty: several OpenAI-compatible
+        # endpoints reject `tools: []` with a 400, and the planning phase's last
+        # turn deliberately exposes none.
+        request = dict(model=settings.OPENAI_MODEL,
+                       max_tokens=settings.MAX_TOKENS,
+                       messages=to_openai_messages(system, messages))
+        if tools:
+            request["tools"] = to_openai_tools(tools)
+        response = client.chat.completions.create(**request)
     except Exception as exc:
         _reraise_classified(exc)
         raise

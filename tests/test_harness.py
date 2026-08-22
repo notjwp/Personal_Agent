@@ -362,3 +362,73 @@ def test_progress_column_shows_partial_credit():
              for i, a in enumerate([1, 1, 6])]
     assert harness._progress(group) == "6->1/1/6"
     assert harness._progress([{"failures_before": None, "failures_after": None}]) == "-"
+
+
+# ================================================== FR-804: delta between runs
+
+from eval.harness import delta
+
+
+def _row(cid, run_index, passed, tokens=10_000, status="ok"):
+    return {"id": cid, "run_index": run_index, "pass": passed, "status": status,
+            "tokens": tokens, "verdict": "done" if passed else "stuck"}
+
+
+def test_delta_reports_the_move_and_names_only_the_cases_that_changed():
+    """A table where fourteen rows say 3/3 -> 3/3 buries the one that regressed."""
+    before = [_row("alpha", 0, True), _row("alpha", 1, True),
+              _row("beta", 0, False), _row("beta", 1, False)]
+    now = [_row("alpha", 0, True), _row("alpha", 1, True),
+           _row("beta", 0, True), _row("beta", 1, False)]
+
+    out = delta(now, before, "20260101T000000Z")
+
+    assert "pass 2/4 -> 3/4   (+1)" in out
+    assert "beta" in out, "the case that moved is named"
+    assert "alpha" not in out, "the case that did not move is not"
+
+
+def test_delta_reports_a_regression_with_its_sign():
+    before = [_row("alpha", 0, True), _row("alpha", 1, True)]
+    now = [_row("alpha", 0, True), _row("alpha", 1, False)]
+
+    out = delta(now, before, "prev")
+
+    assert "(-1)" in out and "-1" in out
+
+
+def test_delta_reports_cost_even_when_the_score_holds():
+    """A pass rate held at the same number for 30% more tokens is a regression
+    that no pass/fail column shows."""
+    before = [_row("alpha", 0, True, tokens=10_000)]
+    now = [_row("alpha", 0, True, tokens=13_000)]
+
+    out = delta(now, before, "prev")
+
+    assert "tokens (median)" in out
+    assert "+30%" in out
+
+
+def test_delta_flags_a_changed_population_rather_than_hiding_it():
+    """Comparing a 5-case run against a 6-case run is two numbers printed next to
+    each other, not a delta."""
+    before = [_row("alpha", 0, True), _row("gone", 0, True)]
+    now = [_row("alpha", 0, True), _row("fresh", 0, False)]
+
+    out = delta(now, before, "prev")
+
+    assert "only in the previous run: gone" in out
+    assert "new in this run: fresh" in out
+
+
+def test_delta_is_empty_when_there_is_nothing_to_compare():
+    assert delta([_row("alpha", 0, True)], [], "prev") == ""
+
+
+def test_delta_ignores_blocked_runs():
+    """A blocked run measured nothing and must not count in either direction -
+    the standing rule that keeps `pass 4/13, 2 blocked` from becoming `4/15`."""
+    before = [_row("alpha", 0, True)]
+    now = [_row("alpha", 0, True), _row("alpha", 1, False, status="blocked")]
+
+    assert "pass 1/1 -> 1/1   (+0)" in delta(now, before, "prev")

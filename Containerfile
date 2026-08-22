@@ -38,6 +38,20 @@ RUN pip install --no-cache-dir "mcp==1.29.0" "mcp-server-fetch==2026.8.18"
 # no-index, so nothing installs at run time.
 RUN pip install --no-cache-dir "pyyaml==6.0.2"
 
+# The TUI (FR-701, "Provide a CLI/TUI chat with streamed output"). Baked here
+# for the same reason as everything above: pip.conf below sets no-index.
+#
+# textual pulls in rich, and eval/fixtures/real-rich IS the rich source tree
+# (vendored at 14.3.4). Checked rather than assumed before adding it: that
+# fixture has tests/__init__.py, so pytest's prepend import mode puts /workspace
+# ahead of site-packages and `import rich` there resolves to the vendored copy.
+# The pins differ ON PURPOSE - 14.3.3 here against 14.3.4 vendored - which makes
+# the check decisive: inside that workspace, rich.__version__ must read 14.3.4.
+#
+# Precedent agrees: pygments and markdown-it-py are already installed above FOR
+# real-rich, alongside its vendored copy of the same names.
+RUN pip install --no-cache-dir "textual==8.0.1" "rich==14.3.3"
+
 # The `missing-dep` case must be solvable with networking off: stage the wheel
 # but deliberately do NOT install it.
 RUN pip download --no-cache-dir tabulate -d /wheels

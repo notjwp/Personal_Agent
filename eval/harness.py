@@ -610,6 +610,83 @@ def summarise(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def previous_run(out: Path) -> Path | None:
+    """The most recent EARLIER run over the same population, or None.
+
+    Same population, checked against the manifest, because a delta between a
+    5-case dev run and a 6-case real run is not a delta - it is two numbers
+    printed next to each other, which is exactly the confusion this project has
+    already had to retract once.
+    """
+    try:
+        want = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for candidate in sorted(out.parent.glob("*"), reverse=True):
+        if candidate.name >= out.name or not (candidate / "summary.jsonl").exists():
+            continue
+        try:
+            have = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if have.get("cases") == want.get("cases"):
+            return candidate
+    return None
+
+
+def delta(rows: list[dict], before: list[dict], label: str) -> str:
+    """FR-804: the change against the previous run, per case and in total.
+
+    Pure, for the same reason summarise() is: it reports the thing the project is
+    judged on, and a wrong answer here does not crash - it silently claims an
+    improvement that did not happen.
+
+    Only cases that MOVED are listed. A table where fourteen rows say 3/3 -> 3/3
+    buries the one that says 3/3 -> 1/3.
+    """
+    scored = [r for r in latest_rows(rows) if r.get("status", "ok") == "ok"]
+    was = [r for r in latest_rows(before) if r.get("status", "ok") == "ok"]
+    if not scored or not was:
+        return ""
+
+    def by_case(group):
+        out: dict[str, list[dict]] = {}
+        for r in group:
+            out.setdefault(r["id"], []).append(r)
+        return out
+
+    now, then = by_case(scored), by_case(was)
+    passed = sum(1 for r in scored if r["pass"])
+    passed_before = sum(1 for r in was if r["pass"])
+    move = passed - passed_before
+
+    lines = ["", f"delta vs {label}:   pass {passed_before}/{len(was)} -> "
+                 f"{passed}/{len(scored)}   ({move:+d})"]
+
+    for cid in sorted(set(now) & set(then)):
+        a = sum(1 for r in then[cid] if r["pass"])
+        b = sum(1 for r in now[cid] if r["pass"])
+        if a != b:
+            lines.append(f"  {cid:<24}{a}/{len(then[cid])} -> {b}/{len(now[cid])}"
+                         f"   {b - a:+d}")
+
+    # Cost moves even when the score does not, and a pass rate held at the same
+    # number for 30% more tokens is a regression that no pass/fail column shows.
+    med_now = int(statistics.median([r["tokens"] for r in scored]))
+    med_then = int(statistics.median([r["tokens"] for r in was]))
+    if med_then:
+        lines.append(f"  {'tokens (median)':<24}{med_then:,} -> {med_now:,}"
+                     f"   {(med_now - med_then) / med_then * 100:+.0f}%")
+
+    gone = sorted(set(then) - set(now))
+    fresh = sorted(set(now) - set(then))
+    if gone:
+        lines.append(f"  ! only in the previous run: {', '.join(gone)}")
+    if fresh:
+        lines.append(f"  ! new in this run: {', '.join(fresh)}")
+    return "\n".join(lines)
+
+
 def run_dir(args, cases) -> Path | None:
     """Choose the output directory, creating or resuming one.
 
@@ -837,6 +914,20 @@ def outer(args) -> int:
     rows = read_rows(out)
     print()
     print(summarise(rows))
+
+    # FR-804: the number against the number before it. Printed here rather than
+    # left to whoever reads two run directories side by side, because "did it
+    # move" is the only question a tuning cycle asks.
+    earlier = previous_run(out)
+    if earlier is not None:
+        try:
+            before = [json.loads(line) for line
+                      in (earlier / "summary.jsonl").read_text(
+                          encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, ValueError):
+            before = []
+        if before:
+            print(delta(rows, before, earlier.name))
     print(f"\ntraces: {out}")
 
     missing = len(planned) - len(completed(rows))
@@ -1122,6 +1213,25 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # WRONG one, or none - and the middle is invisible in a pass rate while
         # being the thing that says the descriptions do not discriminate.
         "skill_expected": case.get("skill_expected", ""),
+        # Planning, and its COST stated apart from its effect (FR-101, FR-105).
+        #
+        # `plan_turns` is separate from `turns` in the state itself, not just
+        # here: research is capped on its own so it cannot eat the working
+        # budget. Reported beside the pass rate because planning spends a model
+        # call and several reads on EVERY run, and a pass-rate rise bought with
+        # a large token increase is a trade rather than a win.
+        #
+        # `plan_denied` is the predicted failure written down in advance: the
+        # planner will reach for a command the read-only allowlist refuses, and
+        # this says WHICH - so widening it is decided by evidence rather than by
+        # guessing at what it wanted.
+        "plan": bool(os.environ.get("AGENT_PLAN", "on").strip().lower()
+                     not in ("0", "off", "false")),
+        "plan_steps": state.get("plan", []),
+        "plan_turns": state.get("plan_turns", 0),
+        "plan_denied": sorted({c.get("summary", "") for c in calls
+                               if c.get("verdict") == "deny"
+                               and "planning" in str(c.get("reason", ""))}),
         "sessions": exposure.get("sessions", 1),
         "schema_chars": exposure.get("schema_chars", 0),
         "schema_tokens_est": exposure.get("schema_chars", 0) // 3 * max(len(models), 1),

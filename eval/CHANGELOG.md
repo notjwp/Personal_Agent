@@ -3053,3 +3053,166 @@ rather than only its index. With one or two skills the cost is bounded and it is
 fails, the agent ignores injected knowledge — a far larger finding than anything about skills.
 
 **269 offline tests**, up from 264.
+
+---
+
+## Plan mode — built, enforced, instrumented; the plan is never written
+
+**Nine scored runs, three cycles, one case. `adopt` fell back to the goal copied verbatim in
+every single run.** The phase runs, the read-only gate holds, the cost is real — and FR-101, the
+requirement the whole phase was justified by, is **not satisfied**. Default `AGENT_PLAN=off`.
+
+### Why it was built at all, stated before the runs
+
+Not by the pass rate. §9's trigger is *"`stuck` at max_turns, no repeats → no strategy → plan
+node"*, and measured across all 676 rows on the current model it looks stronger than it is:
+
+| split | runs | stuck at cap | | reading |
+|---|---|---|---|---|
+| authoring | 87 | 42 | 48% | already diagnosed: it will not *write* skills |
+| skills | 71 | 32 | 45% | already diagnosed: it will not *read* them |
+| dev | 133 | 32 | 24% | **18 of those are `add-endpoint` alone** |
+| real | 65 | 6 | 9% | the split with headroom — `compact` dominated |
+| web, multibug, pilot | 72 | 0 | 0% | |
+
+The two largest contributors had their failures attributed elsewhere already, and counting them
+again here would be double-counting. `replan` — §3's other route into this node — fired **once
+in 712 rows**. So the justification was FR-101, FR-105, FR-702, UR-02 and UR-05, and the
+pass-rate prediction was narrowed in advance to one case: `add-endpoint`, 18 of dev's 32
+stuck-at-cap runs, sitting at 1/3.
+
+### The three cycles
+
+| cycle | change | pass | plan written? | plan_turns |
+|---|---|---|---|---|
+| 1 | the phase, as designed | 1/3 | **no** — cap exited straight to `adopt` | 4/4/4 |
+| 2 | reaching the cap asks for the plan instead of exiting | 3/3 | **no** — model called a tool anyway | 5/5/5 |
+| 3 | the final planning turn is sent with **no tool schemas** | 2/3 | **no** — model called a tool anyway | 5/5/5 |
+
+**1/3 → 3/3 → 2/3 is noise on a case that was already 1/3, and this project has been burned by
+exactly this shape before** — a pilot case scored 1/3, was written up as a capability limit, and
+scored 3/3 unchanged in the full run. Nothing here is attributable, and it would not be even if
+the numbers had held: the mechanism never fired, and a pass rate is not evidence for a mechanism
+that did not run. That is Phase O-redux's rule, applied to itself.
+
+### The cause, proven directly rather than inferred
+
+Cycle 3 removed the tool schemas entirely, so the model *could not* see a tool to call. It
+called one anyway. One direct request settled why — `tools` absent from the payload, a short
+history containing two prior tool calls:
+
+```
+finish_reason: tool_calls
+tool_calls:    ['read_file']
+text:          ''
+```
+
+**On this provider, a history full of tool calls keeps producing tool calls whether or not any
+tool is offered.** Neither an instruction nor an absence stops it. So the planning phase never
+reached a text-only reply, `reflect`'s hard stop fired on a tool result, and `adopt` had nothing
+to parse.
+
+### What that says about the design decision, which was mine and was wrong
+
+§3 draws `PLAN` as a node with its own model call. It was built as a **phase** of the existing
+loop instead, justified under CE-04 — two nodes that never branch apart are one node — because
+planning seemed to differ from working only in the prompt, the gate and reflect's exit.
+
+**They do branch apart, in the one way that mattered: the message list.** A phase inherits the
+tool-call history, and that history is exactly what prevents the plan from being written. A plan
+node with a *fresh, short* message list — the goal plus a digest of what was read — would not
+have this problem, and that is what §3 was drawing. CE-04 did not apply, and the measurement is
+what showed it.
+
+### What is kept, and why, given the null result
+
+Default **off**, so nothing here is claimed. Kept because the next attempt reuses all of it and
+none of it is what failed:
+
+- `phase` / `plan` / `cursor` / `plan_turns` on the state, and §9 step 2(b)'s cursor check
+  restored — it said to do so "only when the plan node is added".
+- **The read-only gate, which is the part that demonstrably works.** `classify(..., planning=True)`
+  refused every write across nine runs; `plan_denied` recorded `pytest -q` on all nine, the
+  predicted failure written down before the first run. An allowlist rather than "risk == read"
+  because there is no directory-listing tool, so refusing `run_shell` outright would leave the
+  planner guessing at the tree.
+- `PLAN_MAX_TURNS`, separate from `MAX_TURNS`. With a 12-turn cap, research on a shared counter
+  would have starved the very case this targeted.
+- `plan_steps` / `plan_turns` / `plan_denied` on every row — the instrumentation is the only
+  reason the fallback was visible at all. Without `plan_steps` the 3/3 in cycle 2 would have
+  been recorded as planning working.
+- `reason` on every tool trace entry. The trace had always said a call was denied and never on
+  what grounds.
+
+### Costs, stated because they are real
+
+- **NFR-402 breached**: median 60,229 / 64,997 / 66,056 tokens against the 60,000 ceiling. Planning
+  spends a model call plus four to five reads on every run.
+- `agent/provider.py` now omits `tools` rather than sending `[]` — several OpenAI-compatible
+  endpoints reject an empty array. Kept regardless of this phase's outcome; it is a correctness
+  fix that cost nothing.
+
+### The next test
+
+A real plan **node** with its own message list: the goal, a digest of what the research turns
+read, and no tool-call history. If the plan still is not written with a clean context, the
+finding is about the model rather than the design — and that is a much larger result than
+anything about planning.
+
+**346 offline tests**, up from 343.
+
+---
+
+## Stage 1 — six audit closures, no third-party code, no quota
+
+A requirement-by-requirement audit against CONTEXT.md found **21 of 35 must-haves
+satisfied**, 11 unmet, 3 partial, and one Definition-of-Done item false as written. Hermes was
+copied to `hermes_copy/` to fix them. **Four of the six turned out to have nothing to copy** -
+Hermes hand-writes all 84 of its tool schemas, its code tool is a subprocess runner with no
+final-expression value, it has no directory-listing tool, and its seven `_redact_*` helpers are
+each tool-specific with no shared utility. So Stage 1 is written here, and costs nothing.
+
+| requirement | was | now |
+|---|---|---|
+| **NFR-601** adding a tool touches one file | **false as written** - `TOOLS` in tools.py, `RISK` in policy.py | `risk` declared beside the schema; `policy.sync()` reads it |
+| **FR-201** list directories | no tool; `run_shell` only | `read_file` on a directory returns the listing |
+| **FR-203** run Python, return the final expression | no tool at all | `run_python`, exposed and gated at `write` |
+| **NFR-203** secrets never in context | env indirection only, **no redaction code existed** | `redact()` inside `shrink()`, covering the spill too |
+| **NFR-304** caps on turns, tokens **and wall-clock** | two of three | `spent_seconds` accumulated, `MAX_SECONDS` enforced |
+| **FR-804** delta against the previous run | runs versioned, no delta | `delta()`, per case and per token |
+
+### The one that was a real defect rather than a gap
+
+**NFR-601 was in the Definition of Done and had never been true.** `TOOLS` carried the function
+and the schema; `RISK` was a literal in `policy.py`. Every built-in since v1 touched both files,
+and the project had been reading "one file" as "one file plus the risk map". A tool now declares
+its risk beside its schema - the shape `memory.tools()` and `skills.tools()` already used -
+and `policy.risk_of()` falls back to `tools.TOOLS`, so a tool added after import is classifiable
+without anyone remembering to call `sync()`. **DoD goes 8/9 -> 9/9, honestly this time.**
+
+### Two things the runs taught, applied here
+
+- **`read_file` on a directory now ANSWERS instead of advising.** Three versions of this, each
+  paid for: a bare `[Errno 21]` was the only failure in the 14/15 baseline (3 of 12 turns burned
+  retrying); naming `ls` fixed that; and the planning traces then showed the remaining cost -
+  read_file, error, `ls -la` on the same path, two turns for one answer. A dedicated list tool
+  would cost **~582 chars of schema on every request** against a 6,000 cap, to answer a question
+  `read_file` is already being asked.
+- **A tool the model cannot see is a function, not a capability.** `run_python` and its five
+  tests existed and passed for a while with no `TOOLS` entry - the suite was green and the model
+  had never been offered it. Caught by a live toolset check, not by the suite, and there is now a
+  test asserting the schema is registered.
+
+### Cost, measured
+
+Schema budget **3,518 / 6,000** chars with memory and skills active (≈4,680 with MCP's `fetch`),
+so `run_python` fits with room to spare. **368 offline tests**, up from 346. Zero model quota.
+
+### What Stage 1 did NOT close, and why
+
+**FR-104** - "terminate on exactly one of done, stuck, budget exhausted, turn cap reached" -
+stays open. Runs still end `compact` and `replan`, neither of which is on that list, and there is
+no `budget` verdict at all. `compact` cannot stop being terminal until the compaction node exists
+(Stage 3), and mapping it to "budget exhausted" would be a lie: it fires at 60% of budget, not at
+exhaustion. **NFR-304 was deliberately built to avoid making this worse** - running out of
+wall-clock terminates as `stuck` rather than as a fifth verdict.

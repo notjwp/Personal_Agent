@@ -45,23 +45,29 @@ class LiveTrace(list):
     passing a plain list and is unaffected.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, sink=None) -> None:
         super().__init__()
         self.turn = 0
         self.tokens = 0
+        # Only the RENDERING is swappable. The counters are not, because the TUI
+        # needs the same turn and token totals this printer does - so they live
+        # in append(), where every sink gets them, rather than inside one
+        # particular way of showing them.
+        self._sink = sink or self._render
 
     def append(self, entry: dict) -> None:
         super().append(entry)
-        self._render(entry)
+        if entry.get("kind") == "model":
+            # Turn numbers are counted here rather than read from state: a turn
+            # begins when the model is called, and the caller sees that moment
+            # live while state only arrives once invoke() returns.
+            self.turn += 1
+            self.tokens += entry.get("billed_tokens", 0)
+        self._sink(entry)
 
     def _render(self, e: dict) -> None:
         kind = e.get("kind")
         if kind == "model":
-            # Turn numbers are counted here rather than read from state: a turn
-            # begins when the model is called, and the CLI sees that moment live
-            # while state only arrives once invoke() returns.
-            self.turn += 1
-            self.tokens += e.get("billed_tokens", 0)
             print(f"\nturn {self.turn}/{settings.MAX_TURNS}"
                   f"   {self.tokens:,} tokens", flush=True)
         elif kind == "tool":
@@ -94,12 +100,51 @@ def _on_text(text: str) -> None:
 
 # ------------------------------------------------------------------- approval
 
+def ask_plan(payload: dict) -> str:
+    """Show the plan and read one keystroke (UR-02, UR-05).
+
+    Same contract as the tool prompt below: an unrecognised key re-asks, never
+    guesses. What differs is the safe answer with no terminal attached. There it
+    is `deny` - a refusal the agent routes around and the run continues. Here it
+    is QUIT, because `revise` would send the graph back to planning and ask
+    again, and with nothing on stdin that is an infinite loop rather than a
+    safe default.
+    """
+    print(f"\n  +-- PLAN {'-' * 53}")
+    for number, step in enumerate(payload["plan"], 1):
+        print(f"  | {number}. {step}")
+    print(f"  +{'-' * 61}")
+
+    while True:
+        try:
+            answer = input("    [a]ccept  [r]evise  [q]uit > ").strip().lower()
+        except EOFError:
+            print("quit (no terminal)")
+            return QUIT
+        if answer in ("a", "accept"):
+            return "accept"
+        if answer in ("r", "revise"):
+            try:
+                note = input("    what should change? > ").strip()
+            except EOFError:
+                note = ""
+            # The note travels back as an ordinary user message, so saying WHY
+            # is worth a second prompt; an empty answer still revises.
+            return note or "revise"
+        if answer in ("q", "quit"):
+            return QUIT
+        print("    unrecognised - answer a, r or q")
+
+
 def ask_human(payload: dict) -> str:
     """Render a paused call and read one keystroke (FR-306, NFR-801).
 
     The argument set is shown in full, never abbreviated. A prompt that elides
     the dangerous half of a command manufactures consent instead of obtaining it.
     """
+    if "plan" in payload:
+        return ask_plan(payload)
+
     call = payload["call"]
     print(f"\n  +-- APPROVAL NEEDED {'-' * 42}")
     print(f"  | {call['name']}")
@@ -188,19 +233,33 @@ def _thread_ids(app) -> list[str]:
     return seen
 
 
-def list_threads(app) -> int:
-    ids = _thread_ids(app)
-    if not ids:
-        print("no threads yet")
-        return 0
-    print(f"{'thread':<20} {'verdict':<10} {'turns':>5}  goal")
-    for tid in ids:
+def _thread_rows(app) -> list[dict]:
+    """Thread id, verdict, turn count and goal - newest first, as DATA.
+
+    The TUI puts this same walk in a table while list_threads() prints it. One
+    traversal of the checkpointer with two presentations, rather than two
+    traversals that can quietly disagree about what a thread's goal was.
+    """
+    rows = []
+    for tid in _thread_ids(app):
         values = app.get_state({"configurable": {"thread_id": tid}}).values or {}
         messages = values.get("messages") or []
         goal = messages[0]["content"] if messages and isinstance(
             messages[0].get("content"), str) else ""
-        print(f"{tid:<20} {values.get('verdict') or '-':<10} "
-              f"{values.get('turns', 0):>5}  {goal[:40]}")
+        rows.append({"id": tid, "verdict": values.get("verdict") or "-",
+                     "turns": values.get("turns", 0), "goal": goal})
+    return rows
+
+
+def list_threads(app) -> int:
+    rows = _thread_rows(app)
+    if not rows:
+        print("no threads yet")
+        return 0
+    print(f"{'thread':<20} {'verdict':<10} {'turns':>5}  goal")
+    for row in rows:
+        print(f"{row['id']:<20} {row['verdict']:<10} "
+              f"{row['turns']:>5}  {row['goal'][:40]}")
     return 0
 
 
@@ -209,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("goal", nargs="?", help="what to do, in plain language")
     parser.add_argument("--list", action="store_true", help="show past threads")
     parser.add_argument("--resume", metavar="THREAD_ID", help="continue a thread")
+    parser.add_argument("--tui", action="store_true",
+                        help="full-screen chat (FR-701) instead of line output")
     args = parser.parse_args(argv)
 
     app = get_app()
@@ -240,13 +301,33 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return _dispatch(args, app, parser)
+    except KeyboardInterrupt:
+        # Everything is checkpointed after every node transition, so an interrupt
+        # costs at most one node. Saying so beats a traceback.
+        print("\nstopped. resume with:  python -m agent --list")
+        return 0
     finally:
-        mcp.shutdown()
+        try:
+            mcp.shutdown()
+        except KeyboardInterrupt:
+            # A SECOND ctrl-c, landing inside the transport thread's join. The
+            # subprocess dies with the container either way; a stack trace here
+            # only makes a clean exit look like a failure.
+            pass
         memory.deactivate()
         skills.deactivate()
 
 
 def _dispatch(args, app, parser) -> int:
+    if args.tui:
+        # Imported HERE, never at module top: the plain CLI, the eval harness and
+        # the unit suite must all keep running where textual is not installed
+        # (NFR-602), and CE-05 forbids settling at import time what belongs at
+        # the call site. main() has already activated memory, skills and MCP, so
+        # the TUI inherits the same lifecycle - and the same `finally` teardown.
+        from agent import tui
+        return tui.run(app, goal=args.goal, thread=args.resume)
+
     if args.resume:
         if args.resume not in _thread_ids(app):
             # Say what exists rather than raising a traceback at someone who

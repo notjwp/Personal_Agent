@@ -111,7 +111,47 @@ def openai_api_key() -> str:
 
 MAX_TURNS = 12
 BUDGET_TOKENS = 200_000
+
+# NFR-304's third leg. Turns and tokens were capped; wall-clock was not, so work
+# that spends neither - a shell command sitting inside its own timeout, a provider
+# stalling through its retries - had nothing to stop it.
+#
+# WORKING seconds, accumulated by the two nodes that actually spend time, rather
+# than wall-clock since the goal arrived. A thread resumed a week later must not
+# terminate on its first turn because the calendar moved.
+MAX_SECONDS = 900
 COMPACT_AT = 0.60        # reflect check (a): compact above this fraction of budget
+
+# --- planning (FR-101, FR-105, UR-02) --------------------------------------
+
+# The kill switch, to the same standard as AGENT_MEMORY and AGENT_SKILLS: with
+# this off the agent must be byte-identical to the one without planning - no
+# phase, no injected instruction, no cursor, and reflect's original
+# made-a-call termination guard.
+#
+# DEFAULT OFF, and measured that way rather than assumed. Across nine scored
+# runs in three cycles the plan was NEVER written: `adopt` fell back to the goal
+# copied verbatim every single time, because this provider keeps emitting tool
+# calls once the history contains them - proven directly, with `tools` absent
+# from the request entirely and finish_reason still `tool_calls`. So FR-101 is
+# not satisfied by what is built, the phase costs ~10% more tokens, and it
+# pushed the median past NFR-402's 60,000. On by default would be a capability
+# claim the runs do not support. See eval/CHANGELOG.md.
+PLAN_ENABLED = os.environ.get("AGENT_PLAN", "off").strip().lower() not in (
+    "0", "off", "false")
+
+# Planning turns are capped SEPARATELY and are not charged against MAX_TURNS.
+#
+# This is the whole reason the phase is affordable. MAX_TURNS is 12: research
+# that spent four of them would starve exactly the cases planning exists to help
+# - add-endpoint, which supplied 18 of the dev split's 32 stuck-at-cap runs, has
+# a 12-turn budget and currently passes 1 of 3. A shared counter would make this
+# layer worse, and predictably so.
+PLAN_MAX_TURNS = 4
+
+# Section 3: "decompose goal into 2-6 steps". A longer list is truncated rather
+# than refused - a planner that over-decomposes must not fail the run.
+PLAN_MAX_STEPS = 6
 
 # --- context caps ----------------------------------------------------------
 
