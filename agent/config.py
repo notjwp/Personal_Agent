@@ -202,3 +202,53 @@ MEMORY_ENABLED = os.environ.get("AGENT_MEMORY", "on").strip().lower() not in (
 # recall win bought with a large token increase shows up as the trade it is.
 MEMORY_INJECT_CHARS = 1_500
 MEMORY_EPISODES = 3           # how many past sessions retrieval may return
+
+# --- skills (Phase N) ------------------------------------------------------
+
+# On-demand knowledge documents, in the agentskills.io layout: one directory per
+# skill holding a SKILL.md with YAML frontmatter (`name`, `description`) and any
+# reference files or scripts it bundles.
+#
+# TWO roots, searched in order, and the order is the precedence:
+#   PROJECT   ships with the repository, read-only in the container
+#   AGENT_HOME  the agent's own, writable - empty until Phase O lets it author
+#
+# AGENT_SKILLS_DIR replaces the project root when set, and the eval harness always
+# sets it. The benchmark's library describes a FICTIONAL project - `-quartz` version
+# suffixes, `check_` test names - and living at the repository root it read as this
+# project's own conventions, to a human browsing the tree and to the agent working
+# in it. Fixtures belong under eval/fixtures with every other fixture.
+SKILLS_DIRS = (
+    Path(os.environ["AGENT_SKILLS_DIR"]).resolve() if os.environ.get("AGENT_SKILLS_DIR")
+    else Path(__file__).resolve().parent.parent / "skills",
+    AGENT_HOME / "skills",
+)
+
+# The kill switch. With this off there is no index, no `load_skill` tool, and the
+# agent is identical to the Phase M one.
+SKILLS_ENABLED = os.environ.get("AGENT_SKILLS", "on").strip().lower() not in (
+    "0", "off", "false")
+
+# What the ALWAYS-LOADED index may cost, in characters.
+#
+# This is the whole progressive-disclosure argument, and it is a budget for the
+# same reason MAX_SCHEMA_CHARS is: the index sits in the system prompt, which is
+# re-sent on every request, and the measured provider returned cache_read_tokens
+# of 0 on every row of a scored run.
+#
+# Level 1 (name + description) is ~40 tokens per skill and is always paid.
+# Level 2 (the body) and Level 3 (bundled files) are ~600+ tokens and are paid
+# ONLY when the agent decides a skill applies.
+#
+# 1,600 chars is ~530 tokens, ~4,800 per run at 9 model calls, and holds the eight
+# shipped skills with headroom. The first guess was 1,200 and the eight-skill index
+# measured 1,236 - caught before any quota was spent, and the reason the overrun is
+# now FATAL rather than truncating: a silently shortened index drops whole skills
+# from the agent's view, and a skill it cannot see is indistinguishable from one it
+# chose not to use. Past this, trim the descriptions rather than raise the cap.
+SKILLS_INDEX_CHARS = 1_600
+
+# One skill body is a tool result like any other and is bounded as one. Kept below
+# MAX_RESULT_CHARS so a long document spills to an artifact rather than arriving
+# whole - shrink() already does that, this just makes the intent explicit.
+SKILL_BODY_CHARS = 6_000

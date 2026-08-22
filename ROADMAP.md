@@ -451,29 +451,252 @@ MSYS_NO_PATHCONV=1 docker run --rm --network none -e AGENT_MEMORY=off -w /app \
 
 ---
 
-## Phase N — Skills: writes its own procedures, and they help
+## Phase N — Skills: on-demand knowledge, and proof it is worth its tokens — **BUILT**
 
-The most distinctive capability and the hardest to justify. Requires memory.
+> **Result: 0/18 without skills, 17/18 with them; load rate 17/18 correct, 0 wrong.** Dev suite
+> +0.9% total tokens while paying a 1,224-char index on every request and loading nothing — the
+> progressive-disclosure claim as a measured number. Evidence in `eval/CHANGELOG.md`.
+>
+> **The first control was thrown away after one case-run**: `skill-lint` passed with skills OFF,
+> because the answer sat in the workspace (`BANNER = "# owner:"` in the checker's own source). Two
+> more cases leaked the same way. Rebuilt, and now verified in THREE directions — untouched, a
+> plausible guess without the skill, and the skill's answer.
+>
+> **Authoring is NOT built.** That is Phase O, with its own measurement.
 
-**Exit criterion:** a measured **reuse rate** AND a measured delta in success or cost when a skill is
-reused versus solving cold. **Without both numbers this phase does not ship.**
+### Context — what this phase is, and how it changed while being planned
 
-- [ ] **Step 1: Build retrieval before authoring.** Writing a skill after a task is the easy half;
-      recognising next week that this task resembles that one is the actual problem, and it is where
-      such systems quietly fail. Build the retrieval path and the reuse counter first, so the reuse
-      rate exists from the first skill.
-- [ ] **Step 2: Skills are version-controlled text** in the agent home — readable, editable and
-      deletable by a human. Not opaque blobs.
-- [ ] **Step 3: A kill switch, and it is not optional.** Skills change behaviour invisibly across
-      sessions, which makes every later measurement harder to attribute. Every scored run records
-      whether skills were on, and the number must fall back to baseline when they are off.
-- [ ] **Step 4: Self-improvement of skills is a LATER phase.** Hermes improves skills during use; that
-      is a second capability with its own measurement, and bundling it here would make the first delta
-      unattributable.
+**Skills are on-demand knowledge documents the agent loads when it needs them, following the
+progressive-disclosure pattern of the agentskills.io open standard.** That is a different thing from
+the "agent writes its own procedures" framing this plan carried until now, and the difference decides
+the whole design.
 
-**The default outcome to design against:** a skill system that authors skills nobody ever retrieves.
-It looks like success from the inside — files accumulate, the log fills — and changes nothing. The
-reuse rate is what catches it.
+**Loading comes first; authoring is Phase O.** You cannot measure whether a *self-written* skill helps
+until you can measure whether *any* skill helps. With a known-good skill planted by hand, a failure
+means retrieval or adherence is broken — one suspect. With authoring bundled in there are three
+(bad skill written / not retrieved / retrieved but ignored) and one number cannot separate them.
+
+**Why progressive disclosure matters more here than almost anywhere else.** Phase L measured that this
+provider returns `cache_read_tokens: 0` on every row, so everything in the prompt is re-sent and
+re-paid on every turn — four tool schemas were already ~23% of a median run. A knowledge library
+injected wholesale would be ruinous. Disclosure inverts that:
+
+```
+Level 1  always loaded    name + description, ~40 tokens per skill
+Level 2  on demand        the SKILL.md body, ~600 tokens, once
+Level 3  on demand        bundled reference files and scripts
+```
+
+**The cost is only paid when the knowledge is used.** That claim is measurable, and measuring it is
+half of this phase.
+
+> **Exit criterion.** A **load rate** (did the agent pull the right skill?) AND a **delta in success
+> or cost** against a control that has memory on and skills off. Plus the disclosure claim: index cost
+> versus what injecting the bodies would have cost. The dev suite must not move. **Without the first
+> two numbers this phase does not ship.**
+
+### The hazard, appearing for the third time
+
+Phase L's web split scored **18/18 before the feature existed**. Phase M's recall baseline was
+verified to have an open bypass before it was trusted. Here the control is not "nothing" — it is the
+**current agent, which already has memory**, and `memory.context_for()` already injects this:
+
+```
+- earlier you were asked: "..."
+  you concluded: ...
+  commands that worked: pytest -q; make ship-quartz
+```
+
+**Memory already performs a weak form of procedural reuse.** Skills must beat *that*, not beat zero.
+If they only help where memory already helps, they are cost with no capability, and the honest
+outcome is to say so and revert.
+
+### What was checked while planning
+
+| | |
+|---|---|
+| Format | Confirmed against real `SKILL.md` files: YAML frontmatter with `name` and `description`, then a markdown body |
+| Storage | `/state/skills/` — the layout Phase K fixed, outside the workspace `reset.sh` wipes |
+| Tool budget | 6 tools = 3,553 chars against a 6,000 cap. Room for **one** more tool, not two |
+| Multi-session rig | Already exists — Phase M added `sessions` chaining to the harness |
+| `read_file` | Workspace-bounded by FR-302, so it **cannot** read `/state/skills/`. This is why loading needs a tool at all |
+| Docker | Not running at plan time; every container probe below is a task step, not an assumption |
+
+---
+
+### Task N0 — The library, and the parser question (free)
+
+- [ ] **Step 1: Skills live in `/state/skills/<name>/SKILL.md`**, human-readable, human-editable,
+      human-deletable, one directory per skill. Bundled files sit beside it.
+- [ ] **Step 2: Use a real YAML parser.** The standard's frontmatter is YAML, and a `split(":", 1)`
+      parser breaks on a quoted or folded `description`, which is exactly the field retrieval depends
+      on. **Add `pyyaml`, pinned, to the `Containerfile` ahead of the `pip.conf` line** — the same
+      pattern `mcp` uses, and required for the same reason: `no-index` means nothing installs at run
+      time.
+- [ ] **Step 3: A malformed skill must not take down a run.** Missing frontmatter, absent
+      `description`, unreadable file: skip it, and say so once. A knowledge library that crashes the
+      agent when one document is wrong is worse than no library.
+- [ ] **Step 4: Ship 8 skills, needing 6.** The two extras are **distractors**, and they are not
+      padding: **discrimination is what fails in these systems.** A library where every skill is
+      needed cannot tell "retrieved the right one" from "retrieved the only one".
+
+### Task N1 — `agent/skills.py`: the three levels, in one tool
+
+- [ ] **Step 1: Level 1 is an index in the system prompt** — `name` and `description` only, built by
+      scanning the directory. Capped by `SKILLS_INDEX_CHARS` and recorded as `skill_index_chars` on
+      every row, exactly as `schema_chars` and `memory_chars` already are.
+- [ ] **Step 2: Levels 2 and 3 are ONE tool, not two.** `load_skill(name, file=None)` returns the
+      SKILL.md body plus a list of bundled files; with `file` it returns that file's contents. The
+      budget allows one more tool, and two would spend the headroom for no capability.
+- [ ] **Step 3: Bound it exactly like the workspace is bounded.** `file` resolves inside that skill's
+      own directory or it is refused — the same `.resolve()`-and-compare shape `policy._inside_workspace()`
+      already uses, reused rather than reinvented.
+- [ ] **Step 4: `shrink()` applies to the result** (FR-401/402). A long skill body is a tool result
+      like any other and spills to an artifact if it overflows.
+- [ ] **Step 5: Retrieval is keyword, and it stays keyword.** §11 forbids vectors until keyword recall
+      is *measured and found wanting*, and Phase M just measured keyword recall working. Scan the
+      directory and score description overlap in Python: at 8 skills an index is unearned, and the
+      trigger for revisiting is a stated skill count, not a hunch.
+
+### Task N2 — Level 3, which is the security-significant half
+
+The choice to support bundled scripts was taken deliberately. The reasoning has to be written down,
+because "a document can carry executable code into the sandbox" is the kind of sentence that should
+stop a reviewer.
+
+- [ ] **Step 1: State the actual delta honestly.** A skill script is executed by the agent calling
+      `run_shell` on it. **That grants nothing `run_shell` does not already grant** — arbitrary
+      commands inside a container whose boundary Phase K made kernel-enforced. What Level 3 changes is
+      **provenance**: code that arrived in a document rather than from the model.
+- [ ] **Step 2: Provenance is handled by who writes skills, and in Phase N that is the human.** The
+      agent cannot author them here. **When Phase O gives it that power, this becomes a real question
+      and must be re-opened** — a self-authored script is the agent writing code it will later run
+      without the gate seeing it as an edit.
+- [ ] **Step 3: No new execution path, and this is the load-bearing rule.** `load_skill` READS. It
+      never executes. Running a bundled script means `run_shell`, through `classify()` and the
+      `DANGER` regex like everything else. A skill must not become a way around the gate.
+- [ ] **Step 4: Test the escape.** `load_skill(name, file="../../../etc/passwd")` and an absolute path
+      must both be refused. This is the `PATH_ARGS` lesson from Phase L: the bypass is tested, never
+      assumed closed.
+
+### Task N3 — The benchmark, built before the feature is wired in
+
+Six cases, single-session (the skill is pre-planted, so no chaining is needed), three runs, two
+conditions. **The control is memory ON, skills OFF.**
+
+- [ ] **Step 1: Every skill encodes INVENTED, project-specific knowledge.** The web and recall
+      fixtures established this: a real convention is answerable from training data, and a case the
+      agent can pass without the skill measures nothing. Example — a `qzlint` tool that exists only in
+      the fixture, whose codes are listed in a bundled reference file.
+- [ ] **Step 2: At least two cases must need Level 3**, or the bundled-file support ships unmeasured.
+- [ ] **Step 3: Scored by the check command**, deterministic, no judge — for the reason Phase M's
+      `profile-units` demonstrated in both directions: determinism is brittle, and a judge whose
+      agreement with a human has never been measured is an opinion with a number on it.
+- [ ] **Step 4: Verify both directions offline** before any scored run — untouched fixture fails, and
+      a correct answer passes. Zero quota, and the standing rule.
+- [ ] **Step 5: Record the control run and READ THE TRACES.** If it scores well without skills, the
+      cases are too easy and must be rebuilt — that is Phase L's lesson, and finding it here costs
+      nine runs instead of a false claim.
+
+### Task N4 — Instrument the load rate, which is the number nobody else reports
+
+- [ ] **Step 1: Every row records** `skills` (on/off), `skill_index_chars`, `skills_loaded` (which
+      ones), and `skill_expected` (which one the case needed).
+- [ ] **Step 2: Three outcomes, not two.** Loaded the right skill / loaded the wrong one / loaded
+      nothing. **The middle one is invisible in a pass rate and is the interesting failure**, because
+      it says the descriptions are not discriminating.
+- [ ] **Step 3: Report the disclosure saving as a measured number**, not a design claim:
+      `index chars x model calls` against `sum of all bodies x model calls`. That is the whole
+      argument for the pattern and it costs nothing to compute.
+- [ ] **Step 4: The kill switch, `AGENT_SKILLS=off`** — no index, no tool, byte-identical to the
+      Phase M agent.
+
+### Task N5 — Measure, against a reading fixed in advance
+
+- [ ] **Step 1: The skills split, 6 x 3, both conditions.**
+- [ ] **Step 2: The dev suite, 3 runs per case.** Skills are pure cost there: an index on every request
+      and a seventh schema, with nothing to load. Phase L's equivalent was +3.3%; state this the same way.
+- [ ] **Step 3: Trust checks unchanged** — zero tampering, zero write violations, one model, egress per
+      row, fixtures re-verified.
+
+| skills split | load rate | reading | what follows |
+|---|---|---|---|
+| **moves up** | high | The pattern works and discriminates | **Keep.** Phase O (authoring) next |
+| moves up | **low** | It succeeded without loading - the cases are too easy | Rebuild the cases. The number is not evidence |
+| **flat** | high | Loaded and ignored, or the skill was not the missing piece | Read traces before touching code. Adherence and retrieval are different faults |
+| **flat** | low | The descriptions do not match how tasks are worded | One cycle on description wording, then re-measure. If still flat, **revert** |
+| any | wrong skill loaded often | Discrimination failure - the distractors did their job | Worth reporting whatever the pass rate does |
+
+---
+
+### Cost
+
+| task | quota |
+|---|---|
+| N0 library, N1 module, N2 gate, N3 fixtures, N4 instrumentation | **free** — offline and container probes |
+| N5 control run, skills OFF | 18 runs, **~400k** |
+| N5 treatment, skills ON | 18 runs, ~400k |
+| N5 dev regression | 15 runs, ~450k |
+
+**~1.25M tokens, roughly one to two days.** Five of six tasks cost nothing, the same ordering every
+phase since J has used.
+
+### Spec amendments
+
+- **Skills are entirely new scope.** Unlike FR-406/407, which were `[S]` requirements arriving on
+  schedule, `CONTEXT.md` has **no skills requirement at all** — the only mention is Phase K's amended
+  NFR-201. Say so plainly rather than implying a deferred layer fired.
+- **§12:** add `agent/skills.py` and `tests/test_skills.py`, the latter to the same justification
+  standard as the other deviations: it is the first component where a **document** can direct the
+  agent's behaviour, and a skill that is silently skipped for a malformed field looks exactly like a
+  skill the agent chose to ignore.
+- **§11 vectors: still not amended, still not built.**
+
+### What must NOT be done
+
+- **Do not let `load_skill` execute anything.** It reads. Execution goes through `run_shell` and the
+  gate, or the gate has a hole shaped like a document.
+- **Do not build authoring.** It is Phase O, and bundling it makes this delta unattributable.
+- **Do not inject skill bodies into the prompt.** That is the anti-pattern progressive disclosure
+  exists to replace, and on a provider that caches nothing it is the expensive one.
+- **Do not report a pass-rate rise without the load rate beside it.** A case that passed without
+  loading anything is not evidence for skills.
+- **Do not drop the distractors** to make the number look better.
+
+### Verification
+
+```bash
+# 1. Offline suite - no API key, no network, read-only root
+MSYS_NO_PATHCONV=1 docker run --rm --network none --read-only --tmpfs /tmp:exec \
+  -v "$(pwd -W):/app:ro" -v "$(pwd -W)/eval/runs:/app/eval/runs" \
+  -v "$(pwd -W)/eval/workspace:/workspace" -v "$(pwd -W)/.agent/homes/_t:/state" \
+  personal-agent pytest -q
+
+# 2. pyyaml present in the image (N0 Step 2)
+MSYS_NO_PATHCONV=1 docker run --rm --network none personal-agent \
+  python -c "import yaml; print('yaml', yaml.__version__)"
+
+# 3. The escape is refused (N2 Step 4) - both must fail
+python -c "from agent import skills; skills.load_skill('qzlint', file='../../../etc/passwd')"
+
+# 4. Both directions on the fixtures (N3 Step 4) - zero quota
+
+# 5. The control that must not be skipped
+AGENT_SKILLS=off python eval/harness.py --split skills --runs 3 --pace 15
+
+# 6. The same thing with skills on
+python eval/harness.py --split skills --runs 3 --pace 15
+
+# 7. Regression guard
+python eval/harness.py --split dev --runs 3 --pace 15
+
+# 8. Kill-switch fidelity - the toolset falls back to Phase M's six
+MSYS_NO_PATHCONV=1 docker run --rm --network none -e AGENT_SKILLS=off -w /app \
+  -e PYTHONPATH=/app -v "$(pwd -W):/app:ro" personal-agent \
+  python -c "from agent import registry; print(sorted(registry.toolset()))"
+```
+
+**A requirement is satisfied when the cases exercising it pass, not when the code exists.**
 
 ---
 

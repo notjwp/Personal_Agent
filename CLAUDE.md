@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Phases A-E and K-M are built. What exists: the measurement rig, the
+Phases A-E and K-N are built. What exists: the measurement rig, the
 `act -> gate -> execute -> reflect` loop, a two-provider model adapter, the interactive CLI with
 approval and resume, kernel-enforced sandboxing, and a committed baseline.
 
 - **Baseline: 14/15**, 3 runs per dev case, 0 blocked, on `nvidia/nemotron-3-super-120b-a12b`.
   Per-case table in `README.md`; conditions and trust checks in `eval/CHANGELOG.md`.
-- **225 unit tests**, green with no API key, no network, a read-only root filesystem, and
+- **247 unit tests**, green with no API key, no network, a read-only root filesystem, and
   without the `mcp` package installed.
 - **The model was the constraint, not the loop.** An earlier baseline of 4/15 on
   `llama-3.1-70b` was diagnosed as loop defects - 9 of 15 runs never called `read_file`, all 15
@@ -92,6 +92,16 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   fired; the decorator's own arithmetic did not. Five of six schemas are hand-written (fetch's
   comes from the server), break-even is above eight, and **the descriptions are load-bearing** -
   `edit_file`'s text coaches the model and is what took real repos 0/9 -> 4/7.
+
+- **Skills are in, LOADING only (Phase N).** agentskills.io layout, three disclosure levels, one
+  tool (`load_skill`). Split **0/18 -> 17/18**, load rate **17/18 correct, 0 wrong** - the two
+  distractor skills are what make that number mean anything. Dev suite **+0.9%** while paying a
+  1,224-char index every request and loading nothing. `AGENT_SKILLS=off` restores Phase M exactly.
+- **A fixture must not contain its own answer, and TWO-way verification will not catch it.** Three
+  of six Phase N cases leaked: a checker whose SOURCE stated the fix, a VERSION already carrying
+  the suffix, a deps.txt already showing the format. Found by a control run passing when it should
+  have scored zero. Verify THREE ways: untouched fails, a plausible answer WITHOUT the knowledge
+  fails, the correct answer passes.
 
 ### Standing lessons, each paid for once
 

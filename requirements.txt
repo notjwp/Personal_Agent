@@ -41,6 +41,12 @@ openai==3.2.0
 mcp==1.29.0
 mcp-server-fetch==2026.8.18
 
+# --- skills (Phase N) --------------------------------------------------------
+# Frontmatter parsing for the agentskills.io SKILL.md format. A real YAML parser
+# rather than a hand-rolled key:value split, because `description` is prose and is
+# the field retrieval depends on.
+pyyaml==6.0.2
+
 # --- tests -------------------------------------------------------------------
 # Mirrors [project.optional-dependencies].dev. The unit suite runs with no API
 # key, no network, and a read-only root filesystem.

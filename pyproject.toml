@@ -11,6 +11,8 @@ dependencies = [
   # measured, not assumed: 2.0.0 fails with ResolutionImpossible.
   "mcp==1.29.0",
   "mcp-server-fetch==2026.8.18",
+  # Phase N: agentskills.io SKILL.md frontmatter.
+  "pyyaml==6.0.2",
 ]
 
 [project.optional-dependencies]

@@ -31,6 +31,13 @@ RUN pip install --no-cache-dir "freezegun" "attrs" "pygments" "markdown-it-py"
 # `ResolutionImpossible`, because mcp-server-fetch declares `mcp<2,>=1.29.0`.
 RUN pip install --no-cache-dir "mcp==1.29.0" "mcp-server-fetch==2026.8.18"
 
+# Skills (Phase N). The agentskills.io frontmatter is YAML, and `description` is
+# the exact field retrieval matches on - a split(":", 1) parser breaks on a quoted
+# or folded value and would DEGRADE matching rather than fail loudly, which is the
+# worst of both. Baked here for the same reason as mcp: pip.conf below sets
+# no-index, so nothing installs at run time.
+RUN pip install --no-cache-dir "pyyaml==6.0.2"
+
 # The `missing-dep` case must be solvable with networking off: stage the wheel
 # but deliberately do NOT install it.
 RUN pip download --no-cache-dir tabulate -d /wheels

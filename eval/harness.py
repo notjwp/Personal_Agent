@@ -75,6 +75,13 @@ FORWARDED_ENV = (
     # Phase M's. Same reason, and the reason its comparison is controlled: with
     # this off the agent must be identical to the one without memory.
     "AGENT_MEMORY",
+    # Phase N's. Same reason again: the comparison is only controlled because the
+    # same binary can be run with skills off.
+    "AGENT_SKILLS",
+    # Which library a run was measured against. Set by spawn() for every scored
+    # run - the benchmark's skills are FIXTURES describing a fictional project,
+    # and they must not be mistaken for this repository's own conventions.
+    "AGENT_SKILLS_DIR",
 )
 
 # --------------------------------------------------------------- egress (H)
@@ -725,6 +732,9 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
         "-v", f"{(REPO / 'eval' / 'runs').as_posix()}:/app/eval/runs",
         "-v", f"{(REPO / 'eval' / 'workspace').as_posix()}:/workspace",
         "-v", f"{agent_home(case, run_index).as_posix()}:/state",
+        # The skill library every scored row was measured against. Inside /app, so
+        # it is already mounted read-only by the line above.
+        "-e", "AGENT_SKILLS_DIR=/app/eval/fixtures/skills-library",
     ]
     # .env first, then the real environment, so an exported variable
     # deliberately overrides the file rather than the other way round.
@@ -859,7 +869,7 @@ def inner(args) -> int:
     _, _, before = run_check(case)
 
     # Imported after setup so a rig failure needs no agent.
-    from agent import mcp, memory
+    from agent import mcp, memory, skills
     from agent.graph import get_app, new_state
     from agent.provider import ProviderMisconfigured, ProviderUnavailable
 
@@ -868,6 +878,13 @@ def inner(args) -> int:
     # not a score - while a schema budget overrun is MISCONFIGURED, since retrying
     # cannot fix it and every retry would spend the overrun again.
     memory.activate()
+    try:
+        skills.activate()
+    except skills.SkillIndexTooLarge as exc:
+        # Fatal, not blocked: retrying cannot shrink an index, and every retry
+        # would spend the overrun again on every turn.
+        print(f"FATAL: {exc}", file=sys.stderr)
+        return MISCONFIGURED
     try:
         mcp_tools = mcp.activate()
     except mcp.ToolBudgetExceeded as exc:
@@ -937,6 +954,7 @@ def inner(args) -> int:
     # what makes this safe to call in one place rather than four.
     mcp.shutdown()
     memory.deactivate()
+    skills.deactivate()
 
     tampered = restore_protected_tests(case)
     if tampered:
@@ -1062,6 +1080,19 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         "memory": exposure.get("memory", False),
         "memory_chars": max((t.get("chars", 0) for t in trace
                              if t.get("kind") == "memory"), default=0),
+        # Progressive disclosure, both halves. `skill_index_chars` is what was paid
+        # on EVERY request; `skills_loaded` is what was actually opened, and the gap
+        # between them is the argument for the pattern.
+        "skills": bool(os.environ.get("AGENT_SKILLS", "on").strip().lower()
+                       not in ("0", "off", "false")),
+        "skill_index_chars": max((t.get("chars", 0) for t in trace
+                                  if t.get("kind") == "skills"), default=0),
+        "skills_loaded": sorted({t.get("summary", "") for t in trace
+                                 if t.get("tool") == "load_skill"}),
+        # Which skill the case NEEDED. Three outcomes, not two: the right one, the
+        # WRONG one, or none - and the middle is invisible in a pass rate while
+        # being the thing that says the descriptions do not discriminate.
+        "skill_expected": case.get("skill_expected", ""),
         "sessions": exposure.get("sessions", 1),
         "schema_chars": exposure.get("schema_chars", 0),
         "schema_tokens_est": exposure.get("schema_chars", 0) // 3 * max(len(models), 1),

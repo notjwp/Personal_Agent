@@ -2684,3 +2684,170 @@ accounts for roughly 18k of the 61k rise. **The rest is run-to-run variance at n
 | vectors (FR-408) | **not built.** Keyword recall was measured and did not fall short |
 
 **Kept.**
+
+---
+
+## Phase N — Skills: on-demand knowledge, 0/18 without it, 17/18 with it
+
+**Skills are on-demand knowledge documents in the agentskills.io layout**, loaded through
+progressive disclosure. Phase N builds LOADING only; authoring is Phase O. You cannot measure whether
+a self-written skill helps until you can measure whether *any* skill helps, and with a hand-written
+skill a failure has one suspect instead of three.
+
+### Why disclosure matters more here than almost anywhere
+
+Phase L measured `cache_read_tokens: 0` on every row of a scored run: everything in the prompt is
+re-sent and re-paid on every turn, and four tool schemas were already ~23% of a median run. A
+knowledge library injected wholesale would be ruinous. So:
+
+```
+Level 1  always loaded   name + description   1,224 chars for 8 skills
+Level 2  on demand       the SKILL.md body    paid only when opened
+Level 3  on demand       bundled files        codes.md, template.conf
+```
+
+### The result
+
+Six cases, three runs each, one flag apart. **The control is memory ON, skills OFF** - not "nothing".
+`memory.context_for()` already injects "commands that worked" from past sessions, so skills had to
+beat that rather than beat zero.
+
+| | skills OFF | skills ON |
+|---|---|---|
+| pass | **0/18** | **17/18** |
+| load rate (the right skill) | — | **17/18** |
+| loaded the WRONG skill | — | **0** |
+| loaded nothing | — | 1 |
+| median tokens | 29,964 | 28,501 |
+| total tokens | 457,977 | 475,734 (+3.9%) |
+| mean turns | 9.7 | 8.8 |
+| index cost per request | 0 | 1,224 chars |
+
+**Zero wrong-skill loads is the number the two distractors exist to produce.** `qz-deploy` and
+`qz-migrate` are plausible, well-written and needed by no case; without a skill that is never the
+right answer, "chose correctly" cannot be told from "chose the only option".
+
+The single failure is `skill-deps` run 1, which loaded nothing and hit the turn cap. Not a
+discrimination failure.
+
+Trust checks both ways: 0 blocked, 0 tampered, 0 write violations, one model, and **0 runs read the
+skill library directly through `/app`** - the bypass that would have invalidated the whole comparison.
+
+### The control run that had to be thrown away, and what it bought
+
+The first control was killed after ONE case-run, because `skill-lint` **passed with skills off**.
+The agent had read `tools/qzlint.py` and found the answer in the checker's own source:
+
+```python
+BANNER = "# owner:"          # the fix, sitting in the workspace
+```
+
+Inspection of the other five found two more: `skill-release` shipped a `VERSION` already reading
+`4.11.2-quartz` and a `CHANGES.md` already in the `rel ... ::` form, and `skill-deps` shipped a
+`deps.txt` already demonstrating the ` @ ` format. **Three of six measured pattern-matching rather
+than whether the document was opened.**
+
+The rule that was broken, now stated: **the workspace may contain the TASK, never the ANSWER.** The
+three cases that survived did so because their convention existed only in the skill.
+
+Fixed by starting each from a clean slate - no checker in the workspace, an unsuffixed `4.11.2`, an
+empty `deps.txt` - and re-verified in **three** directions rather than two:
+
+```
+                 untouched   plausible-guess-without-skill   the skill's answer
+skill-lint          fail              fail                        pass
+skill-release       fail              fail                        pass
+skill-config        fail              fail                        pass
+skill-testname      fail              fail                        pass
+skill-errors        fail              fail                        pass
+skill-deps          fail              fail                        pass
+```
+
+**The middle column is the one two-way verification misses**, and it is what one case-run of quota
+bought. `skill-lint` then scored 0/3 in the rebuilt control.
+
+### `skill-testname` is the sharpest case in the set
+
+Every model has an overwhelming prior that Python tests begin `test_`. This project's fictional
+runner collects `check_`. With skills off the agent writes `def test_add()` in four turns and stops -
+fast, confident, wrong. With the skill it writes `check_add`. That is about as clean an adherence
+signal as can be constructed, because the only way to produce it is to have read the document.
+
+### The dev regression guard
+
+Skills are pure cost here: an index on every request, a seventh schema, and nothing to load.
+
+| dev suite | M (6 tools) | N (+skills) |
+|---|---|---|
+| pass | 14/15 | 13/15 |
+| total tokens | 444,481 | 448,546 (**+0.9%**) |
+| median tokens | 31,582 | 27,053 |
+| schema chars | 3,553 | 4,075 |
+| index chars | 0 | 1,224 |
+| skills loaded | 0 | **0** |
+| tampered / violations | 0/0 | 0/0 |
+
+**+0.9% total, while paying 1,224 chars of index on every request.** That is the progressive-disclosure
+claim as a measured number rather than a design argument.
+
+**The 13/15 is `add-endpoint` at 1/3, and it is NOT attributed to skills.** That case has scored 2/3
+(2026-08-19), 2/3 (K), 3/3 (L), 2/3 (M) and now 1/3 - it is the suite's known-flaky case, its
+`failures 3->3/0/3` column shows the agent genuinely failing the task, and **zero skills were loaded
+on any dev run**, so the mechanism could not have misled it. At n=3 that cannot be *proved*, so it is
+recorded as unresolved rather than dismissed. If it recurs at 1/3 next phase it needs its own cycle.
+
+### Two defects the build caught before any quota
+
+- **The index was silently truncating.** 1,236 chars against a guessed 1,200 cap, cutting off the last
+  skill's description. A skill the agent cannot see is indistinguishable in the traces from one it
+  chose not to open, so overflow is now **fatal** with an actionable message - the same reasoning that
+  makes `MAX_SCHEMA_CHARS` fatal.
+- **An unquoted colon silently dropped a skill.** `description: Use when asked to deploy: staging...`
+  is not valid YAML; `safe_load` returned something unusable and the document vanished from the index
+  with no signal. A human writing these by hand will produce that line. YAML stays the primary parser,
+  a fallback scan recovers it, and anything still unusable is reported once at startup.
+
+### Level 3, and the argument for allowing it
+
+Bundled files were supported deliberately, and the reasoning is written down because "a document can
+carry executable code into the sandbox" should stop a reviewer.
+
+`load_skill` **reads. It never executes.** A bundled script is run by the agent calling `run_shell` on
+it, through `classify()` and the `DANGER` regex like anything else. **That grants nothing `run_shell`
+does not already grant** inside a container whose boundary Phase K made kernel-enforced. What Level 3
+changes is **provenance** - code arriving in a document rather than from the model - and in Phase N
+every skill is written by a human. **Phase O gives the agent that power and must re-open this.**
+
+The escape is tested, not assumed: `../../../etc/passwd`, an absolute path, and a traversal into a
+sibling skill are all refused, by the same resolve-and-compare shape `policy._inside_workspace()` uses.
+
+### The fixture library moved before it could mislead
+
+The eight skills first landed at `skills/` in the repository root, where they read as *this project's*
+conventions - to a human browsing the tree, and to the agent working in it. They describe a fictional
+Quartzite/Ashgrove project. They now live at `eval/fixtures/skills-library/` with a README saying so,
+and the harness points `AGENT_SKILLS_DIR` there for every scored run, making the library a recorded
+measurement condition rather than something ambient. The interactive agent sees `skills/` at the root,
+which is empty - so it pays **no index cost at all** rather than 412 tokens a turn for fictions.
+
+### `registry.py` earned its keep
+
+Phase M created it for the merge and the budget. Phase N added a third tool source and touched it
+once, by one line. That is what a registry is for.
+
+### Tests
+
+**247 offline**, up from 225 - no API key, no network, read-only root. 22 are new, including all four
+path-escape attempts and the parser defect above.
+
+### Phase N scoreboard
+
+| | result |
+|---|---|
+| load rate | **17/18 correct, 0 wrong** |
+| delta in success | **0/18 -> 17/18** |
+| disclosure claim | **+0.9% on work that loads nothing** |
+| dev regression | 13/15; the drop is the known-flaky case, unresolved not dismissed |
+| authoring | **not built** - Phase O, with its own measurement |
+
+**Kept.**

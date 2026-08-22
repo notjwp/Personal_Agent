@@ -23,7 +23,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import RunnableConfig, interrupt
 
 from agent import config as settings
-from agent import memory
+from agent import memory, skills
 from agent.context import shrink
 from agent.policy import classify
 from agent.provider import call_model
@@ -92,6 +92,16 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
         trace = cfg.get("trace")
         if trace is not None:
             trace.append({"kind": "memory", "chars": len(recalled)})
+
+    # Level 1 of progressive disclosure: names and descriptions only. The bodies
+    # cost nothing until the agent calls load_skill, which is the whole point on a
+    # provider that re-sends and re-charges the prompt every single turn.
+    catalogue = skills.index()
+    if catalogue:
+        system = f"{system}\n\n{catalogue}"
+        trace = cfg.get("trace")
+        if trace is not None:
+            trace.append({"kind": "skills", "chars": len(catalogue)})
 
     # Rebuilt per turn rather than bound at import: which tools exist depends on
     # what activated for THIS run, and CE-05 forbids deciding that at import.
@@ -304,7 +314,7 @@ def _summarise(args: dict) -> str:
     tuning phase has to read. Serves the CLI's live display and the "edited a file
     it never read" check equally.
     """
-    for key in ("command", "path", "file"):
+    for key in ("name", "command", "path", "file"):
         if key in args:
             return str(args[key])[:120]
     return json.dumps(args, default=str)[:120]

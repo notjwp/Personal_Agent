@@ -46,10 +46,10 @@ def toolset() -> dict[str, dict]:
     Built-ins win a name collision, deliberately: neither a server nor the memory
     layer may shadow `run_shell` with its own implementation.
     """
-    from agent import mcp, memory
+    from agent import mcp, memory, skills
     from agent.tools import TOOLS
 
-    return {**mcp.tools(), **memory.tools(), **TOOLS}
+    return {**mcp.tools(), **memory.tools(), **skills.tools(), **TOOLS}
 
 
 def schemas() -> list[dict]:

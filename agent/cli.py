@@ -23,7 +23,7 @@ import uuid
 from langgraph.types import Command
 
 from agent import config as settings
-from agent import mcp, memory
+from agent import mcp, memory, skills
 from agent.graph import get_app, new_state
 
 RULE = "-" * 64
@@ -222,6 +222,13 @@ def main(argv: list[str] | None = None) -> int:
     # without one would have that tool refused as unknown, mid-task.
     memory.activate()
     try:
+        loaded = skills.activate()
+    except skills.SkillIndexTooLarge as exc:
+        print(f"skills: {exc}", file=sys.stderr)
+        return 2
+    if loaded:
+        print(f"skills available: {', '.join(loaded)}")
+    try:
         started = mcp.activate()
     except (mcp.McpUnavailable, mcp.ToolBudgetExceeded) as exc:
         print(f"MCP: {exc}", file=sys.stderr)
@@ -236,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         mcp.shutdown()
         memory.deactivate()
+        skills.deactivate()
 
 
 def _dispatch(args, app, parser) -> int:
