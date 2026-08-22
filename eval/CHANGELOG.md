@@ -3264,17 +3264,20 @@ worth knowing before anyone optimises anything else.
 - **`overhead_ms` and `checkpoint_ms` on every harness row**, so the first sign of a regression
   is a drift rather than a discovery two phases later.
 
-### What Hermes contributed: a reporting habit, and no algorithm
+### The percentile helper is stdlib, and the first version was not
 
-Checked rather than assumed. `scripts/profile-tui.py` drives a **Node** TUI (`node dist/entry.js`)
-and is irrelevant to a Python one; `cli.py`'s `first_token` is path-argument parsing, not
-time-to-first-token. The only latency code in the repository is `scripts/iso-certify.py:70-90`,
-and its `percentile()` is **equivalent to `statistics.quantiles(method="inclusive")`** - stdlib,
-already imported here.
+`percentile()` was first written as a rank-interpolation loop. That was a mistake worth
+recording: `statistics.quantiles(values, n=100, method="inclusive")` computes the same figure,
+is already imported by this module, and agrees with the hand-rolled version to **4e-13 over 3,000
+random samples** - floating-point noise. Ten lines of arithmetic replaced by one call.
 
-What was worth taking is `summarize()`'s SHAPE: every latency figure reported with its sample
-size beside it. A p95 over four samples is not a p95, and printing one without the count invites
-exactly that reading. Twelve lines, attributed in `NOTICE`.
+Only two cases need handling on top, because `quantiles` cannot express them: an empty sample
+answers 0.0 rather than raising, since a latency table that crashes on a run with no checkpoints
+is worse than one reporting a count of 0; and a single sample is its own percentile.
+
+`latency()` returns count, p50, p95, p99 and max **together**, and `count` is the load-bearing
+field. A p95 over four samples is not a p95, and printing the figure without the sample size
+invites exactly that reading - which is why it returns a dict rather than a number.
 
 ### NFR-101 is still unmeasurable, and that is a finding
 

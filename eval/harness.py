@@ -611,25 +611,25 @@ def summarise(rows: list[dict]) -> str:
 
 
 def percentile(values: list[float], pct: float) -> float:
-    """Linear interpolation on rank, with the degenerate cases handled.
+    """The pct-th percentile of `values`, interpolating between ranks.
 
-    Shape from Hermes Agent's scripts/iso-certify.py (Nous Research, MIT); the
-    arithmetic is statistics.quantiles(method="inclusive"), which is stdlib and
-    already imported here. What is borrowed is the reporting habit below, not an
-    algorithm: an empty sample answers 0.0 rather than raising, because a latency
-    table that crashes on a run with no checkpoints is worse than one that says
-    so with a count of 0.
+    `statistics.quantiles` does the arithmetic. It cannot express the two
+    degenerate cases, so they are handled here: an empty sample answers 0.0
+    rather than raising, because a latency table that crashes on a run with no
+    checkpoints is worse than one reporting a count of 0; and a single sample is
+    its own percentile.
+
+    n=100 gives 99 cut points, so the pct-th sits at index pct-1. The "inclusive"
+    method interpolates across (N-1) ranks, which is what makes a two-element
+    sample answer at its midpoint rather than a third of the way along.
     """
     if not values:
         return 0.0
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return ordered[0]
-    rank = (len(ordered) - 1) * (pct / 100.0)
-    low = int(rank)
-    high = min(low + 1, len(ordered) - 1)
-    frac = rank - low
-    return ordered[low] * (1.0 - frac) + ordered[high] * frac
+    if len(values) == 1:
+        return float(values[0])
+    if pct >= 100:
+        return float(max(values))
+    return statistics.quantiles(values, n=100, method="inclusive")[int(pct) - 1]
 
 
 def latency(values: list[float]) -> dict[str, float]:

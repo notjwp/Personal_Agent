@@ -163,6 +163,10 @@ approval and resume, kernel-enforced sandboxing, and a committed baseline.
   **The biggest framework cost in the system is `finish` writing the memory episode** (6.1 ms
   p50); `gate` and `reflect` are 10 and 40 MICROseconds, and a test now pins them under 25 ms
   so a later layer cannot quietly spend the headroom.
+  `percentile()` is `statistics.quantiles(method="inclusive")` plus the two cases it cannot
+  express - an empty sample and a single one. A hand-rolled rank loop was written first and
+  replaced: the two agree to 4e-13 over 3,000 random samples, so it was ten lines of arithmetic
+  standing in for one stdlib call.
   **`NFR-101` cannot be measured at all on this provider** - the OpenAI-compatible path sends no
   `stream=True` and fires `on_text` only once the whole reply lands, so there IS no first token.
   It also means the TUI's status line fills in one go on NIM rather than word by word - the
