@@ -233,6 +233,14 @@ def finish(state: AgentState, config: RunnableConfig) -> dict:
             commands=[c["input"]["command"] for c, ok in outcomes
                       if ok and c["name"] == "run_shell"
                       and isinstance(c["input"].get("command"), str)])
+
+    # Phase O-redux. Knowledge is retained WITHOUT the agent electing to retain it:
+    # Phase O measured `learn` called 0 times in 15 sessions, with the tool exposed
+    # and the prompt asking for it. Everything needed is already in `messages`, so
+    # this adds no model call and `finish` stays deterministic.
+    for name in skills.extract(state["messages"], _goal(state["messages"])):
+        if trace is not None:
+            trace.append({"kind": "skill", "name": name})
     return {}
 
 

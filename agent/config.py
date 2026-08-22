@@ -274,3 +274,21 @@ SKILL_AUTHORING = os.environ.get("AGENT_SKILL_AUTHORING", "off").strip().lower()
 # skills is ~1,800 chars - already past the 1,600 cap on its own, so this bound
 # and that one have to be read together. Past the cap `learn` refuses and says so.
 MAX_AUTHORED_SKILLS = 8
+
+# --- deterministic extraction at `finish` (Phase O-redux) -------------------
+
+# Separate from SKILL_AUTHORING because they are different mechanisms answering
+# the same need: authoring asks the MODEL to decide what is worth keeping, and
+# Phase O measured it declining 15 times out of 15. Extraction decides with a rule
+# instead, so the two must be switchable independently or neither is attributable.
+SKILL_EXTRACTION = os.environ.get("AGENT_SKILL_EXTRACTION", "off").strip().lower() not in (
+    "0", "off", "false")
+
+# Size bounds on an extracted document, in characters.
+#
+# The floor rejects a one-line file carrying no procedure. The ceiling refuses a
+# whole source file: the skill index is charged on EVERY request and overflowing
+# SKILLS_INDEX_CHARS is fatal by design, so an unbounded extract would eventually
+# brick its own runs.
+EXTRACT_MIN_CHARS = 80
+EXTRACT_MAX_CHARS = 4_000

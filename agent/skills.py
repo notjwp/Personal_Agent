@@ -32,6 +32,7 @@ NFR-602: every function below is testable with no API key and no network.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -290,6 +291,56 @@ def authored() -> list[str]:
                   if d.is_dir() and (d / SKILL_FILE).is_file())
 
 
+# Tools that mean the agent AUTHORED the file rather than consulted it.
+_WROTE = ("write_file", "edit_file")
+
+
+def read_but_not_edited(messages: list[dict]) -> list[tuple[str, str]]:
+    """Documents the agent read and never wrote to, with their contents.
+
+    The deterministic stand-in for the judgement `learn` asked the model for and
+    Phase O measured it declining: 0 calls in 15 sessions. A file read and never
+    edited is a reference; anything the agent wrote is its own output and knows
+    nothing the agent did not already have.
+
+    Contents come straight from the tool_result, which is the whole reason no model
+    call is needed - `read_file`'s output is already verbatim in `messages`.
+
+    Over-capture is expected and is bounded elsewhere: extract() caps the size and
+    MAX_AUTHORED_SKILLS caps the library.
+    """
+    # graph._outcomes does the same pairing, but importing it here would make this
+    # leaf module depend on graph.py - and so on langgraph - purely for six lines,
+    # while also closing an import cycle (graph imports skills). Kept local.
+    results, failed = {}, set()
+    for message in messages:
+        if not isinstance(message.get("content"), list):
+            continue
+        for block in message["content"]:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                results[block["tool_use_id"]] = str(block.get("content", ""))
+                if block.get("is_error"):
+                    failed.add(block["tool_use_id"])
+
+    wrote, read, body = set(), [], {}
+    for message in messages:
+        if message.get("role") != "assistant" or not isinstance(message.get("content"), list):
+            continue
+        for block in message["content"]:
+            if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+                continue
+            path = (block.get("input") or {}).get("path")
+            if not isinstance(path, str):
+                continue
+            if block["name"] in _WROTE:
+                wrote.add(path)
+            elif block["name"] == "read_file" and block["id"] not in failed:
+                if path not in body:
+                    read.append(path)
+                body[path] = results.get(block["id"], "")
+    return [(p, body[p]) for p in read if p not in wrote and body[p]]
+
+
 def learn(name: str, description: str, body: str) -> str:
     """Write a skill for future sessions to load. TEXT ONLY.
 
@@ -334,6 +385,72 @@ def learn(name: str, description: str, body: str) -> str:
         encoding="utf-8", newline="\n")
     return (f"{'rewrote' if slug in existing else 'wrote'} skill {slug!r}. "
             f"Future sessions will see its description and can open it.")
+
+
+def _undecorate(content: str) -> str:
+    """Strip read_file's presentation: the header line and the line-number gutter.
+
+    Measured, not anticipated: the first version kept both, so an extracted skill
+    read `     1\t# The one rule` instead of `# The one rule`. Numbers are how the
+    tool shows a file to the model, not part of what the file says.
+    """
+    lines = content.split("\n")
+    if lines and re.match(r"^\S.*\(lines \d+-\d+ of \d+\)", lines[0]):
+        lines = lines[1:]
+    return "\n".join(re.sub(r"^\s*\d+\t", "", line) for line in lines).strip()
+
+
+def _when(path: str, body: str) -> str:
+    """The description: WHEN this applies, never what the agent was doing.
+
+    Derived from the goal, the first version produced "Use when working on tasks
+    like: create b.txt containing beta" - one specific task. A later session asked
+    for c.txt, matched nothing, and never opened the skill: extracted and indexed,
+    never loaded. The description is all a future session sees until it opens the
+    document, so it has to name a CLASS of work.
+
+    The document's own first heading is the best available summary of that class,
+    and it costs nothing to read.
+    """
+    heading = ""
+    for line in body.split("\n"):
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            heading = stripped[:60]
+            break
+    subject = heading or path
+    return (f"Use when {subject.lower()} applies to the work in hand - project "
+            f"conventions, formats and rules recorded in {path}. Check it BEFORE "
+            f"creating or changing files.")
+
+
+def extract(messages: list[dict], goal: str) -> list[str]:
+    """Write a skill from each reference document the agent read. Returns slugs.
+
+    Phase O-redux. `learn` asks the MODEL to decide what is worth keeping, and the
+    measurement was 0 calls in 15 sessions. This decides with a rule instead, from
+    material already in `messages` - which is what keeps `finish` deterministic and
+    leaves `act` the only node that touches a model.
+
+    Never raises. It runs at the end of a session that may already have succeeded,
+    and a bookkeeping failure must not turn a passing run into a crashed one.
+    """
+    if not config.SKILL_EXTRACTION:
+        return []
+    written = []
+    for path, content in read_but_not_edited(messages):
+        body = _undecorate(content)[:config.EXTRACT_MAX_CHARS]
+        if len(body) < config.EXTRACT_MIN_CHARS:
+            continue
+        stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        try:
+            learn(name=stem, description=_when(path, body), body=body)
+        except ValueError:
+            # The library cap, or a name that slugs to nothing. Both are ordinary
+            # outcomes here, not failures of the run.
+            continue
+        written.append(_slug(stem))
+    return written
 
 
 LEARN_SCHEMA = {

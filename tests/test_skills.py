@@ -293,3 +293,192 @@ def test_authoring_off_removes_the_tool_but_not_loading(monkeypatch):
     assert "learn" not in skills.tools()
     assert "load_skill" in skills.tools()
     assert "learn" not in policy.RISK
+
+
+# ============================ deterministic extraction (Phase O-redux)
+
+def test_read_but_not_edited_keeps_references_and_drops_work_products():
+    """The judgement `learn` asked the model for, as a rule: a document read and
+    never edited is a reference; anything the agent wrote is a work product."""
+    from agent.skills import read_but_not_edited
+
+    messages = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "CONVENTIONS.md"}},
+            {"type": "tool_use", "id": "b", "name": "read_file",
+             "input": {"path": "VERSION"}},
+            {"type": "tool_use", "id": "c", "name": "edit_file",
+             "input": {"path": "VERSION", "old_string": "1", "new_string": "2"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a",
+             "content": "CONVENTIONS.md (lines 1-2 of 2)\n     1\t# Rules\n     2\tuse tabs"},
+            {"type": "tool_result", "tool_use_id": "b",
+             "content": "VERSION (lines 1-1 of 1)\n     1\t1.0"},
+            {"type": "tool_result", "tool_use_id": "c", "content": "ok"}]},
+    ]
+    found = read_but_not_edited(messages)
+    assert [path for path, _ in found] == ["CONVENTIONS.md"]
+    assert "use tabs" in found[0][1]
+
+
+def test_a_failed_read_is_not_a_candidate():
+    """A read that errored has no content to keep."""
+    from agent.skills import read_but_not_edited
+
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "gone.md"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a",
+             "content": "FileNotFoundError: gone.md", "is_error": True}]},
+    ]
+    assert read_but_not_edited(messages) == []
+
+
+def test_a_file_written_then_read_is_not_a_reference():
+    """write_file counts as editing. The agent's own output is not knowledge."""
+    from agent.skills import read_but_not_edited
+
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "write_file",
+             "input": {"path": "notes.md", "content": "x"}},
+            {"type": "tool_use", "id": "b", "name": "read_file",
+             "input": {"path": "notes.md"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a", "content": "ok"},
+            {"type": "tool_result", "tool_use_id": "b", "content": "notes.md\n     1\tx"}]},
+    ]
+    assert read_but_not_edited(messages) == []
+
+
+def test_extract_writes_a_loadable_skill_from_a_document(monkeypatch):
+    """The whole mechanism: what the agent READ becomes what a later session LOADS,
+    with no model call anywhere in the path."""
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", True)
+    messages = [
+        {"role": "user", "content": "Read CONVENTIONS.md, then cut release 4.12.0."},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "CONVENTIONS.md"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a",
+             "content": "CONVENTIONS.md\n# Release conventions\n"
+                        "VERSION carries a -quartz suffix. CHANGES.md gains "
+                        "`rel <version> :: <summary>` and nothing else."}]},
+    ]
+    written = skills.extract(messages, "Read CONVENTIONS.md, then cut release 4.12.0.")
+    assert written == ["conventions"]
+    assert "-quartz" in skills.load_skill("conventions")
+    assert "conventions" in skills.catalogue()
+
+
+def test_extract_skips_a_document_too_short_to_carry_a_procedure(monkeypatch):
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", True)
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "a.txt"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a", "content": "a.txt\n  1\talpha"}]},
+    ]
+    assert skills.extract(messages, "goal") == []
+
+
+def test_extract_truncates_rather_than_overflowing_the_index(monkeypatch):
+    """An unbounded extract would eventually breach SKILLS_INDEX_CHARS, which is
+    fatal by design - so the bound belongs here, before the file is written."""
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", True)
+    monkeypatch.setattr(config, "EXTRACT_MAX_CHARS", 200)
+    huge = "rules.md\n" + ("a procedure line that repeats. " * 100)
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "rules.md"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a", "content": huge}]},
+    ]
+    assert skills.extract(messages, "goal") == ["rules"]
+    assert len(skills.load_skill("rules")) < 500
+
+
+def test_extract_is_a_no_op_when_switched_off(monkeypatch):
+    """A capability that cannot be turned off cannot be attributed either."""
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", False)
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "CONVENTIONS.md"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a",
+             "content": "CONVENTIONS.md\n" + "x" * 200}]},
+    ]
+    assert skills.extract(messages, "goal") == []
+    assert skills.authored() == []
+
+
+def test_extract_respects_the_library_cap(monkeypatch):
+    """learn() raises at the cap; extract must absorb that rather than crash a run
+    that had otherwise succeeded."""
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", True)
+    monkeypatch.setattr(config, "MAX_AUTHORED_SKILLS", 1)
+    skills.learn(name="already", description="Use when already.", body="step")
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "second.md"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a",
+             "content": "second.md\n" + "a real procedure line. " * 10}]},
+    ]
+    assert skills.extract(messages, "goal") == []
+    assert skills.authored() == ["already"]
+
+
+def test_the_extracted_body_has_no_line_number_gutter(monkeypatch):
+    """read_file numbers every line for the model's benefit. Those numbers are
+    formatting, not knowledge, and they must not end up inside a skill."""
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", True)
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "CONVENTIONS.md"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a",
+             "content": "CONVENTIONS.md (lines 1-3 of 3)\n"
+                        "     1\t# The one rule\n"
+                        "     2\tEvery file must open with `# owner: unassigned`.\n"
+                        "     3\tThat is the whole convention, and nothing else."}]},
+    ]
+    skills.extract(messages, "goal")
+    body = skills.load_skill("conventions")
+    assert "# The one rule" in body
+    assert "owner: unassigned" in body
+    assert "\t" not in body, "the line-number gutter survived into the skill"
+    assert "     1" not in body
+
+
+def test_the_description_says_WHEN_not_what_the_agent_happened_to_be_doing(monkeypatch):
+    """The description is all a later session sees until it opens the skill, so it
+    must describe a CLASS of work. Derived from the goal it named one specific task
+    ('create b.txt containing beta'), and a later task asking for c.txt matched
+    nothing - measured: extracted and indexed, never loaded."""
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", True)
+    goal = "Read CONVENTIONS.md, then create a.txt's companion file b.txt containing beta."
+    messages = [
+        {"role": "user", "content": goal},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "CONVENTIONS.md"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a",
+             "content": "CONVENTIONS.md\n# The one rule\n"
+                        "Every file must open with `# owner: unassigned`. That is all."}]},
+    ]
+    skills.extract(messages, goal)
+    description = skills.catalogue()["conventions"]["description"]
+    assert "b.txt" not in description and "beta" not in description
+    assert "CONVENTIONS.md" in description

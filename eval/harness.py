@@ -83,6 +83,7 @@ FORWARDED_ENV = (
     # and they must not be mistaken for this repository's own conventions.
     "AGENT_SKILLS_DIR",
     "AGENT_SKILL_AUTHORING",
+    "AGENT_SKILL_EXTRACTION",
 )
 
 # --------------------------------------------------------------- egress (H)
@@ -1110,6 +1111,13 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
                           not in ("0", "off", "false")),
         "skills_authored": sorted({t.get("summary", "") for t in trace
                                    if t.get("tool") == "learn"}),
+        # Written by `finish` from a document the agent read, with no model call and
+        # no decision by the agent. The counterpart to skills_authored: one counts
+        # what the MODEL chose to keep, the other what the RULE kept.
+        "skills_extracted": sorted({t.get("name", "") for t in trace
+                                    if t.get("kind") == "skill"}),
+        "extraction": bool(os.environ.get("AGENT_SKILL_EXTRACTION", "off").strip().lower()
+                           not in ("0", "off", "false")),
         # Which skill the case NEEDED. Three outcomes, not two: the right one, the
         # WRONG one, or none - and the middle is invisible in a pass rate while
         # being the thing that says the descriptions do not discriminate.

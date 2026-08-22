@@ -2971,3 +2971,85 @@ Try the free version before the expensive one.
 
 **The exit criterion said "without all three numbers this phase does not ship". It has one, and that
 one is zero.**
+
+---
+
+## Phase O-redux — Deterministic extraction: the rule fires, the agent never reads it
+
+**Extraction rate 3/3. Load rate 0/3. Pass 0/3 against a 0/3 control.** The mechanism works and
+delivers nothing, because the failure moved one step downstream.
+
+### What was built
+
+`finish` now writes a skill from any document the agent **read and never edited**, with no model call
+and no decision by the agent — everything needed is already in `state["messages"]`, which is the same
+property that lets Phase M write episodes there. `AGENT_SKILL_EXTRACTION=off` by default.
+
+The rule is a deterministic stand-in for the judgement `learn` asked the model for and Phase O
+measured it declining 15 times out of 15. A file read and never written to is a reference; anything
+the agent wrote is its own output.
+
+### The isolation run, which is the only number that means anything
+
+The first tiny-split run scored **2/3** and it was not extraction that earned it:
+
+| arm | pass | extracted | loaded | memory_chars |
+|---|---|---|---|---|
+| extraction + memory | 2/3 | 3/3 | 1/3 | up to 630 |
+| **control: both off** | **0/3** | 0/3 | 0/3 | 0 |
+| **extraction only, memory off** | **0/3** | **3/3** | **0/3** | 0 |
+
+Of the two passes in the first run, one came from `memory_chars: 630` — Phase M's episode carried the
+convention and the agent never opened the skill at all. **What that run actually compared was
+"extraction + memory" against "memory", and memory won on its own.**
+
+Removing memory from both arms isolates it, and the answer is flat: extraction fires every time and
+changes nothing.
+
+### Where the wall actually is, and it is not extraction
+
+Phase O found the agent will not WRITE a skill. This finds it will not READ one either, unless the
+task advertises its domain:
+
+| | the task | load rate |
+|---|---|---|
+| Phase N | *"run this project's style checker"* | **17/18** |
+| here | *"create c.txt containing gamma"* | **0/3** |
+
+A task that looks self-contained gives the agent no reason to suspect a convention exists, so it
+never looks. The index was present on every request (378 chars) and said, in as many words, *"Check
+it BEFORE creating or changing files."* It did not act on that.
+
+**So `load_skill`'s discoverability is the binding constraint, not extraction.** Extraction is a
+working component feeding a retrieval path that only fires when the task hints at it.
+
+### Two defects the runs caught in code written minutes earlier
+
+Both had reproducing tests added before the fix:
+
+- **The description described the wrong thing.** Derived from the session's GOAL, it read *"Use when
+  working on tasks like: create b.txt containing beta"* — one specific task. A later session asking
+  for `c.txt` matched nothing. It now derives from the DOCUMENT's own first heading and names a class
+  of work: *"Use when the one rule applies... Check it BEFORE creating or changing files."*
+- **`read_file`'s line-number gutter survived into the skill body**, so the document read
+  `     1\t# The one rule`. Numbers are how the tool shows a file to the model, not part of what the
+  file says.
+
+### Kept, and why, given a null result
+
+- `extract()` and `read_but_not_edited()` in `agent/skills.py`, **default off**. The next attempt
+  reuses both, and the component is not what failed.
+- `skills_extracted` and `extraction` on every row — the instrumentation is what made the memory
+  confound visible, and it would have hidden it otherwise.
+- `agent/skills.py` stays a leaf module: the plan had it import `_outcomes` from `graph.py`, which
+  would drag in langgraph and close an import cycle (graph already imports skills). Six lines inlined
+  instead.
+
+### The next test, and it is the same move that made extraction work
+
+Take the decision away from the model: **auto-inject the top-matching skill's body** at session start
+rather than only its index. With one or two skills the cost is bounded and it is one function in
+`act`. If it passes, the loop closes end to end with no model judgement anywhere in it. If it still
+fails, the agent ignores injected knowledge — a far larger finding than anything about skills.
+
+**269 offline tests**, up from 264.
