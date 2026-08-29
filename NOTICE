@@ -5,8 +5,19 @@ This product includes software derived from Hermes Agent
 (https://github.com/NousResearch/hermes-agent), Copyright (c) 2025 Nous Research,
 licensed under the MIT License.
 
-Nothing is vendored. What was taken is one algorithm, re-implemented against this
-project's own message shape, and the borrow site names its original in a comment:
+Nothing is vendored. What was taken is two small designs, each re-implemented
+against this project's own shapes, and each borrow site names its original in a
+comment:
+
+  agent/worker.py    the task table's shape and its transitions, from
+                     cron/executions.py:139-200. Two ideas: a status transition
+                     written as UPDATE ... WHERE status='queued' with rowcount
+                     checked, so it applies exactly once and a second attempt
+                     declines; and liveness by pid AND process start time,
+                     because pids are recycled and the pair is not. This
+                     project's version REQUEUES an abandoned task where Hermes
+                     marks it unknown and refuses to retry - it checkpoints
+                     after every node, so resuming cannot re-fire a tool.
 
   agent/context.py   _clean_boundary() / _snap()
                      Compaction boundary handling, from

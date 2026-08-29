@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, measurement rig. **390 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, measurement rig. **433 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -18,8 +18,8 @@ read-only root filesystem, and without the `mcp` package installed.
 | dev baseline | **14/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b` |
 | held out | **29/30** — the dev score was not overfitted |
 | real repositories | **4/10**, and only 4 of 6 cases have run with the current toolset |
-| Definition of Done | **9/9** · must-have requirements **29/35** |
-| still unbuilt | compaction, web search, queue/worker, a working plan node |
+| Definition of Done | **9/9** · must-have requirements **31/35** |
+| still unbuilt | web search, a working plan node, streaming |
 
 ## Standing lessons, each paid for once
 
@@ -161,12 +161,16 @@ python -m agent --tui             # Textual chat; --tui --resume <id> opens one 
 python -m agent --list            # past threads, newest first
 python -m agent --resume <id>     # continue a thread; a task's identity IS its thread id
 
+python -m agent --submit "goal"   # queue a task, print its id, return immediately
+python -m agent --worker          # drain the queue; resumes anything a dead worker left
+python -m agent --tasks           # queued / running / awaiting-approval / done / failed
+
 python eval/harness.py --split dev --runs 3 --pace 20              # a baseline
 python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an interrupted one
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 390 tests, no API key, no network
+pytest                            # 433 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

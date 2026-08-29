@@ -3292,3 +3292,69 @@ progress report, not in the file - but the behaviour was undocumented, so it is 
 rather than left for someone to discover and mistrust.
 
 **368 offline tests**, plus 11 for this stage.
+
+---
+
+## Stage 5 — Queue, worker and status: three must-haves, no quota
+
+`agent/worker.py`, the last of §12's deferred files to be earned. FR-601, FR-602
+and FR-604 had no implementation at all; FR-603 turned out to need none.
+
+**433 offline tests**, up from 410. Zero model quota — the graph is a stand-in throughout.
+
+### What ports from Hermes, and what cannot
+
+`cron/scheduler.py` is 7,644 lines welded to a 13,732-line state module. None of it comes
+across. `cron/executions.py` is 284 lines of stdlib and SQLite, and two ideas in it are worth
+having:
+
+- **Idempotent transitions.** `UPDATE ... WHERE id=? AND status='queued'`, then
+  `if cur.rowcount != 1: return None`. Two workers racing produce one winner and one `None`,
+  because SQLite settles it rather than the read-then-write sequence that would hand the task to
+  both. That is NFR-302 expressed in SQL, and the same discipline CE-07 enforces in the graph.
+- **Liveness by pid AND start time.** A crashed worker leaves a row saying `running` forever. A
+  pid alone cannot detect that — pids are recycled, and the next process to claim one looks
+  exactly like the original. The pair cannot be fooled.
+
+**Where this deliberately diverges.** Hermes marks an abandoned execution `unknown` and refuses
+to retry, because "whether side effects ran is unknown". That is right for Hermes and wrong here:
+this project checkpoints after every node transition and keeps `gate` and `execute` separate
+precisely so a resumed run re-classifies rather than re-executes. So an abandoned task goes back
+to `queued`, and the worker that picks it up **resumes** — which is FR-603, and the reason
+requeueing is safe.
+
+### Two decisions the runs would have punished
+
+**`awaiting-approval` is not decorative.** A worker runs `autonomous=True`, so a `confirm`
+becomes a denial (FR-304) and nothing pauses — nobody is watching, and a worker that suspended on
+approval would hold the task open until someone happened to look. So the status means something
+else here: **the run finished having REFUSED destructive calls**, and the refusals are on the row.
+That is what makes **UR-16** — review what was queued while you were away — answerable at all.
+
+**`done` means the AGENT finished the job**, not merely that the worker stopped running it. A
+task whose agent ended `stuck` or `budget` is `failed`, with the verdict kept. Filing those under
+`done` would make the status column useless: you would have to read the verdict to learn that
+nothing was achieved.
+
+### The bug a test caught
+
+`_alive()` had a fast path — `if pid == os.getpid(): return True` — which looked obviously
+correct and **skipped the start-time comparison**. That comparison is the only thing separating
+the original owner from a process that inherited its number, and the worker's own pid is as
+recyclable as any other. The fast path is gone; the test that found it is
+`test_a_recycled_pid_is_not_mistaken_for_the_original`.
+
+### End to end
+
+```
+$ python -m agent --submit "Fix the failing tests."
+queued a37305ee
+
+$ python -m agent --tasks
+task       status             verdict   goal
+2ac21222   queued             -         Add a CSV exporter.
+a37305ee   done               done      Fix the failing tests.
+```
+
+**FR-605/606/607 stay deferred** — cron, attach/detach and a worker cap are all `[S]`, and §9
+puts `[S]` behind the `[M]` set. **FR-703's other half closes here**: "list threads *and* tasks".

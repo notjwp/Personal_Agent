@@ -270,6 +270,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", metavar="THREAD_ID", help="continue a thread")
     parser.add_argument("--tui", action="store_true",
                         help="full-screen chat (FR-701) instead of line output")
+    parser.add_argument("--submit", metavar="GOAL",
+                        help="queue a task and print its id, without running it")
+    parser.add_argument("--worker", action="store_true",
+                        help="drain the task queue; runs until interrupted")
+    parser.add_argument("--tasks", action="store_true",
+                        help="show queued and finished tasks")
     args = parser.parse_args(argv)
 
     app = get_app()
@@ -318,7 +324,48 @@ def main(argv: list[str] | None = None) -> int:
         skills.deactivate()
 
 
+def list_tasks() -> int:
+    """FR-604, and the other half of FR-703's "list threads and tasks"."""
+    from agent import worker
+
+    rows = worker.tasks()
+    if not rows:
+        print("no tasks yet")
+        return 0
+    print(f"{'task':<10} {'status':<18} {'verdict':<9} goal")
+    for row in rows:
+        print(f"{row['id']:<10} {row['status']:<18} {row['verdict'] or '-':<9} "
+              f"{row['goal'][:38]}")
+        if row.get("detail"):
+            # UR-16: what it refused while nobody was watching is the whole
+            # reason to look at this list.
+            print(f"{'':<10} ! {row['detail'][:60]}")
+    return 0
+
+
 def _dispatch(args, app, parser) -> int:
+    from agent import worker
+
+    if args.tasks:
+        return list_tasks()
+
+    if args.submit:
+        # FR-601: returns immediately. The id IS the thread id, which is what
+        # makes resuming a task and resuming a thread the same operation.
+        task_id = worker.submit(args.submit)
+        print(f"queued {task_id}")
+        print("run it with:   python -m agent --worker")
+        print("watch it with: python -m agent --tasks")
+        return 0
+
+    if args.worker:
+        requeued = worker.recover()
+        if requeued:
+            print(f"requeued {requeued} task(s) whose worker had died")
+        print("worker running; ctrl-c to stop")
+        worker.run_worker(app)
+        return 0
+
     if args.tui:
         # Imported HERE, never at module top: the plain CLI, the eval harness and
         # the unit suite must all keep running where textual is not installed

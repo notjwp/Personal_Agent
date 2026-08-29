@@ -263,7 +263,12 @@ MCP_CALL_TIMEOUT = float(os.environ.get("AGENT_MCP_CALL_TIMEOUT", "60"))
 # Both live in the agent home, which is the whole reason Phase K created it:
 # reset.sh wipes the workspace between runs by design, so anything learned has to
 # sit outside it.
-MEMORY_DB = AGENT_HOME / "memory.db"          # episodes, FTS5 (FR-407)
+MEMORY_DB = AGENT_HOME / "memory.db"
+
+# The task queue (FR-601/602/604). In the agent home rather than the workspace,
+# for the same reason memory is: reset.sh wipes the workspace between runs and a
+# queue that vanished with it would not be a queue.
+TASKS_DB = AGENT_HOME / "tasks.db"          # episodes, FTS5 (FR-407)
 PROFILE = AGENT_HOME / "AGENT.md"             # durable user profile (FR-406)
 
 # The kill switch, and the reason the comparison in eval/CHANGELOG.md is a

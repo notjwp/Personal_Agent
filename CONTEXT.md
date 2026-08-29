@@ -755,15 +755,18 @@ re-argue a decision that has already been measured.
       SOUL.md          system prompt, version controlled (NFR-603)
       PLAN.md          the planning instruction, same rule
     tests/             test_policy, test_context, test_reflect are the three §12
-                       allowed. SIX stated deviations, each to the same standard
+                       allowed. SEVEN stated deviations, each to the same standard
                        - the component's failure is SILENT or is where consent
                        is decided: test_nodes (every deterministic node, §10),
                        test_cli and test_tui (the approval prompt), test_harness
                        (a wrong denominator does not crash, it misreports),
                        test_mcp (third-party code inside the trust boundary),
                        test_memory (a memory that never retrieves is
-                       indistinguishable from a bad day). Do not add a seventh
-                       without meeting that bar.
+                       indistinguishable from a bad day), test_worker (a queue
+                       that hands one task to two workers, or leaves a crashed
+                       worker's row saying `running` forever, raises nothing -
+                       it just does the work twice, or never). Do not add an
+                       eighth without meeting that bar.
     eval/
       harness.py       runner and scorer
       tasks.jsonl      fixture cases, flagged by split
@@ -785,10 +788,18 @@ re-argue a decision that has already been measured.
                        Outside the project tree (mounted read-only) and outside
                        the workspace (which reset.sh wipes).
 
+      worker.py        the task queue and the worker that drains it (FR-601,
+                       FR-602, FR-604). §12's trigger "when FR-6xx enters scope"
+                       fired. Tasks in SQLite at /state/tasks.db, status
+                       constrained by a CHECK rather than by convention, and
+                       every transition idempotent so a second attempt declines
+                       instead of corrupting a row. FR-603 is free: the task id
+                       IS the thread id, so a requeued task resumes from its
+                       checkpoint rather than restarting.
+
 DEFERRED FILES - create each only when its trigger fires
 
   agent/web.py         when FR-501/502 enter scope
-  agent/worker.py      when FR-6xx enters scope
 
 RESOLVED DEFECTS FROM THE PREVIOUS LAYOUT
 
