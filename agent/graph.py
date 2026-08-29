@@ -26,7 +26,7 @@ from langgraph.types import RunnableConfig, interrupt
 
 from agent import config as settings
 from agent import memory, skills
-from agent.context import shrink
+from agent.context import boundaries, compact_messages, context_chars, shrink
 from agent.policy import classify
 from agent.provider import call_model
 from agent import registry
@@ -34,6 +34,7 @@ from agent.tools import toolset
 
 SOUL = Path(__file__).resolve().parent.parent / "prompts" / "SOUL.md"
 PLAN = Path(__file__).resolve().parent.parent / "prompts" / "PLAN.md"
+COMPACT_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "COMPACT.md"
 
 # A numbered or bulleted line from the planner's reply. Deterministic parsing, so
 # adopting a plan needs no second model call.
@@ -66,6 +67,7 @@ class AgentState(TypedDict):
     plan: list[str]
     cursor: int
     plan_turns: int           # counted apart from `turns`; see config.PLAN_MAX_TURNS
+    compact_count: int        # compactions so far; capped by config.MAX_COMPACTIONS
 
 
 def new_state(goal: str, max_turns: int | None = None,
@@ -87,6 +89,7 @@ def new_state(goal: str, max_turns: int | None = None,
         "plan": [],
         "cursor": 0,
         "plan_turns": 0,
+        "compact_count": 0,
     }
 
 
@@ -302,8 +305,23 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
 
 def reflect(state: AgentState) -> dict:
     """Deterministic only. Checks run in a fixed order; the first match wins."""
-    if state["spent_tokens"] > settings.COMPACT_AT * state["budget_tokens"]:
-        return {"verdict": "compact"}                                   # (a)
+    # NFR-401 wants the token budget enforced as a HARD STOP, and until now
+    # nothing did it: the old check fired at 60% and terminated, which looked
+    # like a budget stop while actually being a compaction trigger. With
+    # compaction real, exhaustion needs its own terminal verdict - otherwise a
+    # run compacts its way past the budget it was given.
+    if state["spent_tokens"] >= state["budget_tokens"]:
+        return {"verdict": "budget"}                                    # (a0)
+
+    # FR-403, on CONTEXT SIZE rather than cumulative spend. See the derivation in
+    # config.COMPACT_AT_CHARS: spent_tokens never decreases, so using it here
+    # would fire on every turn once crossed.
+    if context_chars(state["messages"]) > settings.COMPACT_AT_CHARS:
+        if state.get("compact_count", 0) < settings.MAX_COMPACTIONS:
+            return {"verdict": "compact"}                               # (a)
+        # Compacted the maximum number of times and still over. Stop rather than
+        # loop: the loop costs a model call per turn and clears nothing.
+        return {"verdict": "stuck"}                                     # (a1)
     # NFR-304's third cap, checked before the phase branch so it binds during
     # research as well as work. Terminates as `stuck` rather than as a fifth
     # verdict, deliberately: FR-104 already names exactly four terminal outcomes
@@ -329,8 +347,12 @@ def reflect(state: AgentState) -> dict:
         return {"verdict": "stuck"}                                     # (b)
     if _last_three_signatures_identical(state["messages"]):
         return {"verdict": "stuck"}                                     # (c)
+    # FR-104 names exactly four terminal outcomes and `replan` is not one. It
+    # fired ONCE in 712 recorded rows, and the plan node that would consume it
+    # does not work yet, so three consecutive failures is a way of being stuck.
+    # `failures` is on the row, so the cause is still distinguishable.
     if state["failures"] >= 3:
-        return {"verdict": "replan"}                                    # (d)
+        return {"verdict": "stuck"}                                     # (d)
     if state["messages"][-1]["role"] == "assistant":                    # (e)
         # Section 9 step 2 (b) said to restore the cursor check "only when the
         # plan node is added". This is that moment - and the made-a-call guard
@@ -343,6 +365,51 @@ def reflect(state: AgentState) -> dict:
             return {"verdict": "continue", "cursor": state["cursor"] + 1}
         return {"verdict": "done"}
     return {"verdict": "continue"}                                      # (f)
+
+
+def compact(state: AgentState, config: RunnableConfig) -> dict:
+    """Summarise the middle of the history and carry on (FR-403, FR-404).
+
+    The THIRD node that touches a model, which is exactly what §3 budgets for
+    (plan, act, compact-summarisation). Nothing else about the determinism ratio
+    changes: the boundary arithmetic and the rewrite are pure functions in
+    context.py, and only the summary itself needs a model.
+    """
+    cfg = config.get("configurable", {})
+    before = context_chars(state["messages"])
+    head_end, tail_start = boundaries(state["messages"])
+    removed = state["messages"][head_end:tail_start]
+
+    try:
+        reply = call_model(
+            [{"role": "user", "content": json.dumps(removed, default=str)}],
+            COMPACT_PROMPT.read_text(encoding="utf-8"), [], None)
+        summary = " ".join(b.get("text", "") for b in reply.blocks
+                           if b.get("type") == "text").strip()
+        billed = reply.billed_tokens
+    except Exception as exc:                       # noqa: BLE001
+        # A failed summariser must not lose the run. It is already in trouble -
+        # that is why it is compacting - and dying in the recovery is worse than
+        # losing the detail.
+        summary = (f"unavailable ({type(exc).__name__}) - {len(removed)} messages "
+                   f"of tool calls were removed to save context")
+        billed = 0
+
+    messages = compact_messages(state["messages"], summary or "no summary produced")
+    after = context_chars(messages)
+
+    trace = cfg.get("trace")
+    if trace is not None:
+        # NFR-403 wants >= 50% when it fires, so the reduction is recorded rather
+        # than asserted in a comment.
+        trace.append({"kind": "compact", "before": before, "after": after,
+                      "removed_messages": len(removed),
+                      "removed_pct": round((1 - after / before) * 100, 1)})
+
+    return {"messages": messages,
+            "compact_count": state.get("compact_count", 0) + 1,
+            "spent_tokens": state["spent_tokens"] + billed,
+            "verdict": None}
 
 
 def adopt(state: AgentState, config: RunnableConfig) -> dict:
@@ -558,6 +625,10 @@ def _route_after_reflect(state: AgentState) -> str:
     # ONCE in 712 recorded rows, which is why the plan layer was not built on it.
     if state["verdict"] == "planned":
         return "adopt"
+    # FR-403: compaction is no longer where a run goes to die. It summarises and
+    # returns to act, which is the whole point of building it.
+    if state["verdict"] == "compact":
+        return "compact"
     return "act" if state["verdict"] == "continue" else "finish"
 
 
@@ -617,6 +688,7 @@ def _build() -> StateGraph:
     b.add_node("execute", _timed("execute", execute))
     b.add_node("reflect", _timed("reflect", reflect))
     b.add_node("adopt", _timed("adopt", adopt))
+    b.add_node("compact", _timed("compact", compact))
     b.add_node("finish", _timed("finish", finish))
 
     b.add_edge(START, "act")                    # correction (a): not "plan"
@@ -624,8 +696,9 @@ def _build() -> StateGraph:
     b.add_edge("gate", "execute")               # CE-07: never merged
     b.add_edge("execute", "reflect")
     b.add_conditional_edges("reflect", _route_after_reflect,
-                            ["act", "adopt", "finish"])
+                            ["act", "adopt", "compact", "finish"])
     b.add_edge("adopt", "act")
+    b.add_edge("compact", "act")
     b.add_edge("finish", END)
     return b
 

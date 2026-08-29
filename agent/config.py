@@ -120,7 +120,27 @@ BUDGET_TOKENS = 200_000
 # than wall-clock since the goal arrived. A thread resumed a week later must not
 # terminate on its first turn because the calendar moved.
 MAX_SECONDS = 900
-COMPACT_AT = 0.60        # reflect check (a): compact above this fraction of budget
+# Compaction fires on CONTEXT SIZE, not on cumulative spend, and the distinction
+# is not pedantic: spent_tokens only ever grows, so once compaction stopped being
+# a terminal verdict the old `spent_tokens > 0.60 * budget` check would have
+# fired on every subsequent turn forever - compact, act, compact, act. FR-403
+# says "when context USE exceeds a configured fraction of budget", and context
+# use is the thing compaction actually reduces.
+#
+# 45,000 chars is where the OLD trigger effectively fired, so behaviour stays
+# comparable to every number already recorded. Measured over the 47 traces that
+# reached it: context was 44,597 chars at the median, and compacting at that size
+# removes 78% at the median and 60% at worst - both clear of NFR-403's 50%.
+#
+# Chars as a proxy for tokens at ~3:1, the same convention MAX_SCHEMA_CHARS and
+# MAX_RESULT_CHARS use, so reflect needs no tokeniser and stays testable without
+# an API key (NFR-602).
+COMPACT_AT_CHARS = 45_000
+
+# A compaction loop burns budget faster than the problem it solves. At the cap the
+# run terminates as `stuck` rather than as a fifth verdict - FR-104 names four
+# terminal outcomes and this is not a new kind of ending.
+MAX_COMPACTIONS = 3
 
 # --- planning (FR-101, FR-105, UR-02) --------------------------------------
 

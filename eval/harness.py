@@ -1286,6 +1286,12 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # planner will reach for a command the read-only allowlist refuses, and
         # this says WHICH - so widening it is decided by evidence rather than by
         # guessing at what it wanted.
+        # FR-403/404 and NFR-403. `compact_count` distinguishes a run that
+        # compacted three times from one that compacted once - identical in a
+        # pass rate, very different in what the model was working from.
+        "compact_count": state.get("compact_count", 0),
+        "compact_removed_pct": [t.get("removed_pct") for t in trace
+                                if t.get("kind") == "compact"],
         "plan": bool(os.environ.get("AGENT_PLAN", "on").strip().lower()
                      not in ("0", "off", "false")),
         "plan_steps": state.get("plan", []),

@@ -5,6 +5,7 @@ text, where the model can act on it. That is the only place it was ever useful.
 
 CE-05: the artifacts directory is created at call time, never at import.
 """
+import json
 import os
 from hashlib import sha256
 
@@ -83,3 +84,136 @@ def shrink(tool: str, text: str) -> str:
         f'Inspect it with read_file(path="{artifact}", offset=N, limit=M), '
         f"or search it with run_shell(command='grep -n PATTERN {artifact}')."
     )
+
+
+# ============================================================ compaction (FR-403, FR-404)
+#
+# §4.3: "Compaction preserves the first two messages and the last six verbatim,
+# summarising only the middle."
+#
+# THAT ARITHMETIC IS WRONG FOR THIS MESSAGE SHAPE, and it was measured before a
+# line was written. The list alternates assistant[tool_use] / user[tool_result],
+# so "the first two" keeps a tool_use whose tool_result is message 2 - which the
+# summariser eats. Over every recorded trace with more than eight messages:
+#
+#     traces examined                            466
+#     head boundary orphans a tool_use           466   (100%)
+#     tail boundary orphans a tool_result        282   (61%)
+#
+# Both providers reject that: Anthropic requires every tool_use to have a
+# matching tool_result, and the OpenAI-compatible path requires every `tool`
+# message to follow an assistant carrying that call. §0 says a requirement wins
+# over code and that the disagreement is stated rather than reinterpreted - so
+# §4.3's INTENT (keep the opening and the recent turns) is implemented, and its
+# arithmetic is corrected here rather than silently.
+#
+# The correction is Hermes Agent's, from trajectory_compressor.py:524-560
+# (Nous Research, MIT - see NOTICE): snap a boundary onto the nearest turn that
+# does not split a pair, preferring forward so an orphaned result folds in with
+# the call it answers. Ours differs in what it inspects: Hermes checks a
+# `from == "tool"` turn marker, we check BLOCK TYPES, because our messages carry
+# Anthropic-shaped content lists rather than a role string.
+HEAD_MESSAGES = 2
+TAIL_MESSAGES = 6
+SUMMARY_PREFIX = "[CONTEXT SUMMARY]: "
+
+
+def _blocks(message: dict) -> list:
+    content = message.get("content")
+    return content if isinstance(content, list) else []
+
+
+def _calls(message: dict) -> set:
+    return {b["id"] for b in _blocks(message) if b.get("type") == "tool_use"}
+
+
+def _answers(message: dict) -> set:
+    return {b["tool_use_id"] for b in _blocks(message)
+            if b.get("type") == "tool_result"}
+
+
+def pairs_ok(messages: list[dict]) -> bool:
+    """Every tool_use is answered by the very next message, and no tool_result is
+    orphaned. This is the invariant compaction must not break, and it is written
+    first because every other test in this layer leans on it."""
+    for i, message in enumerate(messages):
+        calls = _calls(message)
+        if calls and calls - (_answers(messages[i + 1]) if i + 1 < len(messages) else set()):
+            return False
+        answered = _answers(message)
+        if answered and answered - (_calls(messages[i - 1]) if i else set()):
+            return False
+    return True
+
+
+def _clean_boundary(messages: list[dict], index: int) -> bool:
+    """True when cutting at `index` does not orphan a tool_result from its call.
+
+    A boundary lands ON a message. If that message answers a tool call, the call
+    is in the message before it, so the cut separates them.
+    """
+    return index >= len(messages) or not _answers(messages[index])
+
+
+def _snap(messages: list[dict], index: int, low: int, high: int) -> int:
+    """Move `index` onto the nearest clean boundary, forward first.
+
+    Forward is preferred so an orphaned result folds into the region that already
+    holds its call; backward is the fallback when no clean boundary exists ahead.
+    Clamped to [low, high].
+    """
+    forward = index
+    while forward < high and not _clean_boundary(messages, forward):
+        forward += 1
+    if _clean_boundary(messages, forward):
+        return forward
+    backward = index
+    while backward > low and not _clean_boundary(messages, backward):
+        backward -= 1
+    return backward
+
+
+def boundaries(messages: list[dict]) -> tuple[int, int]:
+    """Where the head ends and the tail begins, both snapped off tool pairs.
+
+    Exposed because the compact node has to summarise exactly the region
+    compact_messages will remove. Two functions computing the same two indices
+    independently is how they come to disagree.
+    """
+    head_end = _snap(messages, HEAD_MESSAGES, 1, len(messages))
+    return head_end, _snap(messages, len(messages) - TAIL_MESSAGES,
+                           head_end, len(messages))
+
+
+def compact_messages(messages: list[dict], summary: str) -> list[dict]:
+    """Replace the middle of `messages` with one summary. Pure (FR-404).
+
+    The summary is appended to the last retained head message when that message
+    is a user turn, rather than inserted as a new one. Two consecutive user
+    messages are a shape some providers reject, and the head always ends on a
+    user tool_result once the boundary is snapped - so appending a text block is
+    both the safe option and one message cheaper.
+    """
+    if len(messages) <= HEAD_MESSAGES + TAIL_MESSAGES:
+        return list(messages)
+
+    head_end, tail_start = boundaries(messages)
+    if tail_start <= head_end:
+        return list(messages)          # nothing between the two regions to remove
+
+    head = [dict(m) for m in messages[:head_end]]
+    note = {"type": "text", "text": f"{SUMMARY_PREFIX}{summary}"}
+    if head and head[-1].get("role") == "user" and isinstance(head[-1].get("content"), list):
+        head[-1]["content"] = list(head[-1]["content"]) + [note]
+        return head + list(messages[tail_start:])
+    return head + [{"role": "user", "content": [note]}] + list(messages[tail_start:])
+
+
+def context_chars(messages: list[dict]) -> int:
+    """Size of the message list as it will be sent.
+
+    Characters as a proxy for tokens at the project's usual ~3:1, the same
+    convention MAX_SCHEMA_CHARS and MAX_RESULT_CHARS already use. No tokeniser,
+    so reflect stays deterministic and testable without an API key (NFR-602).
+    """
+    return len(json.dumps(messages, default=str))

@@ -32,6 +32,7 @@ def state(**over):
         "turns": 0, "max_turns": 12,
         "spent_tokens": 0, "budget_tokens": 200_000,
         "failures": 0, "verdict": None, "approved": [], "denied": [],
+        "compact_count": 0,
     }
     base.update(over)
     return base
@@ -447,7 +448,12 @@ def test_budget_exhaustion_terminates(fresh_app, tmp_workspace, monkeypatch):
         tool_turn("run_shell", cid=f"t{i}", command=f"echo {i}") for i in range(10)
     ])
     final = run(fresh_app, "loop-7", budget_tokens=200)
-    assert final["verdict"] == "compact", "over 60% of budget terminates at v1"
+    # Was `compact`, which terminated the run and READ as a budget stop while
+    # actually being a compaction trigger at 60%. NFR-401 asks for a hard stop
+    # and FR-104 names "budget exhausted" as a terminal outcome; both are real
+    # now that compaction routes back to act instead of to finish.
+    assert final["verdict"] == "budget"
+    assert final["spent_tokens"] >= final["budget_tokens"]
 
 
 def test_trace_captures_model_and_tool_activity(fresh_app, tmp_workspace, monkeypatch):
@@ -1963,3 +1969,175 @@ def test_the_decorator_still_declares_risk_in_one_file():
     assert TOOLS["search_files"]["risk"] == "read"
     for name in ("write_file", "edit_file", "run_shell", "run_python"):
         assert TOOLS[name]["risk"] == "write", name
+
+
+# ================================== compaction (FR-403, FR-404, NFR-403)
+
+from agent.context import (HEAD_MESSAGES, SUMMARY_PREFIX, TAIL_MESSAGES,
+                           boundaries, compact_messages, context_chars, pairs_ok)
+
+
+def _history(turns):
+    """A realistic list: goal, then alternating tool_use / tool_result."""
+    out = [{"role": "user", "content": "fix it"}]
+    for i in range(turns):
+        out.append({"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"t{i}", "name": "read_file",
+             "input": {"path": f"f{i}.py"}}]})
+        out.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}",
+             "content": f"contents of f{i}.py " + "x" * 2_000}]})
+    return out
+
+
+# --- the invariant ---------------------------------------------------------
+
+def test_pairs_ok_accepts_a_well_formed_history():
+    assert pairs_ok(_history(5))
+
+
+def test_pairs_ok_catches_an_orphaned_call_and_an_orphaned_result():
+    """Both shapes a provider rejects: a tool_use with no answer, and an answer
+    with no call."""
+    history = _history(3)
+    assert not pairs_ok(history[:2])          # keeps a call, drops its result
+    assert not pairs_ok(history[2:])          # keeps a result, drops its call
+
+
+# --- the boundary, which is the whole point --------------------------------
+
+def test_the_naive_boundary_would_split_a_pair_and_the_snap_prevents_it():
+    """§4.3 says "the first two messages". Message 1 is a tool_use and message 2
+    is its result, so the literal reading orphans the call - measured at 100% of
+    466 recorded traces before this existed."""
+    history = _history(8)
+    assert not pairs_ok(history[:HEAD_MESSAGES]), "the literal §4.3 head is invalid"
+
+    head_end, tail_start = boundaries(history)
+    assert head_end > HEAD_MESSAGES, "the head boundary must snap forward"
+    assert pairs_ok(history[:head_end])
+    assert pairs_ok(history[tail_start:])
+
+
+def test_compaction_over_every_recorded_trace_keeps_the_list_valid():
+    """THE regression this stage exists to prevent, and the strongest offline
+    evidence available: every trace this project ever recorded, compacted, and
+    checked. It costs a second of CPU and it is what caught the boundary bug."""
+    import json as _json
+
+    root = Path(__file__).resolve().parent.parent / "eval" / "runs"
+    checked = 0
+    for f in root.rglob("*.json"):
+        if "manifest" in f.name:
+            continue
+        try:
+            messages = _json.loads(f.read_text(encoding="utf-8")).get("messages") or []
+        except (OSError, ValueError):
+            continue
+        if len(messages) <= HEAD_MESSAGES + TAIL_MESSAGES or not pairs_ok(messages):
+            continue
+        assert pairs_ok(compact_messages(messages, "did things")), f.name
+        checked += 1
+    assert checked > 100, f"only {checked} traces available; the corpus is the point"
+
+
+# --- what is retained ------------------------------------------------------
+
+def test_the_goal_and_the_recent_turns_survive(tmp_workspace):
+    """FR-404: opening messages and the most recent turns, verbatim."""
+    history = _history(10)
+    out = compact_messages(history, "summary text")
+
+    assert out[0] == history[0], "the goal must survive"
+    assert out[-TAIL_MESSAGES:] == history[-TAIL_MESSAGES:], "recent turns verbatim"
+
+
+def test_the_summary_appears_exactly_once():
+    out = compact_messages(_history(10), "summary text")
+    found = [b for m in out if isinstance(m.get("content"), list)
+             for b in m["content"]
+             if b.get("type") == "text" and SUMMARY_PREFIX in b.get("text", "")]
+    assert len(found) == 1
+    assert "summary text" in found[0]["text"]
+
+
+def test_a_short_history_is_returned_unchanged():
+    short = _history(2)
+    assert compact_messages(short, "x") == short
+
+
+def test_compaction_does_not_leave_two_user_messages_adjacent():
+    """The summary is appended to the trailing head message rather than inserted
+    as its own. Consecutive same-role messages are a shape some providers reject,
+    and the head always ends on a user tool_result once the boundary is snapped."""
+    out = compact_messages(_history(10), "summary text")
+    roles = [m["role"] for m in out]
+    assert not any(a == b == "user" for a, b in zip(roles, roles[1:]))
+
+
+# --- NFR-403 ---------------------------------------------------------------
+
+def test_compaction_halves_the_context_when_it_fires():
+    """NFR-403: at least 50% when it fires. Asserted on a history large enough to
+    TRIGGER, which is the population the requirement is about - a six-message
+    history has nothing to remove and shrinking it is not what was promised."""
+    history = _history(40)
+    assert context_chars(history) > config.COMPACT_AT_CHARS, "must be over the trigger"
+
+    reduction = 1 - context_chars(compact_messages(history, "short summary")) \
+        / context_chars(history)
+    assert reduction >= 0.50, f"only {reduction:.0%} removed"
+
+
+# --- the node, end to end --------------------------------------------------
+
+def test_compaction_returns_to_act_instead_of_ending_the_run(
+        fresh_app, tmp_workspace, monkeypatch):
+    """The single behavioural change: `compact` used to route to finish, so the
+    verdict meant "give up expensively"."""
+    spy_on_run_shell(monkeypatch)
+    huge = "y" * 60_000
+    monkeypatch.setitem(TOOLS["run_shell"], "fn", lambda **kw: huge)
+
+    # shrink() caps each result at MAX_RESULT_CHARS, so context grows ~6k a turn
+    # and crossing 45,000 takes several. The fake never stops calling; the run
+    # ends at the turn cap, which is fine - what is being proven is that
+    # compaction happened along the way instead of ending it.
+    step = {"n": 0}
+
+    def cycling(messages, system, tools, on_text=None):
+        step["n"] += 1
+        # A DIFFERENT command each turn, or reflect's thrash detector (three
+        # identical signatures in a row) ends the run at turn 3 - long before
+        # context has grown enough to compact. That is the detector working.
+        return tool_turn("run_shell", cid=f"t{step['n']}", command=f"cat big{step['n']}")
+
+    monkeypatch.setattr("agent.graph.call_model", cycling)
+    trace = []
+    out = fresh_app.invoke(state(), {"configurable": {
+        "thread_id": "compact-e2e", "autonomous": True, "trace": trace}})
+
+    assert out["compact_count"] >= 1, "compaction never fired"
+    assert out["verdict"] != "compact", "compact must no longer be terminal"
+    entry = next(e for e in trace if e.get("kind") == "compact")
+    assert entry["after"] < entry["before"]
+    assert entry["removed_pct"] > 0
+
+
+def test_a_failed_summariser_does_not_lose_the_run(
+        fresh_app, tmp_workspace, monkeypatch):
+    """The run is already in trouble - that is why it is compacting. Dying in the
+    recovery is worse than losing the detail."""
+    from agent.context import compact_messages as _cm
+    from agent.graph import compact
+
+    monkeypatch.setattr("agent.graph.call_model",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("rate limited")))
+    s = state(messages=_history(10))
+
+    out = compact(s, {"configurable": {"trace": []}})
+
+    assert out["compact_count"] == 1
+    text = json.dumps(out["messages"])
+    assert "unavailable" in text and "RuntimeError" in text
+    assert pairs_ok(out["messages"])
