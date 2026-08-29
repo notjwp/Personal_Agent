@@ -3295,6 +3295,204 @@ rather than left for someone to discover and mistrust.
 
 ---
 
+## Stage 8 then 6 — a bounded search, a decorator that had to wait for it, and a docs pass aimed at the wrong file
+
+Five closures and no quota. The ORDER is the finding: Stage 8 was built before Stage 6 so
+that §13's break-even and FR-207 would agree rather than one overruling the other.
+
+### Stage 8 — four closures
+
+**FR-206 `search_files(pattern, glob, paths_only) -> "path:line: text"`, never file
+contents.** That last clause IS the requirement, and it is why `run_shell` with `grep` does
+not satisfy it: grep returns every matching line unbounded, which is the context flood
+`shrink()` exists to contain. Capped at 50 matches and 120 chars a line, and the result says
+when it truncated.
+
+Hermes has a `search_files` and it could **not** be lifted — `file_operations.py` is
+ripgrep-backed and `rg` is not in the image. Two things were worth taking: `output_mode:
+files_only`, which is literally "paths, not contents", and its description strategy ("use
+this instead of grep/find/ls in terminal"), because a search tool the model ignores in
+favour of `run_shell` is 621 chars of schema bought for nothing. **Seven of its eight
+parameters were deliberately dropped** — sensible at 84 tools, absurd at six.
+
+**A test found a real hole in this, not a review.** The first version claimed to be
+workspace-bounded "by construction" because the walk starts at `config.WORKSPACE`. It is
+not: `Path.glob("../*")` walks straight out, and the test returned a file from the parent
+directory. FR-302 is now enforced twice — on the pattern, so the refusal is something the
+agent can act on, and on each **resolved** path, which is the check that actually holds
+because a symlink cannot be spotted in a pattern.
+
+**FR-205 git identity in the `Containerfile`.** `git commit` FAILED without it, with "Please
+tell me who you are" — a failure that reads as the agent doing something wrong rather than
+the image being incomplete.
+
+Closed with a **test, not a scored case**, and deliberately. A case cannot force the agent to
+reach for git — it could read the failing test and fix the code without ever running
+`git log` — and Phase O already measured what happens when a requirement rests on the model
+electing to do something (`learn`, 0 calls in 15 sessions). A case would prove the agent
+CHOOSES git; FR-205 asks that git WORKS. `push` stays untestable under restricted egress and
+is recorded as asserted rather than demonstrated.
+
+**NFR-802 is a conflict, not a defect**, and it goes in §8.2 where conflicts belong. "All
+artifacts under ONE directory" cannot hold: FR-302 confines `read_file` to the workspace, so
+a spill written outside it is unreadable by the model — and `shrink()`'s whole design is that
+the model can re-read one. NFR-201 puts durable state outside the workspace because
+`reset.sh` wipes it. Two declared inspectable roots is the resolution; moving artifacts to
+`/state` would satisfy the wording and break the mechanism.
+
+**NFR-701 amended after MEASURING.** The offline suite passes 390/390 on Fedora 41 with
+Python 3.13.9 and on `python:3.12-slim` — two distributions, two Python minors, same pins.
+Not demonstrated: "natively" (§11 makes a container mandatory anyway) and WSL2. A requirement
+nobody can pass is worse than a narrower one that is true.
+
+### Stage 6 — FR-207, and why it came second
+
+§13 costs the decorator at ~25 lines + ~5/tool against ~8/tool written out, **breaking even
+above eight hand-written schemas. There were seven.** `search_files` is the eighth — so
+building Stage 8 first means CE-02 and FR-207 agree for the first time, rather than a
+requirement overruling a live objection.
+
+Nothing in `hermes_copy/` implements this, checked twice: `inspect.signature` appears in five
+of its files and every use is capability probing, never schema construction. All 84 of its
+schemas are hand-written dicts.
+
+~150 lines of schema dicts became one line:
+
+```python
+TOOLS = {fn.__name__: fn.spec for fn in (read_file, search_files,
+         write_file, edit_file, run_python, run_shell)}
+```
+
+**Descriptions are NOT derived from parameter names** — they come from the docstring, which
+now carries the exact text the dicts used to. `edit_file`'s coaching on picking a unique
+snippet is what took real repositories 0/9 → 4/7, and a decorator emitting
+`{"type": "string"}` per argument would have satisfied FR-207 while throwing that away.
+
+**The equivalence test pins the hand-written schemas as literals captured BEFORE the
+conversion. All six are byte-identical.** That is the entire safety of this change: the
+schemas are what the model sees, so a quiet rewording would present as a model regression and
+be diagnosed for days.
+
+### The docs pass was aimed at the wrong file until it was measured
+
+**`CONTEXT.md` is not loaded per prompt. `CLAUDE.md` is.**
+
+```
+  CLAUDE.md   ~7,157 -> ~3,186 tokens   -55%, on EVERY prompt
+  CONTEXT.md ~14,660 -> ~11,378 tokens  -22%, when the spec is read
+```
+
+219 of `CLAUDE.md`'s 414 lines were an append-only phase log, every entry of which already
+exists in this file and `ROADMAP.md` — duplication, so **deleted rather than moved**, with a
+pointer saying where history lives and not to copy it back. What survives is what changes a
+decision: ~30 standing lessons, the architecture invariants, the precedence rules, commands,
+working guidelines.
+
+`CONTEXT.md` was cut carefully because it is the binding spec: §12's file-list rationale
+(195 → 55 lines), §9's built steps collapsed to their exit criteria and traps, §13's stale
+worked example and v1 state shape, and the verbose amendment notes in §7 and §11.
+**Verified: 109 requirement IDs before, 0 lost; 101 requirement definition lines, all
+present.** §9 Step 2's corrections and Step 4's tuning table were extracted programmatically
+rather than retyped, so their wording is byte-identical.
+
+Stale facts corrected on the way: "247 unit tests" (390), "three nodes call the model" (only
+`act` does), "the workspace as the only bind mount" (four), and "@tool arrives at tool six"
+(it arrived at eight).
+
+**395 offline tests**, up from 376. Schema 4,289 of 10,000 chars. Must-haves 29/35,
+Definition of Done 9/9.
+
+---
+
+## Stage 3 — Compaction: FR-403/404 built, and two defects found before a line was written
+
+Compaction existed as a verdict that routed straight to `finish`, so `compact` meant "give up
+expensively". It now summarises the middle and returns to `act`.
+
+Neither defect below was speculative. One was measured across 466 recorded traces, the other
+read directly off `reflect`.
+
+### Defect 1 — §4.3's boundary is invalid in 100% of real runs
+
+> "Compaction preserves the first two messages and the last six verbatim."
+
+The message list alternates `assistant[tool_use]` / `user[tool_result]`, so "the first two"
+keeps a `tool_use` whose `tool_result` is message 2 — which the summariser eats. Both
+providers reject an orphaned call. Measured over every trace with more than eight messages:
+
+```
+  traces examined                            466
+  head boundary orphans a tool_use           466   (100%)
+  tail boundary orphans a tool_result        282   (61%)
+```
+
+§0 says a requirement wins over code, and the disagreement is **stated rather than
+reinterpreted**: §4.3's intent (keep the opening and the recent turns) is implemented, its
+arithmetic corrected, and the correction written down where the code is.
+
+The fix is Hermes Agent's, from `trajectory_compressor.py:524-560` — snap a boundary onto the
+nearest turn that does not split a pair, forward first so an orphaned result folds in with
+the call it answers. ~30 lines of idea against a 1,598-line file. Ours inspects **block
+types** rather than Hermes's `from == "tool"` marker, because our messages carry
+Anthropic-shaped content lists. `NOTICE` restored, because unlike the percentile helper this
+one genuinely is derived.
+
+### Defect 2 — the trigger would have looped forever
+
+```python
+if state["spent_tokens"] > COMPACT_AT * state["budget_tokens"]:
+```
+
+`spent_tokens` is cumulative billing and never decreases. **Compaction shrinks the CONTEXT,
+not the bill** — so the moment `compact` stopped being terminal this would fire every turn:
+compact, act, compact, act, a model call each time, clearing nothing. FR-403's own wording is
+the fix ("when context USE exceeds…"), and the old proxy only worked because the verdict was
+terminal.
+
+`COMPACT_AT_CHARS = 45,000`, **derived rather than guessed**: that is where the old trigger
+effectively fired, so behaviour stays comparable to every number already recorded. Over the
+47 traces that reached it, context was 44,597 chars at the median, and compacting at that
+size removes **78% at the median and 60% at worst**.
+
+### What else this closes
+
+- **NFR-403** — before/after/removed_pct on the trace, asserted in a test rather than claimed
+  in a comment. Holds on the population it is about: traces large enough to fire. Across ALL
+  traces the worst case is 9%, which is a short-history artefact — a six-message history has
+  nothing to remove.
+- **NFR-401** — a real `budget` verdict. Nothing provided a hard stop before: the old check
+  fired at 60% and terminated, which READ as a budget stop while actually being a compaction
+  trigger.
+- **FR-104** — `replan` maps to `stuck`. It was never one of the four named outcomes and
+  fired ONCE in 712 rows; `failures` stays on the row so the cause is still distinguishable.
+  The terminal set is now exactly `done` / `stuck` / `budget`, with the turn cap reported as
+  `stuck`.
+
+### The test that matters
+
+**Every recorded trace, compacted, checked: 466 in, 466 valid, 0 broken.** It costs a second
+of CPU and it is what caught the boundary bug. A summariser failure is also covered — it
+inserts a placeholder and carries on, because the run is already in trouble and dying in the
+recovery is worse than losing the detail.
+
+Three things the tests caught that review did not: `reflect`'s thrash detector ends a run at
+turn 3 when a fake repeats one command, so the end-to-end never reached the threshold until
+the command varied; `shrink()` caps each result at 6,000 chars so context grows ~6k a turn
+and the first histories were an order of magnitude too small; and the shared `state()` helper
+was missing a field, so `compact_count` came back as a `KeyError` rather than 0.
+
+### Not measured, and the expectation is stated before the run rather than after
+
+A budget experiment already refuted the starvation hypothesis — given 1M tokens the agent
+used 281–516k and made LESS progress. This is built because FR-403/404 are `[M]` and the
+requirement wins, and **the pass rate is expected NOT to move**. The scored stop-gate is
+`real-humanize` and `real-click`, 3 runs each: if `compact_count` is 0 across all six the
+mechanism never fired and the dev guard is not worth starting.
+
+**410 offline tests**, up from 395. No API key, no network, read-only root.
+
+---
+
 ## Stage 5 — Queue, worker and status: three must-haves, no quota
 
 `agent/worker.py`, the last of §12's deferred files to be earned. FR-601, FR-602

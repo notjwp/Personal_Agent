@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, measurement rig. **433 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, measurement rig. **441 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -18,8 +18,8 @@ read-only root filesystem, and without the `mcp` package installed.
 | dev baseline | **14/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b` |
 | held out | **29/30** — the dev score was not overfitted |
 | real repositories | **4/10**, and only 4 of 6 cases have run with the current toolset |
-| Definition of Done | **9/9** · must-have requirements **31/35** |
-| still unbuilt | web search, a working plan node, streaming |
+| Definition of Done | **9/9** · must-have requirements **34/35** |
+| still unbuilt | web search, streaming |
 
 ## Standing lessons, each paid for once
 
@@ -170,7 +170,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 433 tests, no API key, no network
+pytest                            # 441 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,
