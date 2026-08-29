@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, measurement rig. **441 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, web search, measurement rig. **456 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -18,8 +18,9 @@ read-only root filesystem, and without the `mcp` package installed.
 | dev baseline | **14/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b` |
 | held out | **29/30** — the dev score was not overfitted |
 | real repositories | **4/10**, and only 4 of 6 cases have run with the current toolset |
-| Definition of Done | **9/9** · must-have requirements **34/35** |
-| still unbuilt | web search, streaming |
+| Definition of Done | **9/9** · must-have requirements **35/35** |
+| search split | **9/9** with `web_search`, **0/9** with it removed |
+| still unbuilt | streaming |
 
 ## Standing lessons, each paid for once
 
@@ -82,6 +83,12 @@ Ordered by how often they have caught something.
   scored run per day; after that the tier rejects ~2 of 3 requests.
 
 **Rig and environment**
+
+- **One search endpoint is a rate limit wearing a capability's costume.** `html.duckduckgo.com`
+  returns results once, then blocks, and every retry re-arms a ~30s cooldown - so an in-tool
+  retry makes it strictly worse. Fanning out across engines fixed it with no retry and no
+  sleep: 6 of 6 back-to-back searches returned results. Declare every host the library may
+  dial, not the one you hoped it would.
 
 - **Never pipe the harness through `tail`**, and never wrap it in `timeout`. `tail` buffers until
   exit so a hang looks like progress; `timeout` kills the client but leaves the container running,
@@ -170,7 +177,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 441 tests, no API key, no network
+pytest                            # 456 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

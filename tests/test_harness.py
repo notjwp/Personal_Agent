@@ -432,3 +432,57 @@ def test_delta_ignores_blocked_runs():
     now = [_row("alpha", 0, True), _row("alpha", 1, False, status="blocked")]
 
     assert "pass 1/1 -> 1/1   (+0)" in delta(now, before, "prev")
+
+
+def test_the_web_kill_switch_removes_the_tool(monkeypatch):
+    """Stage 4's control run is a CONTROLLED comparison only if the same binary
+    can be run with the tool removed. Phase L nearly shipped a capability claim on
+    a case that passed without the tool at all."""
+    from agent import config, registry
+    from agent.tools import TOOLS, builtins
+
+    assert "web_search" in builtins()
+    assert "web_search" in registry.toolset()
+
+    monkeypatch.setattr(config, "WEB_ENABLED", False)
+
+    assert "web_search" not in builtins()
+    assert "web_search" not in registry.toolset()
+    # Still in TOOLS, deliberately: policy.sync() classifies from there, and a
+    # tool that is un-offered must not also become un-classifiable.
+    assert "web_search" in TOOLS
+    # The other six are untouched - the switch removes one tool, not a category.
+    assert len(builtins()) == len(TOOLS) - 1
+
+
+def test_every_capability_kill_switch_is_reachable_from_the_harness():
+    """THE GENERALISATION OF A DEFECT ALREADY PAID FOR ONCE.
+
+    Stage 7 shipped `PLAN_ENABLED` defaulting to off while AGENT_PLAN was absent
+    from FORWARDED_ENV - so no scored run could turn planning ON, and the
+    controlled comparison the switch existed for could not be run at all. It was
+    found by a failing experiment, not by a test.
+
+    Derived from config.py's source rather than a hand-kept list, so the NEXT
+    switch is caught the day it is added rather than the day someone tries to use
+    it. The exemptions are the variables the harness SETS rather than forwards.
+    """
+    import re
+    from pathlib import Path
+
+    from eval_harness import FORWARDED_ENV
+
+    # Set by spawn() per case-run, or by the container's own invocation - these
+    # are conditions of the run, not switches a suite chooses.
+    SET_BY_THE_HARNESS = {"AGENT_HOME", "AGENT_WORKSPACE", "AGENT_SKILLS_DIR",
+                          "AGENT_PROVIDER", "AGENT_REQUEST_TIMEOUT",
+                          "AGENT_MCP_CALL_TIMEOUT", "AGENT_MCP_STARTUP_TIMEOUT"}
+
+    source = Path(__file__).resolve().parents[1] / "agent" / "config.py"
+    read = set(re.findall(r'os\.environ\.get\("(AGENT_[A-Z_]+)"',
+                          source.read_text(encoding="utf-8")))
+    unreachable = read - SET_BY_THE_HARNESS - set(FORWARDED_ENV)
+
+    assert not unreachable, (
+        f"config.py reads {sorted(unreachable)} but the harness cannot forward "
+        f"it, so no scored run can exercise it. Add it to FORWARDED_ENV.")

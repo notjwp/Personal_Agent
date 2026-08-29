@@ -799,7 +799,17 @@ re-argue a decision that has already been measured.
 
 DEFERRED FILES - create each only when its trigger fires
 
-  agent/web.py         when FR-501/502 enter scope
+  agent/web.py         when FR-501/502 enter scope. THE TRIGGER FIRED 2026-08-29
+                       and the file was still NOT created, which is stated here
+                       rather than left to be noticed. FR-501 is one decorated
+                       function; a module for it costs a Definition-of-Done item,
+                       because NFR-601 asks that adding a tool require editing
+                       exactly one file and a new module means editing
+                       registry.toolset() as well. This section bounds what MAY
+                       exist, not what must, so declining to create a permitted
+                       file is compliant. If FR-503/504 are ever built here rather
+                       than through MCP, the trigger stands and the arithmetic
+                       flips - browser automation is not one function.
 
 RESOLVED DEFECTS FROM THE PREVIOUS LAYOUT
 

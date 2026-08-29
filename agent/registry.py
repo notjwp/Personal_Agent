@@ -118,9 +118,9 @@ def toolset() -> dict[str, dict]:
     layer may shadow `run_shell` with its own implementation.
     """
     from agent import mcp, memory, skills
-    from agent.tools import TOOLS
+    from agent.tools import builtins
 
-    return {**mcp.tools(), **memory.tools(), **skills.tools(), **TOOLS}
+    return {**mcp.tools(), **memory.tools(), **skills.tools(), **builtins()}
 
 
 def schemas() -> list[dict]:

@@ -3658,3 +3658,137 @@ by default would trade a requirement nobody can see for a cost ceiling everybody
 **441 offline tests.** Today's scored spend **790,732 tokens, 72%** of the measured
 free-tier ceiling — stopped there rather than pushing into the throttle, where ~2 of 3
 requests are rejected and a run completes with probability under 1%.
+
+---
+
+## Stage 4 — Web search: 0/9 without it, 9/9 with it, and the last must-have closes
+
+FR-501 was the only unmet `[M]` requirement. **Must-haves are now 35/35.**
+
+```
+  control    web_search REMOVED   pass 0/9   stuck x9   234,818 tokens
+  treatment  web_search exposed   pass 9/9   done  x9   210,548 tokens
+```
+
+Cheaper AND passing, which is not the usual shape: the control runs spend their turns
+failing at a wall, the treatment runs finish in 3-7 turns against a cap of 10.
+
+### The stop-gate came first, and it was free
+
+Three unknowns, none settled by reading:
+
+```
+  1. does primp honour HTTPS_PROXY?   ddgs uses primp (Rust), NOT httpx - and the
+                                      openai SDK's proxy support comes from httpx
+                                      running trust_env=True. No such promise here.
+  2. does tinyproxy permit the host?  CONNECT filter, allowlisted by hostname.
+  3. is backend= a real restriction?  `auto` fans out across EIGHT engines.
+```
+
+All three answered in one container run for zero model quota: 5 results through the proxy,
+and `backend="mojeek"` refused at the proxy while `backend="duckduckgo"` succeeded - so the
+allowlist is a real boundary rather than a decoration.
+
+### The first live run refuted the design, and the design was mine
+
+`web_search` shipped its first version with `backend="duckduckgo"` **pinned**, so that a case
+could declare ONE host and have that be the whole truth. The reasoning was sound and the
+measurement killed it:
+
+```
+  search 1                ->  5 results
+  search 2, immediately   ->  "No results found."
+  +5s, +10s, +15s         ->  still blocked
+  ~30s of SILENCE         ->  recovered
+```
+
+Every attempt re-arms the cooldown, so **a retry makes it strictly worse** - which is why
+there is no retry in the tool. One engine means one search per ~30 seconds, and an agent that
+searches twice in a row gets an empty second search that reads as "the web has no answer".
+That is infrastructure failure wearing a capability limit's costume, and this project has a
+standing rule against scoring one.
+
+```
+  backend="auto", six searches back to back, no pacing:
+  6 of 6 returned 5 results, 1.5s to 4.7s each.
+```
+
+The honesty property survives a different way: `WEB_HOSTS` names all eight hosts the library
+may dial, each case declares all eight, and the manifest records what was granted. **A test
+asserts WEB_HOSTS against the engine list ddgs actually ships**, so a ninth engine fails the
+suite rather than silently escaping the allowlist.
+
+### Also refuted: the error message
+
+The first version mapped every `DDGSException` to "the egress allowlist is wrong". ddgs uses
+that one exception type for BOTH an empty result set and a transport failure, so a query that
+simply matched nothing was reported as a broken network. Now an empty result RETURNS a
+message rather than raising - raising would spend a `failures` count toward `stuck` on a
+search that worked fine - and a real transport failure raises without naming a cause it
+cannot distinguish from inside the container.
+
+### What the control proves, and what it does not
+
+The control is the same binary with one tool removed (`AGENT_WEB=off`), which is the standing
+rule that saved Phase L from shipping a capability claim its own baseline did not support.
+The traces show the agent trying hard and having nowhere to go:
+
+```
+  run 0   fetch pypi.org -> blocked      fetch api.github.com -> blocked   stuck @ 3
+  run 2   curl, wget, urllib, then read the INSTALLED ddgs/__init__.py     stuck @ 10
+```
+
+**Stated rather than glossed:** the control fails partly BECAUSE the allowlist carries only
+the eight search hosts, so `fetch` had nowhere to land. This measures that search was the
+only GRANTED route, not the only conceivable one. Allowlisting pypi.org would have been a
+test of `fetch`, which the existing `web` split already covers - but that was a choice, and
+it belongs here rather than buried in a config file.
+
+The treatment traces show the intended shape end to end:
+
+```
+  web_search "ddgs pypi"     -> finds https://pypi.org/project/ddgs/
+  fetch      pypi.org        -> BLOCKED at the allowlist
+  web_search "ddgs GitHub"   -> the snippet itself carries "deedy5"
+  write_file answer.txt      -> deedy5
+```
+
+`web_search` fired in **all nine** runs, 1-3 calls each - checked on the traces, because a
+pass rate is not evidence for a mechanism that did not fire.
+
+### The cases, verified three ways before a token was spent
+
+Two ways does not catch a fixture that contains its own answer. All three columns measured,
+free:
+
+```
+  case             untouched   plausible-guess    correct-answer
+  search-author    FAIL        FAIL (octocat)     PASS (deedy5)
+  search-editors   FAIL        FAIL (Guido...)    PASS (Turner / van Kemenade)
+  search-release   FAIL        FAIL (2025-10-01)  PASS (2025-10-07)
+```
+
+Chosen for OBSCURITY rather than difficulty: a fact the model already knows makes the control
+pass and the measurement worthless. All three are stable past events that a search finds in
+the SNIPPET, so no case depends on `fetch` succeeding.
+
+### agent/web.py was permitted and still not created
+
+§12 defers it "when FR-501/502 enter scope" and that trigger fired. It bounds what MAY exist,
+not what must - and a module for one decorated function costs a Definition-of-Done item,
+since NFR-601 asks that adding a tool require editing exactly one file and a new module means
+editing `registry.toolset()` too. Written into §12 itself rather than left to be noticed.
+
+### Two defects this found in the rig
+
+- **The summary row recorded `mcp` but not the built-in tool set.** A control row and a
+  treatment row differed only by `schema_chars`, so the single condition the whole comparison
+  turns on was not written down anywhere a later reader could check. The row now carries the
+  exposed toolset. Same shape as the `AGENT_EGRESS` defect: a condition nobody recorded.
+- **`AGENT_WEB` had to be added to `FORWARDED_ENV`**, which is Stage 7's lesson arriving one
+  stage later. A test now derives the switch list from `config.py`'s own source and fails when
+  a new one is unreachable, so the NEXT occurrence is caught the day it is added rather than
+  the day someone tries to run the comparison.
+
+**456 offline tests**, up from 441. Scored spend for the stage: **445,366 tokens** across
+both halves.

@@ -265,6 +265,18 @@ MCP_ENABLED = os.environ.get("AGENT_MCP", "on").strip().lower() not in ("0", "of
 MCP_STARTUP_TIMEOUT = float(os.environ.get("AGENT_MCP_STARTUP_TIMEOUT", "30"))
 MCP_CALL_TIMEOUT = float(os.environ.get("AGENT_MCP_CALL_TIMEOUT", "60"))
 
+# Web search's kill switch (FR-501, Stage 4). Default ON, unlike planning: this
+# closes a [M] requirement rather than adding an optional phase.
+#
+# It exists so the control run is a CONTROLLED comparison - the same binary, the
+# same prompt, one tool removed - which is the standing rule that saved Phase L
+# from shipping a capability claim the baseline did not support. The web split
+# scored 18/18 with no fetch tool at all, because run_shell plus urllib already
+# reached the network; assuming a new tool is what made a case pass is exactly
+# the error that measurement is for.
+WEB_ENABLED = os.environ.get("AGENT_WEB", "on").strip().lower() not in (
+    "0", "off", "false")
+
 # --- memory (Phase M) ------------------------------------------------------
 
 # Both live in the agent home, which is the whole reason Phase K created it:

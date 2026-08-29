@@ -1,8 +1,9 @@
-"""The three v1 tools and their hand-written schemas.
+"""The built-in tools, and the risk each one carries.
 
-Schemas are hand-written on purpose (CE-02): a decorator plus its inspection
-machinery costs ~25 lines plus ~5 per tool, against ~8 per tool written out.
-Break-even is five tools; v1 has three. `agent/registry.py` arrives at tool six.
+Seven of them, and their schemas are DERIVED from the signature and docstring by
+`@tool` in agent/registry.py (FR-207). They were hand-written until tool eight,
+when §13's arithmetic - ~25 lines plus ~5 per tool for the machinery against ~8
+per tool written out - stopped favouring the dicts.
 
 Tools RAISE on failure and never return an error string — the execute node owns
 the exception-to-observation conversion (FR-208).
@@ -13,6 +14,7 @@ one risk is what §13 cut the INSTALL set for.
 
 Adding a tool touches this file only (NFR-601).
 """
+import os
 import re
 import subprocess
 import sys
@@ -398,6 +400,126 @@ def search_files(pattern: str, glob: str = "**/*", paths_only: bool = False) -> 
     return body
 
 
+# --------------------------------------------------------------------- FR-501
+#
+# "Perform web search returning ranked results with titles and URLs."
+#
+# WHY THIS LIVES HERE AND NOT IN agent/web.py. §12 defers `agent/web.py` with the
+# trigger "when FR-501/502 enter scope", and that trigger has now fired - so the
+# file is PERMITTED. It is not created, because §12 bounds what may exist rather
+# than mandating it, and creating it would cost a Definition-of-Done item:
+# NFR-601 asks that adding a tool require editing exactly one file, and a new
+# module means editing `registry.toolset()` as well. One decorated function in the
+# file that already holds six is one file. If FR-502/503/504 are ever built here
+# rather than through MCP, the trigger is still there and the arithmetic flips.
+#
+# WHAT IS RETURNED, and the clause that decides it: titles and URLs, plus a short
+# snippet, and NEVER page bodies. `fetch` already exists for the body, and
+# returning both double-charges context for the same information - the same
+# reasoning that made search_files return `path:line:` instead of file contents.
+#
+# THE ENGINE FAN-OUT IS LOAD-BEARING, and the first version got it backwards.
+#
+# It was written with backend="duckduckgo" pinned, so that a case could declare
+# ONE host in its egress allowlist and have that be the whole truth - `auto` fans
+# out across eight engines, and an allowlist naming one host while the library
+# dials eight is the shape of defect AGENT_EGRESS already produced once.
+#
+# The first live run refuted it. html.duckduckgo.com rate-limits hard, and the
+# measurement is specific:
+#
+#     search 1                     ->  5 results
+#     search 2, immediately        ->  "No results found."
+#     +5s, +10s, +15s              ->  still blocked
+#     ~30s of SILENCE              ->  recovered
+#
+# Every attempt re-arms the cooldown, so an in-tool retry makes it strictly worse -
+# which is why there is no retry here. One engine means one search per ~30 seconds,
+# and an agent that searches twice in a row gets an empty second search that reads
+# as "the web has no answer". That is infrastructure failure wearing the costume of
+# a capability limit, and this project has a standing rule against scoring one.
+#
+#     backend="auto", six searches back to back, no pacing:
+#     6 of 6 returned 5 results, 1.5s to 4.7s each.
+#
+# Each engine carries its own limit, so the fan-out absorbs the block with no
+# retry, no sleep and no cooldown state. The honesty property is preserved a
+# different way: WEB_HOSTS names every host the library may dial, a case declares
+# all of them, and the manifest records what was granted. An allowlist that
+# matches what actually happens is the requirement - not a short one.
+WEB_HOSTS = ("html.duckduckgo.com", "search.brave.com", "www.mojeek.com",
+             "www.startpage.com", "search.yahoo.com", "www.google.com",
+             "en.wikipedia.org", "grokipedia.com")
+RESULT_CAP = 10
+SNIPPET_CHARS = 200
+WEB_TIMEOUT = 20        # seconds; the default of 5 is thin through a CONNECT proxy
+
+# ddgs signals "nothing came back" and "the network refused me" with the SAME
+# exception type, and this string is the only thing that separates them. An empty
+# search is not a tool failure - search_files returns a message for no match
+# rather than raising - and raising here would spend a `failures` count toward
+# `stuck` on a query that simply matched nothing.
+_NO_RESULTS = "no results found"
+
+
+@tool(risk="read")
+def web_search(query: str, limit: int = 5) -> str:
+    """Search the web for current information and return ranked results: title,
+    URL and a one-line snippet. Use this when the answer depends on something
+    outside the workspace - documentation, an error message, a library's current
+    API. It returns links, NOT page contents: call fetch on a URL from these
+    results when you need to read the page itself.
+
+    query: What to search for, phrased as you would type it into a search engine.
+    limit: How many results to return. Default 5, maximum 10.
+    """
+    # Imported here rather than at module scope so this file stays importable
+    # without ddgs - the same property that keeps the offline suite green with the
+    # `mcp` package absent. It also costs a Rust extension load that a run never
+    # touching the web should not pay.
+    from ddgs import DDGS
+    from ddgs.exceptions import DDGSException
+
+    query = " ".join(str(query).split())
+    if not query:
+        raise ValueError("web_search needs a query. Pass what you would type into "
+                         "a search engine, e.g. query='fastapi APIRouter post'.")
+    count = max(1, min(_int(limit, 5), RESULT_CAP))
+
+    # The proxy is passed EXPLICITLY, and that is not belt-and-braces. The openai
+    # SDK picks up HTTPS_PROXY on its own because httpx runs trust_env=True; ddgs
+    # goes through primp, a Rust client that makes no such promise. Under a scored
+    # run the container has no other route off the machine, so an ignored proxy is
+    # not a degraded search - it is every search failing. Measured, not assumed.
+    try:
+        rows = DDGS(proxy=os.environ.get("HTTPS_PROXY"), timeout=WEB_TIMEOUT).text(
+            query, max_results=count)
+    except DDGSException as exc:
+        if _NO_RESULTS not in str(exc).lower():
+            # A real transport failure. The cause is NOT asserted: under a scored
+            # run a missing allowlist entry and a provider refusing the connection
+            # are indistinguishable from here, and a message that names the wrong
+            # one sends the agent to fix something that was never broken.
+            raise RuntimeError(
+                f"web search failed for {query!r}: {exc}. The search engines were "
+                f"unreachable - egress is restricted to an allowlist, and it may "
+                f"not carry them.") from exc
+        rows = []
+
+    if not rows:
+        return (f"no results for {query!r}. Try fewer or more common words - this "
+                f"searches the live web, so an exact phrase with no matches "
+                f"returns nothing.")
+
+    out = []
+    for rank, row in enumerate(rows[:count], 1):
+        snippet = " ".join((row.get("body") or "").split())[:SNIPPET_CHARS]
+        out.append(f"{rank}. {row.get('title') or '(untitled)'}\n"
+                   f"   {row.get('href') or ''}"
+                   + (f"\n   {snippet}" if snippet else ""))
+    return "\n".join(out)
+
+
 # FR-207: the schema is DERIVED from the signature and docstring above, so this
 # is the whole registration. What used to sit here was ~150 lines of dicts whose
 # text had to be kept in step with six functions by hand.
@@ -408,7 +530,22 @@ def search_files(pattern: str, glob: str = "**/*", paths_only: bool = False) -> 
 # not being hit at all today. The ordering costs nothing and pays off the day the
 # provider changes.)
 TOOLS = {fn.__name__: fn.spec for fn in (
-    read_file, search_files, write_file, edit_file, run_python, run_shell)}
+    read_file, search_files, write_file, edit_file, run_python, run_shell,
+    web_search)}
+
+
+def builtins() -> dict:
+    """The built-ins exposed for THIS run - the same shape as memory.tools().
+
+    web_search is dropped when AGENT_WEB is off, and that switch is what makes
+    Stage 4's control run a controlled comparison rather than two numbers measured
+    on different binaries. Gated here rather than by rebuilding TOOLS at import,
+    so `policy.sync()` can still classify the tool and a test can flip the flag
+    without reloading the module.
+    """
+    if config.WEB_ENABLED:
+        return TOOLS
+    return {name: entry for name, entry in TOOLS.items() if name != "web_search"}
 
 SCHEMAS = [entry["schema"] for entry in TOOLS.values()]
 

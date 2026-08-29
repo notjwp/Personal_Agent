@@ -2007,7 +2007,12 @@ def test_the_generated_schemas_are_byte_identical_to_the_hand_written_ones():
     from agent.tools import TOOLS
 
     generated = {name: entry["schema"] for name, entry in TOOLS.items()}
-    assert set(generated) == set(HAND_WRITTEN_SCHEMAS)
+    # A SUBSET, not equality, and the difference is the contract: this pins that
+    # the six schemas that WERE hand-written did not drift through the conversion,
+    # and that none of them vanished. A tool added later - web_search (FR-501) was
+    # never hand-written - is not drift, and an equality here would turn every new
+    # tool into a failure in a test about something else.
+    assert set(HAND_WRITTEN_SCHEMAS) <= set(generated), "a converted tool disappeared"
     for name, expected in HAND_WRITTEN_SCHEMAS.items():
         assert generated[name] == expected, f"{name} drifted from its hand-written schema"
 
@@ -2238,3 +2243,246 @@ def test_a_missing_prompt_file_fails_loudly(tmp_workspace, monkeypatch):
     with pytest.raises(OSError):
         g.plan(planning(messages=[{"role": "user", "content": "fix it"}]),
                {"configurable": {}})
+
+
+
+# ===================================================== FR-501: web_search
+#
+# "Perform web search returning ranked results with titles and URLs."
+#
+# Every test here runs with NO network: `ddgs` is replaced in sys.modules, which
+# works because web_search imports it inside the function rather than at module
+# scope. The one exception is the engine-coverage test, which asks the real
+# library what it would dial and is skipped when it is absent.
+
+import sys
+import types
+
+
+class _StubDDGSException(Exception):
+    pass
+
+
+def _install_ddgs(monkeypatch, *, rows=None, error=None, seen=None):
+    """Stand in for `ddgs`, recording how it was called.
+
+    `seen` collects the keyword arguments, which is how the proxy and the ABSENT
+    backend pin are asserted - both are properties of the CALL, not of the result.
+    """
+    class _StubDDGS:
+        def __init__(self, proxy=None, timeout=None, **kwargs):
+            self.proxy, self.timeout = proxy, timeout
+
+        def text(self, query, **kwargs):
+            if seen is not None:
+                seen.append({"query": query, "proxy": self.proxy,
+                             "timeout": self.timeout, **kwargs})
+            if error is not None:
+                raise _StubDDGSException(error)
+            return list(rows or [])
+
+    module = types.ModuleType("ddgs")
+    module.DDGS = _StubDDGS
+    exceptions = types.ModuleType("ddgs.exceptions")
+    exceptions.DDGSException = _StubDDGSException
+    module.exceptions = exceptions
+    monkeypatch.setitem(sys.modules, "ddgs", module)
+    monkeypatch.setitem(sys.modules, "ddgs.exceptions", exceptions)
+
+
+def _rows(n=3):
+    return [{"title": f"Result {i}", "href": f"https://example.com/{i}",
+             "body": f"snippet {i}"} for i in range(1, n + 1)]
+
+
+def test_web_search_is_exposed_and_read_only():
+    """The lesson `run_python` paid for: a tool with no live registration is a
+    function, not a capability. It was green with five tests and a TOOLS entry
+    the model never saw."""
+    from agent import registry
+    from agent.policy import classify, sync
+    from agent.tools import TOOLS, web_search
+
+    assert "web_search" in TOOLS
+    assert "web_search" in registry.toolset()
+    assert TOOLS["web_search"]["risk"] == "read"
+    sync()
+    assert classify("web_search", {"query": "x"}, autonomous=True)[0] == "auto"
+    assert classify("web_search", {"query": "x"}, False, planning=True)[0] == "auto"
+    assert web_search.spec["schema"]["input_schema"]["required"] == ["query"]
+
+
+def test_web_search_returns_ranked_titles_and_urls(monkeypatch):
+    """FR-501's three nouns, checked as three nouns: RANKED, TITLES, URLS."""
+    from agent.tools import web_search
+
+    _install_ddgs(monkeypatch, rows=_rows(3))
+    out = web_search("anything")
+
+    assert out.startswith("1. Result 1")
+    assert "2. Result 2" in out and "3. Result 3" in out
+    for i in (1, 2, 3):
+        assert f"https://example.com/{i}" in out
+
+
+def test_web_search_returns_snippets_not_page_bodies(monkeypatch):
+    """`fetch` exists for the body. Returning both double-charges context for the
+    same information, which is the reasoning that shaped search_files too."""
+    from agent.tools import SNIPPET_CHARS, web_search
+
+    _install_ddgs(monkeypatch, rows=[
+        {"title": "T", "href": "https://example.com", "body": "x" * 5_000}])
+    out = web_search("anything")
+
+    assert "x" * SNIPPET_CHARS in out
+    assert "x" * (SNIPPET_CHARS + 1) not in out
+    assert len(out) < SNIPPET_CHARS + 200
+
+
+def test_web_search_collapses_whitespace_in_a_snippet(monkeypatch):
+    """A snippet arrives with the source page's newlines in it. Left alone they
+    break the one-result-per-block shape the ranking depends on."""
+    from agent.tools import web_search
+
+    _install_ddgs(monkeypatch, rows=[
+        {"title": "T", "href": "https://e.com", "body": "one\n\ntwo   three"}])
+
+    assert "one two three" in web_search("q")
+
+
+def test_web_search_coerces_and_bounds_the_limit(monkeypatch):
+    """A declared JSON schema is a hint, not enforcement - `"limit": "3"` is
+    routinely emitted, and an uncoerced one crashed every read_file call in the
+    first live session."""
+    from agent.tools import RESULT_CAP, web_search
+
+    seen = []
+    _install_ddgs(monkeypatch, rows=_rows(10), seen=seen)
+
+    web_search("q", limit="3")
+    assert seen[-1]["max_results"] == 3
+
+    web_search("q", limit="not a number")
+    assert seen[-1]["max_results"] == 5           # the declared default
+
+    web_search("q", limit=999)
+    assert seen[-1]["max_results"] == RESULT_CAP
+
+    web_search("q", limit=0)
+    assert seen[-1]["max_results"] == 1
+
+
+def test_web_search_passes_the_proxy_explicitly(monkeypatch):
+    """The openai SDK picks up HTTPS_PROXY on its own because httpx runs
+    trust_env=True. ddgs goes through primp, a Rust client that makes no such
+    promise - and under a scored run the container has NO other route off the
+    machine, so an ignored proxy is every search failing, not a slower one."""
+    from agent.tools import web_search
+
+    seen = []
+    _install_ddgs(monkeypatch, rows=_rows(1), seen=seen)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:8888")
+
+    web_search("q")
+    assert seen[-1]["proxy"] == "http://proxy:8888"
+
+    monkeypatch.delenv("HTTPS_PROXY")
+    web_search("q")
+    assert seen[-1]["proxy"] is None              # no proxy set is not an error
+
+
+def test_the_engine_fan_out_is_not_pinned(monkeypatch):
+    """THE REGRESSION GUARD FOR THE MEASURED RATE LIMIT.
+
+    The first version pinned backend="duckduckgo" so a case could declare one
+    egress host. Measured: that endpoint returns 5 results, then blocks, and every
+    retry re-arms a ~30s cooldown - so consecutive searches come back empty and
+    read as "the web has no answer". With the default fan-out, six back-to-back
+    searches all returned 5 results. Re-pinning it would look like a tidy-up and
+    would silently restore the block.
+    """
+    from agent.tools import web_search
+
+    seen = []
+    _install_ddgs(monkeypatch, rows=_rows(1), seen=seen)
+    web_search("q")
+
+    assert "backend" not in seen[-1], "a pinned backend reintroduces the rate limit"
+
+
+def test_web_hosts_covers_every_engine_the_library_would_dial():
+    """The AGENT_EGRESS defect class, caught before it can happen again: a row
+    claiming an allowlist that does not match what the code actually contacts.
+    If ddgs ships a ninth text engine, this fails and the fixture cases' declared
+    egress gets updated with it."""
+    pytest.importorskip("ddgs")
+    from urllib.parse import urlparse
+
+    from ddgs.engines import ENGINES
+
+    from agent.tools import WEB_HOSTS
+
+    dialled = set()
+    for engine in ENGINES["text"].values():
+        host = urlparse(getattr(engine, "search_url", "")).netloc
+        # wikipedia's URL is templated per language; en is the one us-en reaches.
+        dialled.add(host.replace("{lang}", "en"))
+
+    assert dialled - set(WEB_HOSTS) == set(), (
+        f"ddgs dials hosts no case declares: {sorted(dialled - set(WEB_HOSTS))}")
+
+
+def test_an_empty_result_is_not_a_tool_failure(monkeypatch):
+    """ddgs signals "nothing matched" and "the network refused me" with the SAME
+    exception type. Raising on the first would spend a `failures` count toward
+    `stuck` on a query that simply matched nothing - search_files returns a
+    message here rather than raising, and so does this."""
+    from agent.tools import web_search
+
+    _install_ddgs(monkeypatch, error="No results found.")
+    out = web_search("zzqxwvy nonexistent")
+
+    assert "no results" in out.lower()
+    assert "zzqxwvy nonexistent" in out
+
+
+def test_a_transport_failure_raises_without_asserting_a_cause(monkeypatch):
+    """Tools RAISE on failure (FR-208). But the message must not name a cause it
+    cannot know: from inside the container a missing allowlist entry and an engine
+    refusing the connection are indistinguishable, and the first version asserted
+    the allowlist - which would send the agent to fix something never broken."""
+    from agent.tools import web_search
+
+    _install_ddgs(monkeypatch, error="RequestError: connection refused")
+
+    with pytest.raises(RuntimeError) as caught:
+        web_search("q")
+    assert "unreachable" in str(caught.value)
+    assert "may not" in str(caught.value)
+
+
+def test_an_empty_query_is_refused(monkeypatch):
+    from agent.tools import web_search
+
+    _install_ddgs(monkeypatch, rows=_rows(1))
+    for empty in ("", "   ", "\n\t"):
+        with pytest.raises(ValueError, match="needs a query"):
+            web_search(empty)
+
+
+def test_a_result_stays_well_inside_the_output_cap(monkeypatch):
+    """NFR-104 caps a tool result at ~2,000 tokens. Ten results with full-length
+    snippets is the worst case this tool can produce."""
+    from agent.tools import RESULT_CAP, web_search
+
+    _install_ddgs(monkeypatch, rows=[
+        {"title": "T" * 90, "href": "https://example.com/" + "p" * 60,
+         "body": "b" * 900} for _ in range(RESULT_CAP)])
+
+    assert len(web_search("q", limit=RESULT_CAP)) < 4_000
+
+
+def test_the_schema_budget_still_holds_with_web_search():
+    from agent import config, registry
+
+    assert registry.check_budget() <= config.MAX_SCHEMA_CHARS

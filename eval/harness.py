@@ -78,6 +78,10 @@ FORWARDED_ENV = (
     # Phase N's. Same reason again: the comparison is only controlled because the
     # same binary can be run with skills off.
     "AGENT_SKILLS",
+    # Stage 4's. Same reason, and the same lesson applied one stage later: the
+    # control run for web search is only a control because the SAME binary can be
+    # run with the tool removed.
+    "AGENT_WEB",
     # Stage 7's. It was MISSING, which meant the planning kill switch could not be
     # exercised by the harness at all: with PLAN_ENABLED defaulting to off, a
     # scored run had no way to turn planning ON. Every kill switch has to be
@@ -1316,6 +1320,12 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # Which tools were exposed, so a row can never be compared against one
         # measured with a different set.
         "mcp": exposure.get("mcp", []),
+        # The WHOLE exposed set, not just MCP's part of it. Added in Stage 4 for
+        # the reason AGENT_EGRESS was: a control run and a treatment run differed
+        # only by `schema_chars` on the row, so the one condition the comparison
+        # turns on - which tools the model could see - was not written down
+        # anywhere a later reader could check it.
+        "tools": exposure.get("tools", []),
         # Non-zero means the agent tried to write outside the workspace (NFR-201).
         "write_violations": len(violations),
         # Where, not just how many: /usr is confusion, /app/eval/fixtures is the
