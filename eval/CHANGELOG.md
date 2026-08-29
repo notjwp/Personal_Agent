@@ -3358,3 +3358,105 @@ a37305ee   done               done      Fix the failing tests.
 
 **FR-605/606/607 stay deferred** — cron, attach/detach and a worker cap are all `[S]`, and §9
 puts `[S]` behind the `[M]` set. **FR-703's other half closes here**: "list threads *and* tasks".
+
+---
+
+## Stage 7 — The plan node, and the cycle that actually moved the number
+
+Two cycles, measured separately. The first satisfied three requirements and moved nothing;
+the second moved **1/3 → 5/6** and cost less.
+
+### Cycle A — a plan node with a message list of its own
+
+**Hypothesis.** Nine scored runs across three earlier cycles never produced a plan because
+planning was built as a PHASE, and a phase inherits the tool-call history — which on this
+provider keeps producing tool calls whether or not a tool is offered. A node with a FRESH
+context would not.
+
+**Verified before building, ~3k tokens.** The converse was already measured (history →
+tool calls, even with `tools` absent). This was the half that had not been: a clean history
+returned `finish_reason: stop` with three parseable steps.
+
+**Change.** `plan`, a second model-calling node, called with `[{"role": "user", "content":
+goal + digest}]` and nothing else. The digest is free — `_outcomes()` already pairs every
+call with whether it succeeded, so files read, commands that worked and errors hit come out
+of state with no second model call. `adopt` stops parsing and becomes approval only.
+
+`plan` and `adopt` stay separate and **CE-04 does not apply**: `adopt` suspends on
+`interrupt()` and re-runs from its first line on resume, so merging them would spend a model
+call on every resumed approval. That is CE-07's rule applied to the node that calls a model.
+
+**Before / after.**
+
+| | pass | verdicts | turns | fell back | tokens |
+|---|---|---|---|---|---|
+| phase (3 earlier cycles) | 1/3 → 3/3 → 2/3 | — | — | **True, 9/9** | — |
+| plan node | **1/3** | stuck ×3 | 12/12/12, all at cap | **False, 3/3** | 82,435 |
+
+**Kept.** FR-101, FR-105 and FR-702 are satisfied — a real plan, every run. **And the pass
+rate did not move at all.** Recorded as such rather than dressed up.
+
+### Cycle B — research can run the test suite
+
+**Hypothesis, from cycle A's traces.** Turn 1 of every planning run is `pytest -q`, the
+read-only gate refuses it, and the agent then spends its remaining research turns GUESSING
+which file is broken from `find` and `read_file`. It is planning a fix for a failure it has
+never observed. `plan_denied` recorded `pytest -q` in **all twelve** planning runs ever.
+
+**Change.** `pytest` and `python -m pytest` join the read-only allowlist. Bare `python`
+stays denied — `python setup.py build` is a build, not a read — and redirects and chains are
+still refused (`pytest -q > out.txt` and `pytest -q && rm -rf build` both deny, tested).
+
+**Before / after.**
+
+```
+planning, blind        1/3   stuck x3   turns 12/12/12 (all at cap)   82,435   denied ['pytest -q']
+research runs pytest   3/3   done  x3   turns  7/ 7/ 3               72,094   denied []
+repeat                 2/3   done  x2   turns  8/ 4/10               93,322   denied []
+```
+
+**5/6 combined, up from 1/3, and causal rather than lucky.** Plans dropped from 5–6 steps
+with redundant re-reads to 3 tight ones, and runs stopped dying at the cap. **Kept.**
+
+**NOT reported as 3/3.** The first n=3 gave it; the repeat gave 2/3. Banking the better of
+two identical runs is the error this project has already retracted twice, and it is why the
+repeat was run at all.
+
+**The residual risk, stated rather than waved away:** a test suite executes project code and
+could in principle write. Accepted — the planning gate exists to prevent unapproved EDITS,
+and running the suite is not an edit. The agent runs it in the working phase regardless.
+
+### Why the sixth run failed, and neither half is about planning
+
+```
+6  edit_file  app/routes/items.py   <- registered GET; the test needs POST (assert 405 == 201)
+7  read_file  app/routes/items.py
+8  read_file  app/routes/items.py   <- thrash detector fires
+9  read_file  app/routes/items.py      stuck at turn 4 of 12
+```
+
+The plan was correct. The agent wrote the wrong HTTP method, then spun re-reading its own
+edit and was killed with 8 turns still available. **Two candidate cycles, neither taken:**
+the thrash detector counts three identical READS as thrash, though a read is idempotent and
+the harmful signal is a repeated write; and `edit_file` returns `"edited X (replaced N
+chars)"` without showing the result, which is plausibly *why* it re-read three times.
+
+### Default stays off, for a new reason
+
+It used to be "the plan is never written". That is fixed. It is off because **NFR-402 is
+still breached at 72–93k against 60,000** — research spends 5 turns before work begins. On
+by default would trade a requirement nobody can see for a cost ceiling everybody measures.
+
+### Two defects this found in the rig, not the agent
+
+- **`AGENT_PLAN` was not in `FORWARDED_ENV`.** With `PLAN_ENABLED` defaulting to off, a
+  scored run had no way to turn planning ON. Every kill switch has to be reachable from
+  there or the controlled comparison it exists for cannot be run.
+- **The node read `prompts/STEPS.md` inside the `try`.** The file did not exist on the first
+  run, the `FileNotFoundError` was swallowed as a provider error, and the node fell back to
+  the goal on every call — looking exactly like the bug the stage was built to fix. Prompts
+  are version-controlled files (NFR-603); a missing one now fails loudly, with a test.
+
+**441 offline tests.** Today's scored spend **790,732 tokens, 72%** of the measured
+free-tier ceiling — stopped there rather than pushing into the throttle, where ~2 of 3
+requests are rejected and a run completes with probability under 1%.
