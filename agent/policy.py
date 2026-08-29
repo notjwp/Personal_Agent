@@ -95,6 +95,24 @@ _READ_ONLY_VERB = re.compile(
     r"ls|cat|head|tail|find|grep|rg|wc|tree|file|stat|nl|du|basename|dirname"
     r"|sed\s+-n"                       # -n prints; without it sed WRITES
     r"|git\s+(status|log|diff|show|ls-files|branch)"
+    # RUNNING THE TEST SUITE IS RESEARCH, and refusing it was the single largest
+    # defect in the planning phase. Measured over TWELVE planning runs - nine in
+    # the earlier cycles, three today - `plan_denied` recorded `pytest -q` in
+    # every one. The trace shows why it matters: turn 1 is always `pytest -q`,
+    # it is refused, and the agent then spends its remaining research turns
+    # GUESSING which file is broken from `find` and `read_file`. It plans a fix
+    # for a failure it has never observed.
+    #
+    # The residual risk, stated rather than waved away: a test suite executes
+    # project code and could in principle write. Accepted, because the planning
+    # gate exists to prevent unapproved EDITS - and running the suite is not an
+    # edit, it is the thing the agent is being asked to make pass. It will run it
+    # in the working phase regardless.
+    #
+    # `python -m pytest` is spelled out because bare `python` stays denied:
+    # `python setup.py build` is a build, not a read.
+    r"|python\s+-m\s+pytest"
+    r"|pytest"
     r")\b")
 
 # Checked BEFORE splitting on the pipe, because `||` contains one. A redirect is

@@ -1060,10 +1060,12 @@ def test_adopt_falls_back_to_the_goal_when_nothing_parses():
 
 def test_adopt_is_silent_in_autonomous_mode():
     """No interrupt at all, or the harness could never run unattended. This is
-    the 'one switch apart' the whole phase rests on."""
-    s = planning(messages=[{"role": "user", "content": "fix it"},
-                           {"role": "assistant", "content": [
-                               {"type": "text", "text": "1. read it\n2. fix it"}]}])
+    the 'one switch apart' the whole phase rests on.
+
+    adopt now APPROVES rather than parses: the plan node wrote it, and the model
+    call lives there so a resumed approval does not pay for it twice (CE-07).
+    """
+    s = planning(plan=["read it", "fix it"])
     out = adopt(s, {"configurable": {"autonomous": True}})
     assert out == {"phase": "working", "plan": ["read it", "fix it"], "cursor": 0}
 
@@ -1099,32 +1101,108 @@ def test_a_planner_that_ignores_the_demand_is_still_stopped():
     assert reflect(s)["verdict"] == "planned"
 
 
-def test_act_demands_the_plan_once_research_is_spent(tmp_workspace, monkeypatch):
-    seen = use_fake(monkeypatch, [text_turn("1. do the thing")])
-    act(planning(plan_turns=config.PLAN_MAX_TURNS), {"configurable": {}})
-    assert "No research turns left" in seen[0]["system"]
+def test_act_always_offers_tools_now(tmp_workspace, monkeypatch):
+    """Two cycles tried to make `act` produce the plan - first by instruction,
+    then by withholding the schemas - and the model called a tool both times.
+    Neither trick remains; `act` only ever does research or work, and the plan
+    node writes the plan with a message list of its own."""
+    for s in (planning(plan_turns=0), planning(plan_turns=config.PLAN_MAX_TURNS),
+              working(["a"])):
+        seen = use_fake(monkeypatch, [text_turn("x")])
+        act(s, {"configurable": {}})
+        assert seen[0]["tools"], "act always offers tools"
+        assert "No research turns left" not in seen[0]["system"]
 
-    seen = use_fake(monkeypatch, [text_turn("1. do the thing")])
-    act(planning(plan_turns=0), {"configurable": {}})
-    assert "No research turns left" not in seen[0]["system"]
+
+# --- the plan node, which is what Stage 7 actually is -----------------------
+
+def test_the_plan_node_is_called_with_NO_tool_history(tmp_workspace, monkeypatch):
+    """THE point of the stage. Nine scored runs failed because a phase inherits
+    the message list, and on this provider a tool-call history keeps producing
+    tool calls whether or not a tool is offered - proven with `tools` absent from
+    the payload entirely. A fresh list was measured to return text."""
+    from agent.graph import plan as plan_node
+
+    seen = use_fake(monkeypatch, [text_turn("1. edit a.py\n2. run the suite")])
+    noisy = planning(messages=[
+        {"role": "user", "content": "fix a.py"},
+        assistant_calls(call("read_file", path="a.py")),
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                      "content": "x = 1"}]}])
+
+    out = plan_node(noisy, {"configurable": {}})
+
+    sent = seen[0]["messages"]
+    assert len(sent) == 1 and sent[0]["role"] == "user", "one user message, no history"
+    assert seen[0]["tools"] == [], "and no schemas either"
+    assert out["plan"] == ["edit a.py", "run the suite"]
 
 
-def test_the_last_planning_turn_is_sent_with_no_tools(tmp_workspace, monkeypatch):
-    """The instruction alone did not hold. Told in the prompt that it had no
-    research turns left and must call no tools, the model called one anyway on
-    all three runs - so the plan was never written and adopt fell back to the
-    goal every time. Removing the schemas removes the option."""
-    seen = use_fake(monkeypatch, [text_turn("1. do the thing")])
-    act(planning(plan_turns=config.PLAN_MAX_TURNS), {"configurable": {}})
-    assert seen[0]["tools"] == []
+def test_the_plan_node_is_given_a_digest_rather_than_a_transcript(
+        tmp_workspace, monkeypatch):
+    """Facts, not a conversation. Handing it the transcript would hand it the
+    tool-call history, which is the thing being avoided."""
+    from agent.graph import plan as plan_node
 
-    seen = use_fake(monkeypatch, [text_turn("1. do the thing")])
-    act(planning(plan_turns=0), {"configurable": {}})
-    assert seen[0]["tools"], "research turns still need tools"
+    seen = use_fake(monkeypatch, [text_turn("1. do it\n2. check it")])
+    s = planning(messages=[
+        {"role": "user", "content": "fix a.py"},
+        assistant_calls(call("read_file", path="tests/test_x.py")),
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                      "content": "..."}]}])
 
-    seen = use_fake(monkeypatch, [text_turn("done")])
-    act(working(["a"]), {"configurable": {}})
-    assert seen[0]["tools"], "working turns always need tools"
+    plan_node(s, {"configurable": {}})
+
+    sent = seen[0]["messages"][0]["content"]
+    assert "fix a.py" in sent, "the goal"
+    assert "tests/test_x.py" in sent, "and what was read"
+    assert "tool_use" not in sent, "but not the raw blocks"
+
+
+def test_the_plan_node_falls_back_to_the_goal_rather_than_failing(
+        tmp_workspace, monkeypatch):
+    """A badly phrased reply must not block the run - the same rule adopt used to
+    carry, moved to where the text is now produced."""
+    from agent.graph import plan as plan_node
+
+    use_fake(monkeypatch, [text_turn("I will just fix it.")])
+    out = plan_node(planning(messages=[{"role": "user", "content": "fix the import"}]),
+                    {"configurable": {}})
+
+    assert out["plan"] == ["fix the import"]
+
+
+def test_a_failed_plan_call_does_not_lose_the_run(tmp_workspace, monkeypatch):
+    from agent.graph import plan as plan_node
+
+    monkeypatch.setattr("agent.graph.call_model",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("rate limited")))
+    out = plan_node(planning(messages=[{"role": "user", "content": "fix it"}]),
+                    {"configurable": {}})
+
+    assert out["plan"] == ["fix it"], "falls back rather than raising"
+
+
+def test_the_digest_reports_what_worked_and_what_did_not(tmp_workspace):
+    from agent.graph import _digest
+
+    messages = [
+        {"role": "user", "content": "fix it"},
+        assistant_calls(call("read_file", cid="t1", path="core.py"),
+                        call("run_shell", cid="t2", command="ls -la")),
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+            {"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]},
+        assistant_calls(call("run_shell", cid="t3", command="pytest -q")),
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t3", "content": "boom",
+             "is_error": True}]}]
+
+    digest = _digest(messages)
+
+    assert "core.py" in digest
+    assert "ls -la" in digest
+    assert "did not work" in digest and "pytest -q" not in digest.split("did not work")[0]
 
 
 def test_reflect_keeps_researching_below_the_cap():
@@ -1215,7 +1293,8 @@ def test_a_run_plans_first_then_works(fresh_app, tmp_workspace, monkeypatch):
     calls = spy_on_run_shell(monkeypatch)
     seen = use_fake(monkeypatch, [
         tool_turn("read_file", path="a.py"),              # research
-        text_turn("1. edit a.py\n2. run the suite"),      # the plan
+        text_turn("finished looking"),                    # research ends
+        text_turn("1. edit a.py\n2. run the suite"),      # the PLAN NODE's own call
         tool_turn("run_shell", cid="t2", command="pytest -q"),
         text_turn("step one done"),                       # advances the cursor
         tool_turn("run_shell", cid="t3", command="pytest -q"),
@@ -1237,8 +1316,9 @@ def test_a_run_plans_first_then_works(fresh_app, tmp_workspace, monkeypatch):
     assert calls == [{"command": "pytest -q"}] * 2
     # The planning instruction reached the model on the first call and not after.
     assert "You are planning, not working" in seen[0]["system"]
-    assert "You are planning, not working" not in seen[2]["system"]
-    assert "## Your plan" in seen[2]["system"]
+    # seen[2] is the PLAN NODE: its own message list, no history, no schemas.
+    assert len(seen[2]["messages"]) == 1 and seen[2]["tools"] == []
+    assert "## Your plan" in seen[3]["system"], "and then work resumes with it"
 
 
 def test_plan_off_restores_the_previous_agent(fresh_app, tmp_workspace, monkeypatch):
@@ -2141,3 +2221,20 @@ def test_a_failed_summariser_does_not_lose_the_run(
     text = json.dumps(out["messages"])
     assert "unavailable" in text and "RuntimeError" in text
     assert pairs_ok(out["messages"])
+
+
+def test_a_missing_prompt_file_fails_loudly(tmp_workspace, monkeypatch):
+    """The bug this test exists for was live for one run: prompts/STEPS.md did
+    not exist, the broad except swallowed the FileNotFoundError, and the node
+    fell back to the goal on every call - looking exactly like the failure Stage
+    7 was built to fix. A missing prompt is a deploy error, not a provider one.
+    """
+    import agent.graph as g
+    from pathlib import Path
+
+    monkeypatch.setattr(g, "STEPS", Path("/nonexistent/STEPS.md"))
+    use_fake(monkeypatch, [text_turn("1. do it\n2. check it")])
+
+    with pytest.raises(OSError):
+        g.plan(planning(messages=[{"role": "user", "content": "fix it"}]),
+               {"configurable": {}})

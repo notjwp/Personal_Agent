@@ -35,6 +35,7 @@ from agent.tools import toolset
 SOUL = Path(__file__).resolve().parent.parent / "prompts" / "SOUL.md"
 PLAN = Path(__file__).resolve().parent.parent / "prompts" / "PLAN.md"
 COMPACT_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "COMPACT.md"
+STEPS = Path(__file__).resolve().parent.parent / "prompts" / "STEPS.md"
 
 # A numbered or bulleted line from the planner's reply. Deterministic parsing, so
 # adopting a plan needs no second model call.
@@ -138,17 +139,11 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
     # into the message list, which "pollutes history and creates gaps" - the same
     # placement memory and skills already use.
     if state.get("phase") == "planning":
+        # Research only. The plan itself is written by the `plan` node, which gets
+        # a message list of its own - two earlier cycles tried to extract it from
+        # THIS conversation and could not, because a tool-call history keeps
+        # producing tool calls on this provider whether or not a tool is offered.
         system = f"{system}\n\n{PLAN.read_text(encoding='utf-8')}"
-        if state.get("plan_turns", 0) >= settings.PLAN_MAX_TURNS:
-            # Out of research turns. ASK for the plan rather than going straight
-            # to adopt: measured, not anticipated - the first version treated the
-            # cap as an exit, so the last message was a tool result, there was no
-            # plan text to parse, and the goal-as-one-step fallback fired on all
-            # three runs. The mechanism has to produce a plan before a pass rate
-            # can say anything about it.
-            system = (f"{system}\n\n## No research turns left\n\n"
-                      f"You have used all {settings.PLAN_MAX_TURNS} research turns. "
-                      f"Write the plan NOW, as numbered steps, and call no tools.")
     elif state.get("plan"):
         plan, cursor = state["plan"], min(state.get("cursor", 0), len(state["plan"]) - 1)
         # The WHOLE plan, not just the current step. It costs about 70 tokens a
@@ -188,17 +183,9 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
 
     # Rebuilt per turn rather than bound at import: which tools exist depends on
     # what activated for THIS run, and CE-05 forbids deciding that at import.
-    # The final planning turn goes out with NO TOOL SCHEMAS. Measured twice: told
-    # in the system prompt that it had no research turns left and must call no
-    # tools, the model called one anyway - on all three runs - so the plan was
-    # never written and `adopt` fell back to the goal every time. An instruction
-    # the model can ignore becomes an absence it cannot: it will not call what it
-    # cannot see. This is what makes FR-101 true rather than nominally present.
-    tools = ([] if state.get("phase") == "planning"
-             and state.get("plan_turns", 0) >= settings.PLAN_MAX_TURNS
-             else registry.schemas())
     started = time.monotonic()
-    reply = call_model(state["messages"], system, tools, cfg.get("on_text"))
+    reply = call_model(state["messages"], system, registry.schemas(),
+                       cfg.get("on_text"))
     elapsed = time.monotonic() - started
 
     trace = cfg.get("trace")
@@ -412,22 +399,89 @@ def compact(state: AgentState, config: RunnableConfig) -> dict:
             "verdict": None}
 
 
-def adopt(state: AgentState, config: RunnableConfig) -> dict:
-    """Capture the plan, and interactively put it in front of a human (UR-02, UR-05).
+def _digest(messages: list[dict]) -> str:
+    """What the research turns found, as facts rather than as a conversation.
 
-    NO SIDE EFFECTS. This node suspends on interrupt() and re-executes from its
-    first line on resume - CE-07's rule, which applies to EVERY node upstream of
-    a suspension point and not only to gate. It parses and it asks. It does not
-    log, count, or write.
+    Built from `_outcomes()`, which already pairs every tool call with whether it
+    succeeded - so this needs no model call of its own and stays deterministic.
 
-    Deterministic: the steps are parsed out of text the model already produced, so
-    this adds no model call and the ratio section 3 calls the system's most
-    important design property is untouched. Section 3 draws PLAN as a node that
-    calls a model; CE-04 says two nodes that never branch apart are one node, and
-    planning differs from working only in the prompt, the gate and reflect's exit.
-    Section 13 governs the code shape where the two disagree.
+    It is deliberately NOT the message list. Handing the plan node a transcript
+    would hand it the tool-call history, and that history is the entire reason
+    two earlier cycles never produced a plan.
     """
-    steps = _steps(_final_text(state["messages"])) or [_goal(state["messages"])]
+    outcomes = _outcomes(messages)
+    read = sorted({c["input"]["path"] for c, ok in outcomes
+                   if ok and c["name"] in ("read_file", "search_files")
+                   and isinstance(c["input"].get("path"), str)})
+    worked = [c["input"]["command"] for c, ok in outcomes
+              if ok and c["name"] == "run_shell"
+              and isinstance(c["input"].get("command"), str)]
+    failed = [f"{c['name']}({str(c['input'])[:60]})" for c, ok in outcomes if not ok]
+
+    lines = []
+    if read:
+        lines.append("  read: " + ", ".join(read[:12]))
+    if worked:
+        lines.append("  ran (worked): " + "; ".join(worked[-6:]))
+    if failed:
+        lines.append("  did not work: " + "; ".join(failed[-4:]))
+    return ("Already gathered:\n" + "\n".join(lines)) if lines else ""
+
+
+def plan(state: AgentState, config: RunnableConfig) -> dict:
+    """Write the plan, with a message list of its OWN (FR-101).
+
+    THE SECOND model-calling node, and §3 drew it for exactly this reason. Nine
+    scored runs across three cycles tried to extract a plan from the research
+    conversation and never once got one: on this provider a tool-call history
+    keeps producing tool calls whether or not a tool is offered - proven with
+    `tools` absent from the payload entirely. Neither an instruction nor an
+    absence stops it. A FRESH message list does; that was measured before this
+    was written, and the reply came back finish_reason `stop` with three
+    parseable steps.
+
+    Separate from `adopt` on purpose, and CE-04 does not apply: `adopt` suspends
+    on interrupt() and re-runs from its first line on resume. Merged, every
+    resumed approval would spend another model call - which is CE-07's rule
+    applied to the node that actually calls a model.
+    """
+    goal = _goal(state["messages"])
+    digest = _digest(state["messages"])
+    # Read OUTSIDE the try. A missing prompt file is a deploy error, not a
+    # provider error - and the first version swallowed it as one: `prompts/
+    # STEPS.md` did not exist, every call fell back to the goal, and it looked
+    # EXACTLY like the bug this stage was built to fix. Prompts are
+    # version-controlled files (NFR-603); an absent one must fail loudly.
+    instruction = STEPS.read_text(encoding="utf-8")
+    try:
+        reply = call_model(
+            [{"role": "user", "content": f"{goal}\n\n{digest}".strip()}],
+            instruction, [], None)
+        text = " ".join(b.get("text", "") for b in reply.blocks
+                        if b.get("type") == "text")
+        billed = reply.billed_tokens
+    except Exception:                              # noqa: BLE001 - provider only
+        text, billed = "", 0
+
+    steps = _steps(text) or [goal]
+    trace = config.get("configurable", {}).get("trace")
+    if trace is not None:
+        trace.append({"kind": "plan", "steps": steps, "chars": len(digest),
+                      "fell_back": steps == [goal]})
+    return {"plan": steps,
+            "spent_tokens": state["spent_tokens"] + billed,
+            "verdict": None}
+
+
+def adopt(state: AgentState, config: RunnableConfig) -> dict:
+    """Put the plan in front of a human (UR-02, UR-05).
+
+    NO SIDE EFFECTS, and this is the node the rule was written for: it suspends
+    on interrupt() and re-executes from its first line on resume. It asks, and
+    nothing else. The model call that produced the plan lives in `plan` above
+    precisely so a resumed approval does not pay for it twice.
+    """
+    steps = state.get("plan") or [_goal(state["messages"])]
 
     if config.get("configurable", {}).get("autonomous", True):
         return {"phase": "working", "plan": steps, "cursor": 0}
@@ -624,7 +678,7 @@ def _route_after_reflect(state: AgentState) -> str:
     # compact and replan still have no node and terminate here. `replan` fired
     # ONCE in 712 recorded rows, which is why the plan layer was not built on it.
     if state["verdict"] == "planned":
-        return "adopt"
+        return "plan"
     # FR-403: compaction is no longer where a run goes to die. It summarises and
     # returns to act, which is the whole point of building it.
     if state["verdict"] == "compact":
@@ -687,6 +741,7 @@ def _build() -> StateGraph:
     b.add_node("gate", _timed("gate", gate))
     b.add_node("execute", _timed("execute", execute))
     b.add_node("reflect", _timed("reflect", reflect))
+    b.add_node("plan", _timed("plan", plan))
     b.add_node("adopt", _timed("adopt", adopt))
     b.add_node("compact", _timed("compact", compact))
     b.add_node("finish", _timed("finish", finish))
@@ -696,7 +751,8 @@ def _build() -> StateGraph:
     b.add_edge("gate", "execute")               # CE-07: never merged
     b.add_edge("execute", "reflect")
     b.add_conditional_edges("reflect", _route_after_reflect,
-                            ["act", "adopt", "compact", "finish"])
+                            ["act", "plan", "compact", "finish"])
+    b.add_edge("plan", "adopt")          # write it, THEN ask
     b.add_edge("adopt", "act")
     b.add_edge("compact", "act")
     b.add_edge("finish", END)

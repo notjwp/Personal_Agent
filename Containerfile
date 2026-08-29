@@ -52,6 +52,15 @@ RUN pip install --no-cache-dir "pyyaml==6.0.2"
 # real-rich, alongside its vendored copy of the same names.
 RUN pip install --no-cache-dir "textual==8.0.1" "rich==14.3.3"
 
+# Web search (FR-501). Keyless on purpose: ddgs needs no account and no API key,
+# so a scored run reproduces without a subscription that might lapse. Hermes
+# supports nine providers behind a plugin layer and all but ddgs/searxng need a
+# key - the CHOICE is what was taken from it, not the layer.
+#
+# Baked here for the same reason as everything above: pip.conf below sets
+# no-index, so nothing installs at run time.
+RUN pip install --no-cache-dir "ddgs==9.16.0"
+
 # The `missing-dep` case must be solvable with networking off: stage the wheel
 # but deliberately do NOT install it.
 RUN pip download --no-cache-dir tabulate -d /wheels

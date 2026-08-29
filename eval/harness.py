@@ -78,6 +78,12 @@ FORWARDED_ENV = (
     # Phase N's. Same reason again: the comparison is only controlled because the
     # same binary can be run with skills off.
     "AGENT_SKILLS",
+    # Stage 7's. It was MISSING, which meant the planning kill switch could not be
+    # exercised by the harness at all: with PLAN_ENABLED defaulting to off, a
+    # scored run had no way to turn planning ON. Every kill switch has to be
+    # reachable from here or the controlled comparison it exists for cannot be
+    # run.
+    "AGENT_PLAN",
     # Which library a run was measured against. Set by spawn() for every scored
     # run - the benchmark's skills are FIXTURES describing a fictional project,
     # and they must not be mistaken for this repository's own conventions.

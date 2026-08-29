@@ -149,14 +149,21 @@ MAX_COMPACTIONS = 3
 # phase, no injected instruction, no cursor, and reflect's original
 # made-a-call termination guard.
 #
-# DEFAULT OFF, and measured that way rather than assumed. Across nine scored
-# runs in three cycles the plan was NEVER written: `adopt` fell back to the goal
-# copied verbatim every single time, because this provider keeps emitting tool
-# calls once the history contains them - proven directly, with `tools` absent
-# from the request entirely and finish_reason still `tool_calls`. So FR-101 is
-# not satisfied by what is built, the phase costs ~10% more tokens, and it
-# pushed the median past NFR-402's 60,000. On by default would be a capability
-# claim the runs do not support. See eval/CHANGELOG.md.
+# DEFAULT OFF, and the reason CHANGED once the plan node landed. It used to be
+# "the plan is never written"; that is fixed - a plan node with its own message
+# list produces 3-6 real steps on every run, fell_back False 3/3, so FR-101,
+# FR-105 and FR-702 are satisfied by what is built.
+#
+# It is off because it does not pay. Measured on add-endpoint at n=3:
+#
+#     pass 1/3, unchanged from the baseline
+#     stuck at the 12-turn cap on ALL THREE runs
+#     82,435 median tokens against NFR-402's 60,000 - a 24% breach, and +30%
+#     on the same case without planning
+#
+# Research spends 5 turns before work begins, so a 12-turn case starts its real
+# work with 7. On by default would trade a requirement nobody can see for a cost
+# ceiling everybody measures. See eval/CHANGELOG.md.
 PLAN_ENABLED = os.environ.get("AGENT_PLAN", "off").strip().lower() not in (
     "0", "off", "false")
 

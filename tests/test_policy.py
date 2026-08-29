@@ -140,7 +140,6 @@ def test_planning_allows_looking_around(tmp_workspace, command):
     "cat a.py; touch b.py",
     "grep -rn foo src || pip install foo",
     "python setup.py build",         # not on the list, so refused
-    "pytest -q",                     # runs arbitrary project code
     "sed -i 's/a/b/' x.py",          # sed WRITES without -n
 ])
 def test_planning_refuses_a_shell_command_that_could_write(tmp_workspace, command):
@@ -165,3 +164,28 @@ def test_planning_is_off_by_default(tmp_workspace):
     assert classify("write_file", {"path": "a.py"}, autonomous=False)[0] == "auto"
     assert classify("run_shell", {"command": "pytest -q"},
                     autonomous=False)[0] == "auto"
+
+
+@pytest.mark.parametrize("command", ["pytest -q", "python -m pytest",
+                                     "pytest tests/test_items.py -x"])
+def test_planning_allows_running_the_test_suite(tmp_workspace, command):
+    """Refusing this was the largest defect in the planning phase, measured over
+    TWELVE runs: `plan_denied` recorded `pytest -q` in every one. The trace shows
+    turn 1 is always `pytest -q`, it is refused, and the agent then spends its
+    remaining research turns GUESSING which file is broken. It planned a fix for
+    a failure it had never observed.
+
+    The residual risk is real and accepted: a suite executes project code and
+    could write. The planning gate exists to prevent unapproved EDITS, and
+    running the suite is not an edit - it is the thing being made to pass.
+    """
+    assert classify("run_shell", {"command": command}, autonomous=False,
+                    planning=True)[0] == "auto"
+
+
+def test_allowing_pytest_did_not_open_the_redirect_or_chain_holes(tmp_workspace):
+    """The verb is allowed; the command still passes the rest of the check."""
+    for command in ("pytest -q > out.txt", "pytest -q && rm -rf build",
+                    "pytest -q; touch x", "python setup.py build"):
+        assert classify("run_shell", {"command": command}, autonomous=False,
+                        planning=True)[0] == "deny", command
