@@ -167,26 +167,47 @@ TAIL_LINES = 20
 # --- tools (Phase L) -------------------------------------------------------
 
 # The tool schemas are re-sent on EVERY request, so their size is a per-turn tax
-# on every run, paid whether a tool is used or not. Measured on this project
-# before any of MCP was built:
+# on every run, paid whether a tool is used or not. `cache_read_tokens` is 0 on
+# all 335 scored rows this project has recorded, so nothing here is ever cached:
+# a schema costs its full price once per model call, every call.
 #
-#   4 built-in tools     1,997 chars  ~665 tokens
-#   x 9.1 model calls    ~6,050 tokens per run, against a median run of 26,600
-#                        - so 23% of a run was already tool schema
-#   cache_read_tokens    0 on all 15 rows of the Phase K regression run
+# RAISED 6,000 -> 10,000 on 2026-08-23, and this time the number is DERIVED rather
+# than judged. The 6,000 was sized against NFR-402's 60,000-token CEILING, on the
+# assumption a run would approach it. Runs turned out to cost about half that, so
+# the same cap quietly permitted schemas to dominate - at 6,000 the median run
+# would have been 38,640 tokens, of which 24,000 was tool definitions.
 #
-# That last line is why this cap exists. On a provider that caches prompts the
-# schema is paid once; on this one it is paid every turn, which makes tool breadth
-# the most expensive thing the project can buy. At ~254 chars-per-token-ish rates
-# measured against a real MCP server, 24 exposed tools would add ~61,500 tokens per
-# run and breach NFR-402's 60,000 median ceiling on schema ALONE.
+# Every recorded run replayed with the schema resized (335 rows, median 12 model
+# calls, the project's measured ~3 chars/token):
 #
-# 6,000 chars is ~2,000 tokens/call and ~18,000/run, which leaves the median well
-# inside NFR-402. It is roughly eight tools.
+#      cap   schema/run   median run   vs NFR-402   runs breaching   ~tools
+#    4,075       16,296       26,621          44%              2%         7  <- today
+#    6,000       24,000       38,640          64%             10%        10
+#    8,000       31,992       46,632          78%             27%        13
+#   10,000       39,996       54,636          91%             38%        17  <- here
+#   12,000       48,000       62,640         104%             53%        20
 #
-# If the provider changes, RE-MEASURE before raising this: the number is a
-# consequence of one endpoint's caching behaviour on one day, not a law.
-MAX_SCHEMA_CHARS = 6_000
+# 10,000 is the LARGEST cap at which NFR-402 still holds: the median lands at
+# 54,636 with 9% of margin, and at 12,000 the median itself breaches. That is the
+# whole justification - it is a ceiling, not a preference.
+#
+# TWO THINGS THIS CAP NO LONGER PROMISES, stated because the old one did:
+#
+#   - At FULL usage, 38% of individual runs would exceed 60,000 tokens. NFR-402
+#     bounds the MEDIAN, so that is legal by its own wording, but the cap can no
+#     longer be read as "nothing will breach the cost ceiling".
+#   - Exposing 17 tools is affordable in the sense that the suite would still
+#     pass. It would also spend 40,000 tokens per run on definitions before any
+#     work happens, which is a trade to make deliberately rather than to
+#     discover.
+#
+# The cap is a REFUSAL threshold, not a spend: raising it costs nothing until a
+# tool is actually added. What it changed is how much it still protects.
+#
+# If the provider changes, RE-MEASURE before touching this again. The entire
+# derivation rests on cache_read_tokens being 0; on a caching endpoint the schema
+# is paid once per RUN instead of once per CALL and this line item drops ~90%.
+MAX_SCHEMA_CHARS = 10_000
 
 # MCP servers started for a run, and the risk of every tool they expose.
 #

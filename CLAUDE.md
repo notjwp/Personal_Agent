@@ -1,414 +1,216 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repository.
 
-## Repository state
+**This file is injected into every prompt, so it holds only what changes a decision.** Phase
+narratives, cycle results and the reasoning behind each number live in `eval/CHANGELOG.md` (one
+section per cycle), `ROADMAP.md` (per-phase plans and outcomes) and `README.md` (the numbers
+table). Read those when you need history; do not copy history back into here.
 
-Phases A-E and K-N are built. What exists: the measurement rig, the
-`act -> gate -> execute -> reflect` loop, a two-provider model adapter, the interactive CLI with
-approval and resume, kernel-enforced sandboxing, and a committed baseline.
+## State
 
-- **Baseline: 14/15**, 3 runs per dev case, 0 blocked, on `nvidia/nemotron-3-super-120b-a12b`.
-  Per-case table in `README.md`; conditions and trust checks in `eval/CHANGELOG.md`.
-- **247 unit tests**, green with no API key, no network, a read-only root filesystem, and
-  without the `mcp` package installed.
-- **The model was the constraint, not the loop.** An earlier baseline of 4/15 on
-  `llama-3.1-70b` was diagnosed as loop defects - 9 of 15 runs never called `read_file`, all 15
-  ended `done` (11 wrongly), 5 rewrote their own tests. **All three vanished on a stronger model
-  from the same free key.** One tuning cycle was spent and reverted before that was tried. When a
-  number looks structurally wrong here, **probe a different model before tuning the loop** - 102 are
-  available on the existing key.
-- Still deferred: compaction, plan node, memory, web, worker. Real repositories produce
-  `compact 14, done 9, stuck 7`, which looks like it earns compaction — **it does not**. A budget
-  experiment tested exactly that and refuted it: given 1M tokens the agent used 281-516k and made
-  *less* progress. The `compact` verdicts are a symptom of the write problem above, not a cause.
-- **Held out: 29/30** on ten cases never seen during development (matched six 17/18, harder four
-  12/12) - so the dev score was not overfitted.
-- **Egress is restricted on scored runs.** The agent container has no route off the machine except
-  an allowlisting proxy; the harness refuses to score a split without it. **Definition of Done: 9/9.**
-- **Two tool changes took real repositories from 0/18 to `rich` 3/3, `click` 3/3, `cachetools` 2/3.**
-  (1) `edit_file(path, old_string, new_string)`, exact and unique - a whole-file write could not fit
-  a 2,689-line file into a 16,000-token reply. (2) `read_file` sizes its own window, so a paged read
-  returns **164 contiguous lines instead of 30 head + 20 tail with the middle elided** - 17 reads to
-  see a file rather than 54. Read:write went **1:29 -> 1:7**.
-  **Do not quote a set-level percentage.** Three of six cases are measured, and they are the three
-  that were tuned against; `real-markdown` and `real-more-itertools` have never run with either tool.
-  The gain is also one case - strip `real-rich` out and it is +1 run and -1 run.
-- **Ambiguity in edits was a SYMPTOM, not a cause.** A cycle that named the line numbers of each
-  duplicate match moved 0/3 -> 0/3 and was reverted. The same failures vanished on their own once the
-  agent could see contiguous code: an agent that can read a region picks a unique snippet by itself.
-  Fuzzy matching is still unearned, and this is why.
-- **Never wrap the harness in `timeout`.** It kills the client but leaves the container running; the
-  orphan then corrupts the shared `eval/workspace` mid-way through the next case. Three runs were
-  invalidated this way. `await_exclusive_workspace()` now blocks it, and `--continue` is the
-  supported way to manage a long run. Twin of the `tail` lesson.
-- **The 0/18 baseline that preceded it, and its cause.**
-  `write_file` replaces a file entirely, so a five-line fix means emitting the whole file inside
-  `MAX_TOKENS` (16,000, covering thinking + text + tool arguments). Real files are 559-2,689 lines:
-  `rich/console.py` needs ~25,308 tokens to rewrite, **158% of one reply — that case is impossible,
-  not merely hard.** Across 30 real-repo runs: **11 writes against 352 reads (1:32)**, nine runs
-  ended `stop_reason: "length"`, and every run that made progress made exactly ONE write.
-  **The fix is an edit tool** (`old_string` -> `new_string`, exact and unique). v1's "these files are
-  30-80 lines" premise is dead; say so rather than reinterpreting it. Hermes solves this with a V4A
-  patch format — port the idea, not the machinery: fuzzy matching is earned by evidence, not assumed.
-- **Raising `BUDGET_TOKENS` does not raise `MAX_TOKENS`.** A budget experiment moved the per-RUN
-  budget to 1M and changed nothing, because the wall is the per-REPLY cap. Check which limit binds
-  before spending quota on the other.
-- **The search for a harder case shape is over: three axes tried, three rejected.** Misdirection
-  (held-out four, 12/12), cross-cutting edits (`pilot-crosscut`, 3/3), and independent bug count
-  (`multibug`, **25/26** at 3–5 bugs) all failed the 40–70% band fixed in advance. Every set this
-  project owns is saturated, so no tuning cycle can be measured **on the synthetic sets**; the
-  real-repository split is where cycles now run.
-  What the multibug set did yield is a rule: **each extra bug costs about 2.8 turns** (12.8 → 14.6 →
-  18.4 mean, at 3 → 4 → 5 bugs), so difficulty on this axis is a budget question, not a reasoning
-  one. The honest next step is a real repository and a real goal, not a fourth synthetic axis.
-- **A 30-run scoring pass costs ~1.1M tokens and saturates the free tier for the day.** Budget one
-  scored run per day on this key; the tier then rejects ~2 of 3 requests, which makes a 17-turn run
-  complete with probability under 1%.
+`act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
+Textual TUI, measurement rig. **390 offline tests**, green with no API key, no network, a
+read-only root filesystem, and without the `mcp` package installed.
 
-- **Two writable roots, and `--read-only` does not give you them (Phase K).** `/workspace` and
-  `/state` (the agent home: checkpoints now, memory and skills later). The project tree is mounted
-  `:ro`, because `--read-only` makes the ROOT FILESYSTEM immutable and **leaves bind mounts
-  untouched** - so until K the agent could write to the harness, `tasks.jsonl` and the fixtures
-  scoring it. No trace ever did, but the tamper check *repairs* where the kernel *prevents*, and a
-  successful write to `/app` would not even have counted as a violation. Scored case-runs get a
-  **blank** agent home; the interactive CLI keeps a persistent one.
+| | |
+|---|---|
+| dev baseline | **14/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b` |
+| held out | **29/30** — the dev score was not overfitted |
+| real repositories | **4/10**, and only 4 of 6 cases have run with the current toolset |
+| Definition of Done | **9/9** · must-have requirements **29/35** |
+| still unbuilt | compaction, web search, queue/worker, a working plan node |
 
-- **MCP is in, and it bought efficiency rather than capability (Phase L).** One server
-  (`mcp-server-fetch`, one tool), baked into the image at build time, stdio, running as a subprocess
-  so Phase K's boundary already contains it. Same web split, one flag apart: **18/18 both ways**, but
-  turns 6.2 -> 3.1 and median tokens 11,528 -> 7,293. `AGENT_MCP=off` restores the four-tool agent
-  exactly, and every row records `mcp` and `schema_chars`.
-- **`registry.py` still does not exist, and that is deliberate.** §12's trigger is "add at tool six";
-  four built-ins plus `fetch` is five. The merge is nine lines in `tools.toolset()`. A deferred layer
-  with a numeric trigger does not fire because the phase that would use it turned up.
+## Standing lessons, each paid for once
 
-- **Memory is in, and it is the project's cleanest result (Phase M).** Episodes in SQLite FTS5 at
-  `/state/memory.db`, a profile at `/state/AGENT.md` written by the agent through `remember`.
-  Recall split **0/18 -> 15/18**, and **40% CHEAPER** - it was budgeted as a cost and came out a
-  saving, because an agent that remembers stops thrashing (7 `stuck` verdicts -> 0). `AGENT_MEMORY=off`
-  restores the pre-memory agent exactly. Dev suite unmoved at 14/15.
-- **`registry.py` exists but the `@tool` decorator still does not.** §12's "tool six" trigger
-  fired; the decorator's own arithmetic did not. Five of six schemas are hand-written (fetch's
-  comes from the server), break-even is above eight, and **the descriptions are load-bearing** -
-  `edit_file`'s text coaches the model and is what took real repos 0/9 -> 4/7.
+Ordered by how often they have caught something.
 
-- **The TUI is in, and it needed no spec amendment (FR-701).** `--tui` is a Textual front
-  end over the same loop: the graph runs in a thread worker, `trace.append` and `on_text`
-  cross back through `call_from_thread`, and the approval pause blocks that worker on
-  `call_from_thread(push_screen_wait, ...)`. Safe only because `get_app()` already opened
-  SQLite with `check_same_thread=False`. **`textual` pulls in `rich`, and `eval/fixtures/
-  real-rich` IS the rich source tree** - checked rather than assumed: that fixture has
-  `tests/__init__.py`, so pytest puts `/workspace` ahead of site-packages, and the pins
-  differ on purpose (14.3.3 installed, 14.3.4 vendored) so the check is decisive. Verified
-  after the rebuild: `import rich` resolves to `/workspace/rich/__init__.py` and the
-  untouched fixture still fails with the same single failure.
-  The one graph change is `continue_state()`, a pure function: it resets `turns` (or
-  `reflect` returns `stuck` before the model is called once) and deliberately OMITS
-  `spent_tokens`, so the budget still binds across a whole conversation.
+**Measurement**
 
-- **Planning is BUILT and DEFAULT OFF: the plan is never written (FR-101 NOT satisfied).**
-  Nine scored runs across three cycles, and `adopt` fell back to the goal copied verbatim in
-  every one. The pass rate went 1/3 -> 3/3 -> 2/3 on `add-endpoint`, which was already 1/3 and
-  is the same shape as the pilot case this project once wrote up at 1/3 and re-measured at 3/3
-  unchanged. **Nothing is attributable, and would not be even if it held: the mechanism never
-  fired, and a pass rate is not evidence for a mechanism that did not run.**
-  **The cause was proven directly, not inferred.** Cycle 3 sent the final planning turn with NO
-  tool schemas and the model called a tool anyway. One request settled it - `tools` absent from
-  the payload, a history holding two prior tool calls, `finish_reason: tool_calls` came back.
-  **On this provider a tool-call history keeps producing tool calls whether or not a tool is
-  offered.** Neither an instruction nor an absence stops it.
-  **That refutes MY design decision, and CE-04 is where it went wrong.** Planning was built as a
-  PHASE of the existing loop on the ground that two nodes which never branch apart are one node.
-  They do branch apart, in the one way that mattered: **the message list.** A phase inherits the
-  tool-call history, and that history is what prevents the plan from being written. §3 drew
-  `PLAN` as a node with its own model call for exactly this reason. Next test: a real plan node
-  with a FRESH short context - the goal plus a digest of what was read.
-  **What does work, and is kept:** the read-only gate refused every write across nine runs, and
-  `plan_denied` recorded `pytest -q` on all nine - the predicted failure, written down before
-  the first run. `PLAN_MAX_TURNS` is separate from `MAX_TURNS` because at a 12-turn cap a shared
-  counter would starve the very case this targeted. **NFR-402 was breached** at 60-66k median
-  against 60,000, which is the other reason the default is off.
-
-- **Skills are in, LOADING only (Phase N).** agentskills.io layout, three disclosure levels, one
-  tool (`load_skill`). Split **0/18 -> 17/18**, load rate **17/18 correct, 0 wrong** - the two
-  distractor skills are what make that number mean anything. Dev suite **+0.9%** while paying a
-  1,224-char index every request and loading nothing. `AGENT_SKILLS=off` restores Phase M exactly.
-- **A fixture must not contain its own answer, and TWO-way verification will not catch it.** Three
-  of six Phase N cases leaked: a checker whose SOURCE stated the fix, a VERSION already carrying
-  the suffix, a deps.txt already showing the format. Found by a control run passing when it should
-  have scored zero. Verify THREE ways: untouched fails, a plausible answer WITHOUT the knowledge
-  fails, the correct answer passes.
-
-- **Stage 1 of the audit closures is in: six requirements, no third-party code, no quota.**
-  `NFR-601` (risk declared beside the schema - **the DoD item that had never been true**),
-  `FR-201` (`read_file` on a directory returns the listing), `FR-203` (`run_python`, which returns
-  the final expression's value - `python -c` throws it away), `NFR-203` (`redact()` inside
-  `shrink()`, covering the spilled artifact too), `NFR-304` (working seconds accumulated, capped),
-  `FR-804` (delta against the previous run). 368 tests, schema 3,518/6,000.
-  **Hermes had nothing to copy for four of the six** - it hand-writes all 84 of its schemas, its
-  code tool discards the final value, it has no list-directory tool, and its seven `_redact_*`
-  helpers are each tool-specific.
-  **A tool the model cannot see is a function, not a capability**: `run_python` and its five tests
-  were green for a while with no `TOOLS` entry, so the model was never offered it. Found by a live
-  toolset check, not by the suite.
-  **FR-104 stays open on purpose** - `compact` cannot stop being terminal until the compaction
-  node exists, and calling it "budget exhausted" would be a lie at 60% of budget. So the
-  wall-clock cap terminates as `stuck` rather than adding a fifth verdict.
-
-- **Stage 2a: two latency NFRs measured for the first time, both pass with room.**
-  `NFR-102` framework cost per iteration **6.53 ms p95 against 250** (n=140); `NFR-103`
-  checkpoint write **11.40 ms p95 against 50** (n=180). Free - with a stand-in model and a
-  stubbed tool, everything left IS the framework, so no quota and no network.
-  **The biggest framework cost in the system is `finish` writing the memory episode** (6.1 ms
-  p50); `gate` and `reflect` are 10 and 40 MICROseconds, and a test now pins them under 25 ms
-  so a later layer cannot quietly spend the headroom.
-  `percentile()` is `statistics.quantiles(method="inclusive")` plus the two cases it cannot
-  express - an empty sample and a single one. A hand-rolled rank loop was written first and
-  replaced: the two agree to 4e-13 over 3,000 random samples, so it was ten lines of arithmetic
-  standing in for one stdlib call.
-  **`NFR-101` cannot be measured at all on this provider** - the OpenAI-compatible path sends no
-  `stream=True` and fires `on_text` only once the whole reply lands, so there IS no first token.
-  It also means the TUI's status line fills in one go on NIM rather than word by word - the
-  README says so now rather than leaving it to be discovered. Streaming is Stage 2b, and it is a
-  change to the tool-call path with a revert condition, not instrumentation.
-
-### Standing lessons, each paid for once
-
-- **Tool schemas are rent, charged per turn, and this provider caches nothing.** `cache_read_tokens`
-  was 0 on all 15 rows of a scored run, so the four built-in schemas were already ~23% of a median
-  run. At a real MCP server's ~254 tokens/tool, 24 exposed tools would breach NFR-402 on schema
-  ALONE. **Measure whether the provider caches before assuming tool breadth is cheap**;
-  `MAX_SCHEMA_CHARS` now refuses a run that exceeds the budget.
-- **A "derivable zero" baseline must still be measured.** The web split was supposed to score 0
-  without a fetch tool. It scored **18/18**: `run_shell` plus Python's `urllib` already reaches the
-  web, because the harness sets `HTTP_PROXY` in the container. Skipping that run as obvious would
-  have shipped a false capability claim, unfalsifiable afterwards because the split would have
-  looked like it went 0 -> 18.
-
-- **A default that asserts the safe answer is how a row comes to claim a condition nobody checked.**
-  `os.environ.get("AGENT_EGRESS", "restricted")` - and nothing anywhere set `AGENT_EGRESS`. Every
-  trace row ever written asserted restricted egress, including runs deliberately made unrestricted.
-  Where a fallback describes what was measured, it must say `UNKNOWN`.
-- **A config file mounted into a container is read when the process starts, not when it changes.**
-  tinyproxy refused a host that was already in its filter file, identically before and after SIGHUP.
-  The mount propagated fine - that was checked separately, and it is the assumption that would
-  otherwise have been blamed. Recreate the container; verify the effect, never the mechanism.
-- **A declared JSON schema is not enforcement.** Numeric tool arguments arrive as strings; coerce at
-  the tool boundary. This broke a live session twice before it was fixed.
-- **Infrastructure failure is not a score.** A rate-limited run must be excluded and retried, never
+- **One surprising result is a hypothesis, never a finding.** A pilot case scored 1/3, was written
+  up as a capability limit, and scored 3/3 unchanged in the full run. Repeat before believing.
+- **Probe a different model before tuning the loop.** A 4/15 baseline was diagnosed as three loop
+  defects; all three vanished on a stronger model from the same free key, after a tuning cycle had
+  been spent and reverted.
+- **A "derivable zero" baseline must still be measured.** The web split was expected to score 0
+  without a fetch tool and scored 18/18 — `run_shell` plus `urllib` already reached the web.
+- **Infrastructure failure is not a score.** A rate-limited run is excluded and retried, never
   counted as a failed case.
-- **Never pipe the harness through `tail`** - it buffers until exit, so a hang is indistinguishable
-  from progress.
-- **Verify the rig before believing a number**, in both directions: that passes are untampered, and
-  that untouched fixtures still fail.
+- **Verify the rig in BOTH directions**: that passes are untampered, and that untouched fixtures
+  still fail.
+- **A fixture must not contain its own answer, and two-way verification will not catch it.** Verify
+  three ways: untouched fails, a plausible answer *without* the knowledge fails, the correct answer
+  passes.
+- **Do not quote a set-level percentage when only part of the set is measured.** "4/10" rests on
+  four of six real cases, and they are the ones that were tuned against.
+- **A pass rate is not evidence for a mechanism that did not fire.** Check the instrumentation says
+  the thing ran before attributing anything to it.
+
+**The loop and the model**
+
+- **Deterministic injection works; agent choice does not.** `write_episode` → `context_for` needed
+  no decision and went 0/18 → 15/18. The `learn` tool needed one and was called 0 times in 15
+  sessions. Prefer a rule over a request.
+- **On this provider a tool-call history keeps producing tool calls** whether or not a tool is
+  offered — proven with `tools` absent from the payload entirely. Neither an instruction nor an
+  absence stops it. This is why planning as a *phase* failed: a phase inherits the message list.
+- **A declared JSON schema is not enforcement.** Numeric arguments arrive as strings; coerce at the
+  tool boundary.
+- **A tool the model cannot see is a function, not a capability.** `run_python` and its tests were
+  green with no `TOOLS` entry. Check the live toolset, not the suite.
+- **Descriptions are load-bearing.** `edit_file`'s wording took real repositories 0/9 → 4/7. Never
+  derive them from parameter names.
+- **Check which limit binds before spending quota on the other.** Raising `BUDGET_TOKENS` (per run)
+  changed nothing because the wall was `MAX_TOKENS` (per reply).
+- **Compaction is not earned.** `compact` verdicts look like starvation; a budget experiment gave
+  the agent 1M tokens, it used 281–516k and made *less* progress. The verdicts were a symptom of
+  the write problem, not a cause.
+- **Ambiguity in edits was a symptom, not a cause.** Naming duplicate-match line numbers moved
+  0/3 → 0/3 and was reverted; the failures vanished once the agent could read contiguous code.
+  Fuzzy matching stays unearned.
+- **Each extra independent bug costs ~2.8 turns.** Difficulty on that axis is a budget question,
+  not a reasoning one.
+
+**Cost**
+
+- **Tool schemas are rent, charged per turn, and this provider caches nothing.**
+  `cache_read_tokens` is 0 across all 335 recorded rows. At 3,518 chars, definitions are already
+  ~58% of a median run's billed tokens. `MAX_SCHEMA_CHARS = 10,000` is derived, not chosen: it is
+  the largest cap at which NFR-402's median still holds. Measure whether a provider caches before
+  assuming tool breadth is cheap.
+- **A 30-run scored pass costs ~1.1M tokens and saturates the free tier for the day.** Budget one
+  scored run per day; after that the tier rejects ~2 of 3 requests.
+
+**Rig and environment**
+
+- **Never pipe the harness through `tail`**, and never wrap it in `timeout`. `tail` buffers until
+  exit so a hang looks like progress; `timeout` kills the client but leaves the container running,
+  and the orphan corrupts the shared workspace mid-case. Three runs were lost that way. Use
+  `--continue`.
+- **A default that asserts the safe answer is how a row comes to claim a condition nobody checked.**
+  `AGENT_EGRESS` defaulted to `"restricted"` and nothing ever set it, so every trace row ever
+  written claimed restricted egress. Where a fallback describes what was measured, it says
+  `UNKNOWN`.
 - **A blocked connection is not proof of a boundary.** "Could not resolve host" is DNS failing;
-  re-test by raw IP before believing egress is closed.
-- **When a fixture-era design decision meets real code, re-check its stated premise.** Three v1
-  decisions were justified by numbers that only held for 10-file practice projects: whole-file writes
-  ("these files are 30-80 lines"), the character caps in `shrink()` (short lines), and the scored
-  check having no timeout (fast, terminating suites). All three broke on real repositories. The
-  decisions were not wrong when made - their premises expired.
-- **One surprising result is a hypothesis, never a finding.** A pilot case scored 1/3 and was written
-  up as "the first genuine capability limit", with a tuning hypothesis built on it. The same case,
-  unchanged, scored 3/3 in the full run. Both claims had to be retracted. This is the twin of the
-  model-swap lesson above: probe before theorising, and repeat before believing.
-- **"Running" is not "usable".** The egress proxy reported `State.Running: true` for two hours while
-  failing every request: Docker's embedded DNS answered the A-only `getent hosts` but returned
-  nothing for the dual-family `getent ahosts` that tinyproxy actually calls. A preflight must probe
-  the operation the dependent code performs, not the one that is easy to check.
-- **Text files crossing an OS boundary need their line endings pinned.** A config written on Windows
-  and parsed by a Linux container fails on the trailing carriage return. Use newline="" when writing it.
+  re-test by raw IP.
+- **"Running" is not "usable".** A proxy reported `Running: true` for two hours while failing every
+  request. A preflight must probe the operation the dependent code performs.
+- **`--read-only` makes the ROOT FILESYSTEM immutable and leaves bind mounts untouched.** That is
+  why the project tree is mounted `:ro` separately.
+- **A config file mounted into a container is read when the process starts, not when it changes.**
+  Recreate the container; verify the effect, never the mechanism.
+- **Text files crossing an OS boundary need their line endings pinned** — use `newline=""`.
+- **When a fixture-era design decision meets real code, re-check its stated premise.** Whole-file
+  writes, `shrink()`'s character caps and the untimed check were all sound for 10-file practice
+  projects and all broke on real repositories. The decisions were not wrong when made; their
+  premises expired.
 
 ## CONTEXT.md is the authority
 
-`CONTEXT.md` is the binding build specification for this project, not background reading. Its own
-precedence rules:
+The binding build specification, not background reading. Its own precedence rules:
 
-- **§9 is the only build order.** Sections 5–7 are the full requirement set for the *finished*
-  system and must not be implemented top to bottom. Anything marked `[S]` or `[C]` is out of scope
-  until the `[M]` set passes evaluation.
-- **§12 is a file allowlist.** Create the files it lists and no others. Deferred files
-  (`agent/registry.py`, `memory.py`, `web.py`, `worker.py`) are created only when their layer is
-  earned, with the stated trigger (e.g. the `@tool` decorator arrives at tool six, not before).
-
-  **Four stated deviations exist, each justified in writing rather than assumed:**
-  `agent/provider.py` (earned by a SECOND implementation - Anthropic plus any OpenAI-compatible
-  endpoint - which is exactly what CE-01 requires), and three extra test files beyond the allowed
-  three: `tests/test_nodes.py` (§10 demands unit tests for every deterministic node),
-  `tests/test_cli.py` (the approval prompt is where consent is decided), and
-  `tests/test_harness.py` (its functions decide the headline number, and a wrong denominator does
-  not crash - it silently reports something other than the truth). Do not add a fifth without the
-  same standard of justification.
+- **§9 is the only build order.** §5–7 describe the *finished* system and must not be implemented
+  top to bottom. `[S]`/`[C]` items are out of scope until the `[M]` set passes evaluation.
+- **§12 is a file allowlist.** Create the files it lists and no others; a deferred file is created
+  only when its stated trigger fires. Every deviation so far is justified in writing inside §12
+  itself — hold a new one to that standard.
 - **§13 (Code Economy) is binding.** A violation is a defect, not a style choice.
 - **Where §3/§4 and §13 disagree, §13 governs.** §3 is the logical flow; §13 is the code shape.
-- When a requirement and existing code disagree, the requirement wins — say so rather than
-  silently reinterpreting it.
+- **When a requirement and existing code disagree, the requirement wins** — say so rather than
+  silently reinterpreting it. §8.2 records conflicts between requirements rather than papering
+  over them.
 
 ## Architecture
 
-A single-user autonomous agent: goal in natural language → plan → tool-calling loop → terminal
-verdict. Three properties distinguish it from function-calling chat, and each one is a layer you
-must not collapse:
+Goal in natural language → tool-calling loop → terminal verdict. Three layers you must not
+collapse:
 
-- **Policy gate.** Every tool call is classified `auto` / `confirm` / `deny` *before* any side
-  effect. `classify()` in `policy.py` is pure — no logging, no counters, no DB writes.
-- **Context manager.** No tool output reaches the model unfiltered. `shrink()` in `context.py`
-  caps each result, spills the full output to `.agent/artifacts/<id>.txt`, and returns a plain
-  string containing head lines, an elision marker, tail lines, the artifact path, **and
-  instructions for inspecting it** — a bare path is ignored by the model in practice.
+- **Policy gate.** Every call is classified `auto`/`confirm`/`deny` *before* any side effect.
+  `classify()` in `policy.py` is pure — no logging, no counters, no writes.
+- **Context manager.** No tool output reaches the model unfiltered. `shrink()` caps each result,
+  redacts secrets, spills the full text to `.agent/artifacts/`, and returns head + elision + tail +
+  the path **plus instructions for reading it** — a bare path is ignored in practice.
 - **Checkpointing.** State is written after every node transition, keyed by `thread_id`. A kill
-  loses at most one node; resume is re-invocation with the same id, not a restart.
+  loses at most one node; resume is re-invocation with the same id.
 
-Graph: `act → gate → execute(+observe) → reflect`, looping until `done` / `stuck` / budget / turn
-cap, then `finish`. Only three nodes ever call the model (plan, act, compact-summarisation).
-Everything else is ordinary code and **must be unit-testable without an API key** (NFR-602) — this
-ratio is the most important design property in the system, so resist pushing logic into prompts.
+**Only `act` calls a model.** Everything else is ordinary code and must be unit-testable without an
+API key (NFR-602). This ratio is the most important design property in the system — resist pushing
+logic into prompts.
 
 **`gate` and `execute` must never merge** (CE-07). `gate` suspends on `interrupt()` and re-runs
-from its first line on resume; merged, every already-executed tool fires a second time. This is
-also why nothing upstream of a suspension point may have side effects (FR-305).
+from its first line on resume; merged, every already-executed tool fires twice. Nothing upstream of
+a suspension point may have side effects (FR-305) — that applies to `adopt` as well as `gate`.
 
-`config.py` is the single source of truth for the workspace root, model, per-tool output caps,
-turn/token budgets, compaction threshold, and head/tail line counts. FR-302 and NFR-201 both
-depend on the workspace root having exactly one definition — never re-derive it in another module.
+`config.py` is the single source of truth for the workspace root, model, caps and budgets. FR-302
+and NFR-201 both depend on the workspace root having exactly one definition.
 
-Prompts live in `prompts/SOUL.md`, version-controlled, never as string literals (NFR-603), and are
-read **inside** the node, never at import time (CE-05).
+Prompts live in `prompts/` (`SOUL.md`, `PLAN.md`), version-controlled, never string literals
+(NFR-603), read **inside** the node, never at import time (CE-05).
 
-## Spec-mandated fixes to the v1 skeleton
-
-§9 Step 2 lists five defects in the skeleton design that must be corrected on the way in. They are
-easy to reintroduce because each looks correct in isolation:
-
-- **Entry edge** is `START → act`, not `START → plan` (there is no plan node in v1).
-- **Termination guard.** With no plan node, `cursor + 1 >= len(plan)` is `1 >= 0` and returns
-  `done` on the first text-only reply. Gate `done` on whether any tool call was ever made; restore
-  the cursor check only when the plan node lands.
-- **`failures` is a plain `int` with overwrite semantics**, counting *consecutive* failed turns —
-  reset to 0 when every result succeeded. As an accumulating list it latches at `>= 3` forever.
-- **Risk map.** Either relabel `run_shell` as `"write"` or make `RISK` the single path in
-  `classify()`. A name special-case that returns before consulting `RISK` makes the declaration
-  dead, and any tool later marked `destructive` would be silently auto-denied during eval.
-- **Tracing is in scope from step 2**, not deferred: the harness writes
-  `eval/runs/<timestamp>/<case-id>.json` with the full final message list plus per-call tool name,
-  verdict, duration, input/output bytes, and spill path. Step 4 is unactionable without it.
-
-State shape for v1 is fixed in §13: a plain `TypedDict`, no reducers, no `Annotated`, no `operator`
-import. Nodes return the full `messages` list; compaction is then an ordinary return.
+**Invariants that look wrong in isolation and are not** — §9 Step 2's corrections:
+`START -> act`, not `START -> plan`. `done` is gated on whether any tool call was ever made, not on
+a cursor. `failures` is a plain `int` counting *consecutive* failures, reset to 0 on a clean turn.
+`RISK` is the single path through `classify()` — a name special-case would make the declaration
+dead. State is a plain `TypedDict`: no reducers, no `Annotated`.
 
 ## Commands
 
 ```bash
-python -m agent "goal"            # interactive run; destructive calls pause for approval
-python -m agent --tui             # full-screen Textual chat; --tui --resume <id> opens one
-python -m agent --list            # past threads, newest first, with verdict and turn count
+python -m agent "goal"            # interactive; destructive calls pause for approval
+python -m agent --tui             # Textual chat; --tui --resume <id> opens one thread
+python -m agent --list            # past threads, newest first
 python -m agent --resume <id>     # continue a thread; a task's identity IS its thread id
 
-python eval/harness.py --split dev --runs 3 --pace 20   # a baseline; --pace throttles the free tier
-python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an interrupted baseline
-python eval/harness.py --case fix-import --runs 3        # one case, repeated
+python eval/harness.py --split dev --runs 3 --pace 20              # a baseline
+python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an interrupted one
+python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
-scripts/reset.sh <case-id>        # restore /workspace to a fixture's known state (idempotent)
-pytest                            # 160 unit tests, no API key, no network
-pytest tests/test_policy.py -k escape   # single test
+scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
+pytest                            # 390 tests, no API key, no network
 ```
 
-**Never pipe the harness through `tail`.** It buffers until exit, which makes a hang
-indistinguishable from progress. This project has lost time to it twice.
+Tests run in the container, which is the measured environment: read-only root, `--network none`,
+`/workspace` and `/state` the only writable roots. The host Python is for editor resolution only.
 
-A run that never reached the model is reported **blocked** and excluded from the score rather than
-counted as a failure - `pass 4/13, 2 blocked`, never `pass 4/15`. Blocked runs are retried
-automatically, and `--continue` re-runs exactly the case-runs with no result.
-
-Sandbox image is built from `Containerfile` (python:3.12-slim + git + pytest + flask + langgraph)
-with the workspace as the only bind mount (NFR-204).
+A run that never reached the model is **blocked**, excluded from the score rather than counted as a
+failure — `pass 4/13, 2 blocked`, never `pass 4/15`.
 
 ## Evaluation discipline
 
-The pass rate is the project's headline number, and §9 Step 4 constrains how it is moved:
-
-- **One change per cycle.** Two changes and the delta cannot be attributed.
+- **One change per cycle.** Two and the delta cannot be attributed.
 - Prompt changes are changes and are measured like code changes.
 - **Revert anything that does not move the number**, including changes that "seem right".
-- Always report pass counts across 3 seeds, never a single run — 1-of-3 is not a passing case.
+- Report pass counts across 3 seeds. 1-of-3 is not a passing case.
 - Log every cycle in `eval/CHANGELOG.md`: hypothesis, change, before, after, kept or reverted.
-- Do not look at held-out traces during tuning; run the held-out 10 only at milestones.
-- A requirement is satisfied when the cases exercising it pass, not when the code exists.
+- Do not read held-out traces while tuning.
+- **A requirement is satisfied when the cases exercising it pass, not when the code exists.**
 
-If a §9 step overruns its estimate by more than double, stop and reduce scope rather than pushing
-through.
+## Environment
 
-## Environment notes
-
-Target runtime is Fedora natively or Windows under WSL2, with execution confined to a container
-(Windows-native support outside WSL2 is an explicit non-goal, §11). This development machine is
-Windows 11 with Docker 29.7 and Git Bash; the only WSL distro currently registered is
-`docker-desktop`, so container execution — not a native Linux shell — is the path that exists here.
-`.agent/` is runtime state and must be gitignored.
+Execution is confined to a container on any host that runs one (§11; NFR-701 as amended). This
+machine is Windows 11 with Docker Desktop and Git Bash — not WSL2. `.agent/` and `hermes_copy/`
+are gitignored.
 
 ## Working guidelines
 
-Behavioral rules that reduce common LLM coding mistakes. These govern *how* to work; the sections
-above govern *what* this project is.
+Behavioural rules that reduce common mistakes. These govern *how* to work; the sections above
+govern *what* this project is.
 
-### 1. Think before coding
+**1. Think before coding.** State assumptions; if uncertain, ask. Present multiple interpretations
+rather than picking silently. Say so when a simpler approach exists. If something is unclear, stop
+and name what is confusing.
 
-Don't assume. Don't hide confusion. Surface tradeoffs. Before implementing:
+**2. Simplicity first.** Minimum code that solves the problem. No speculative features,
+abstractions for single-use code, unrequested configurability, or error handling for impossible
+scenarios. If 200 lines could be 50, rewrite it. Ask: *would a senior engineer call this
+overcomplicated?*
 
-- State assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them — don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+**3. Surgical changes.** Touch only what you must. Do not "improve" adjacent code, comments or
+formatting; do not refactor what is not broken; match existing style. Remove imports and variables
+*your* change orphaned — mention pre-existing dead code rather than deleting it. **The test: every
+changed line traces to the request.**
 
-### 2. Simplicity first
-
-Minimum code that solves the problem. Nothing speculative.
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask: *"Would a senior engineer say this is overcomplicated?"* If yes, simplify.
-
-### 3. Surgical changes
-
-Touch only what you must. Clean up only your own mess.
-
-When editing existing code:
-
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it — don't delete it.
-
-When your changes create orphans:
-
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-**The test:** every changed line should trace directly to the user's request.
-
-### 4. Goal-driven execution
-
-Define success criteria. Loop until verified. Transform tasks into verifiable goals:
-
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-
-```text
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria allow independent looping. Weak criteria ("make it work") require constant
-clarification.
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to
-overcomplication, and clarifying questions arrive before implementation rather than after mistakes.
+**4. Goal-driven execution.** Turn tasks into verifiable goals — "add validation" becomes "write
+tests for invalid inputs, then make them pass". For multi-step work, state a brief plan with a
+verification per step. Strong success criteria allow independent looping; weak ones ("make it
+work") force constant clarification.

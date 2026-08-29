@@ -1548,3 +1548,418 @@ def test_the_timed_saver_still_round_trips_state(fresh_app, tmp_workspace, monke
     assert restored["verdict"] == "done"
     assert restored["turns"] == 1
     assert restored["messages"][0]["content"] == "fix it"
+
+
+# ================================================ FR-206: search_files
+#
+# "Repository inspection that returns paths and line numbers, NOT file contents."
+# The last clause is the requirement, and it is why run_shell with grep does not
+# satisfy it: grep returns every matching line unbounded, which is the context
+# flood shrink() exists to contain.
+
+from agent.tools import LINE_CHARS, MATCH_CAP, search_files
+
+
+def _tree(root):
+    (root / "pkg").mkdir()
+    (root / "pkg" / "core.py").write_text(
+        "import os\n\n\ndef parse_date(value):\n    return value\n", encoding="utf-8")
+    (root / "pkg" / "util.py").write_text(
+        "def parse_date(value):\n    pass\n", encoding="utf-8")
+    (root / "notes.md").write_text("parse_date is the culprit\n", encoding="utf-8")
+
+
+def test_a_match_reports_path_and_line_number(tmp_workspace):
+    _tree(tmp_workspace)
+    out = search_files("def parse_date")
+
+    assert "pkg/core.py:4: def parse_date(value):" in out
+    assert "pkg/util.py:1: def parse_date(value):" in out
+
+
+def test_a_glob_narrows_the_search(tmp_workspace):
+    _tree(tmp_workspace)
+    out = search_files("parse_date", glob="**/*.md")
+
+    assert "notes.md" in out
+    assert "core.py" not in out
+
+
+def test_paths_only_drops_the_lines_and_collapses_repeats(tmp_workspace):
+    """FR-206's "paths, not contents" in its strictest form. A file with forty
+    matches must appear once, or the mode is just a differently-shaped flood."""
+    _tree(tmp_workspace)
+    (tmp_workspace / "many.py").write_text("x\n" * 5 + "hit\n" * 40, encoding="utf-8")
+
+    out = search_files("hit", paths_only=True)
+
+    assert out.strip() == "many.py"
+    assert ":" not in out, "paths_only must not carry line numbers or text"
+
+
+def test_the_cap_is_enforced_AND_announced(tmp_workspace):
+    """A silent truncation reads as 'that is all there is' and the agent stops
+    looking. Saying how many were withheld is the difference between a bound and
+    a lie."""
+    (tmp_workspace / "big.py").write_text("needle\n" * 200, encoding="utf-8")
+
+    out = search_files("needle")
+
+    assert len([l for l in out.splitlines() if l.startswith("big.py:")]) == MATCH_CAP
+    assert f"{MATCH_CAP} of 200 matches shown" in out
+
+
+def test_a_long_line_is_truncated(tmp_workspace):
+    """Enough to judge relevance, not enough to be a way of reading a file."""
+    (tmp_workspace / "wide.py").write_text("needle " + "x" * 5000, encoding="utf-8")
+
+    out = search_files("needle")
+
+    assert len(out.splitlines()[0]) < LINE_CHARS + 40
+    assert "x" * 200 not in out
+
+
+def test_no_match_says_so_and_says_where_it_looked(tmp_workspace):
+    """An empty string reads as a broken tool. Naming the count and the glob lets
+    the agent tell 'wrong pattern' from 'wrong place'."""
+    _tree(tmp_workspace)
+    out = search_files("zzz_absent")
+
+    assert "no match" in out
+    assert "file(s)" in out
+
+
+def test_a_bad_regex_explains_itself(tmp_workspace):
+    """FR-208: the tool raises, execute turns it into an observation. What it must
+    not do is return zero matches, which looks like a correct empty answer."""
+    _tree(tmp_workspace)
+    with pytest.raises(ValueError) as caught:
+        search_files("[unclosed")
+    assert "regular expression" in str(caught.value)
+
+
+def test_noise_directories_are_skipped(tmp_workspace):
+    """.git alone is thousands of files and would consume the cap before any
+    source was reached."""
+    (tmp_workspace / ".git").mkdir()
+    (tmp_workspace / ".git" / "COMMIT_EDITMSG").write_text("needle", encoding="utf-8")
+    (tmp_workspace / "__pycache__").mkdir()
+    (tmp_workspace / "__pycache__" / "x.py").write_text("needle", encoding="utf-8")
+    (tmp_workspace / "real.py").write_text("needle", encoding="utf-8")
+
+    out = search_files("needle")
+
+    assert "real.py" in out
+    assert ".git" not in out and "__pycache__" not in out
+
+
+def test_the_search_cannot_escape_the_workspace(tmp_workspace):
+    """FR-302, and this test earned its place immediately.
+
+    The first version of search_files claimed to be bounded "by construction"
+    because the walk starts at config.WORKSPACE. It was not: `Path.glob("../*")`
+    walks straight out, and this test returned a file from the parent directory.
+    An escaping glob is now REFUSED rather than silently missed - "no match"
+    would read as "nothing is there", which is the wrong lesson for the agent.
+    """
+    outside = tmp_workspace.parent / "outside_secret.py"
+    outside.write_text("needle_outside", encoding="utf-8")
+    try:
+        assert "no match" in search_files("needle_outside")
+        for escape in ("../*", "../../**/*", "/**/*", "**/../*"):
+            with pytest.raises(ValueError) as caught:
+                search_files("needle_outside", glob=escape)
+            assert "outside the workspace" in str(caught.value), escape
+    finally:
+        outside.unlink()
+
+
+def test_a_symlink_pointing_out_of_the_workspace_is_dropped(tmp_workspace):
+    """The half a pattern check cannot catch. `**/*` is a legal glob; the file it
+    reaches through a symlink is not, and only the RESOLVED path knows."""
+    outside = tmp_workspace.parent / "outside_linked.py"
+    outside.write_text("needle_linked", encoding="utf-8")
+    try:
+        (tmp_workspace / "link.py").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        outside.unlink()
+        pytest.skip("symlinks not permitted here")
+    try:
+        assert "no match" in search_files("needle_linked")
+    finally:
+        outside.unlink()
+
+
+def test_search_files_is_exposed_and_read_only(tmp_workspace):
+    """A tool the model cannot see is a function, not a capability - and this one
+    only reads, so it must not pause for approval."""
+    from agent.tools import TOOLS
+
+    assert "search_files" in TOOLS
+    assert TOOLS["search_files"]["risk"] == "read"
+    assert classify("search_files", {"pattern": "x"}, autonomous=True)[0] == "auto"
+
+
+# ================================================ FR-205: git in the sandbox
+#
+# "Perform git status, diff, branch, add, commit, push."
+#
+# A TEST rather than a scored case, deliberately. A case cannot force the agent
+# to reach for git - it could read the failing test and fix the code without ever
+# running `git log` - and this project has already measured what happens when a
+# requirement rests on the model electing to do something (Phase O: `learn`
+# called 0 times in 15 sessions). What a case would prove is that the agent
+# CHOOSES git; what FR-205 asks is that git WORKS. This proves the second, which
+# is the part that was never checked.
+
+def _git(workspace, command):
+    """Run one git command in the workspace the way the agent would - through
+    run_shell, so the test exercises the real path rather than subprocess."""
+    import agent.tools as tools
+    return tools.run_shell(command)
+
+
+def test_git_status_diff_and_log_work_in_the_sandbox(tmp_workspace):
+    (tmp_workspace / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert "exit code: 0" in _git(tmp_workspace, "git init -q")
+    assert "exit code: 0" in _git(tmp_workspace, "git add -A")
+
+    out = _git(tmp_workspace, "git commit -q -m 'first'")
+    assert "exit code: 0" in out, f"commit failed - is git identity set in the image? {out}"
+
+    (tmp_workspace / "a.py").write_text("x = 2\n", encoding="utf-8")
+
+    assert "a.py" in _git(tmp_workspace, "git status --short")
+    diff = _git(tmp_workspace, "git diff")
+    assert "-x = 1" in diff and "+x = 2" in diff
+    assert "first" in _git(tmp_workspace, "git log --oneline")
+
+
+def test_git_branch_works(tmp_workspace):
+    (tmp_workspace / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_workspace, "git init -q && git add -A && git commit -q -m first")
+
+    assert "exit code: 0" in _git(tmp_workspace, "git branch feature")
+    assert "feature" in _git(tmp_workspace, "git branch --list")
+
+
+def test_git_commit_has_an_identity(tmp_workspace):
+    """The two lines the image was missing. Without them `git commit` fails with
+    "Please tell me who you are", which reads as the agent doing something wrong
+    rather than the environment being incomplete."""
+    out = _git(tmp_workspace, "git config user.email")
+    assert "exit code: 0" in out and "@" in out
+
+
+# FR-205's `push` is NOT tested and cannot be, by design: a scored run has no
+# route off the machine except the model allowlist (NFR-205). It is asserted,
+# not demonstrated, and CONTEXT.md says so rather than implying otherwise.
+
+
+# ================================================ FR-207: the @tool decorator
+#
+# "Register a new tool by decorating one function; derive its JSON schema
+# automatically from the signature and docstring."
+#
+# THE EXPECTED VALUES BELOW ARE THE HAND-WRITTEN SCHEMAS, captured from TOOLS
+# immediately BEFORE the conversion. That is the whole safety of this change: the
+# schemas are what the model actually sees, so a decorator that quietly reworded
+# one would look like a model regression and be diagnosed for days. Anything that
+# changes them has to change this literal too, deliberately.
+
+HAND_WRITTEN_SCHEMAS = {'read_file': {'name': 'read_file',
+               'description': 'Read a text file from the workspace. Returns numbered '
+                              'lines. Use offset and limit to page through a large '
+                              'file.',
+               'input_schema': {'type': 'object',
+                                'properties': {'path': {'type': 'string',
+                                                        'description': 'Path relative '
+                                                                       'to the '
+                                                                       'workspace '
+                                                                       'root.'},
+                                               'offset': {'type': 'integer',
+                                                          'description': 'First line '
+                                                                         'to return, '
+                                                                         '0-based. '
+                                                                         'Default 0.'},
+                                               'limit': {'type': 'integer',
+                                                         'description': 'How many '
+                                                                        'lines to '
+                                                                        'return. '
+                                                                        'Default '
+                                                                        '500.'}},
+                                'required': ['path']}},
+ 'search_files': {'name': 'search_files',
+                  'description': 'Find where something appears in the workspace. '
+                                 'Returns path:line: matches, never whole files. **Use '
+                                 'this instead of run_shell with grep, find or ls** - '
+                                 'it is bounded, so it cannot flood your context the '
+                                 'way a raw grep across a large repository will. Use '
+                                 'read_file once this has told you which file and '
+                                 'which line to look at.',
+                  'input_schema': {'type': 'object',
+                                   'properties': {'pattern': {'type': 'string',
+                                                              'description': 'Regular '
+                                                                             'expression '
+                                                                             'to '
+                                                                             'search '
+                                                                             'for.'},
+                                                  'glob': {'type': 'string',
+                                                           'description': 'Which files '
+                                                                          'to search, '
+                                                                          'e.g. '
+                                                                          "'**/*.py'. "
+                                                                          'Default all '
+                                                                          'files.'},
+                                                  'paths_only': {'type': 'boolean',
+                                                                 'description': 'Return '
+                                                                                'only '
+                                                                                'the '
+                                                                                'file '
+                                                                                'paths, '
+                                                                                'one '
+                                                                                'per '
+                                                                                'file, '
+                                                                                'without '
+                                                                                'the '
+                                                                                'matching '
+                                                                                'lines. '
+                                                                                'Default '
+                                                                                'false.'}},
+                                   'required': ['pattern']}},
+ 'write_file': {'name': 'write_file',
+                'description': 'Write a file in the workspace, replacing its entire '
+                               'contents. Read the file first; this does not patch, it '
+                               'overwrites.',
+                'input_schema': {'type': 'object',
+                                 'properties': {'path': {'type': 'string',
+                                                         'description': 'Path relative '
+                                                                        'to the '
+                                                                        'workspace '
+                                                                        'root.'},
+                                                'content': {'type': 'string',
+                                                            'description': 'The '
+                                                                           'complete '
+                                                                           'new '
+                                                                           'contents '
+                                                                           'of the '
+                                                                           'file.'}},
+                                 'required': ['path', 'content']}},
+ 'edit_file': {'name': 'edit_file',
+               'description': 'Replace an exact snippet of a file with new text. '
+                              'Prefer this over write_file for any change to an '
+                              'existing file: it costs a few hundred characters '
+                              'instead of the whole file. The snippet must appear '
+                              'exactly once - include surrounding lines to make it '
+                              'unique.',
+               'input_schema': {'type': 'object',
+                                'properties': {'path': {'type': 'string',
+                                                        'description': 'Path relative '
+                                                                       'to the '
+                                                                       'workspace '
+                                                                       'root.'},
+                                               'old_string': {'type': 'string',
+                                                              'description': 'The '
+                                                                             'exact '
+                                                                             'text to '
+                                                                             'replace, '
+                                                                             'copied '
+                                                                             'from the '
+                                                                             'file '
+                                                                             'including '
+                                                                             'indentation.'},
+                                               'new_string': {'type': 'string',
+                                                              'description': 'The text '
+                                                                             'to put '
+                                                                             'in its '
+                                                                             'place.'}},
+                                'required': ['path', 'old_string', 'new_string']}},
+ 'run_python': {'name': 'run_python',
+                'description': 'Run Python in the workspace. Returns stdout, the '
+                               'traceback if it raised, and the VALUE of the final '
+                               'expression - so end with a bare expression to see what '
+                               'it evaluates to, as in a REPL. Prefer this over '
+                               'run_shell for anything that computes: `python -c` '
+                               'throws the value away.',
+                'input_schema': {'type': 'object',
+                                 'properties': {'code': {'type': 'string',
+                                                         'description': 'Python '
+                                                                        'source. The '
+                                                                        'last line may '
+                                                                        'be a bare '
+                                                                        'expression to '
+                                                                        'return its '
+                                                                        'value.'},
+                                                'timeout': {'type': 'integer',
+                                                            'description': 'Seconds '
+                                                                           'before it '
+                                                                           'is killed. '
+                                                                           'Default '
+                                                                           '120.'}},
+                                 'required': ['code']}},
+ 'run_shell': {'name': 'run_shell',
+               'description': 'Run a shell command in the workspace. Returns the exit '
+                              'code, stdout and stderr separately. Use this to run '
+                              'tests.',
+               'input_schema': {'type': 'object',
+                                'properties': {'command': {'type': 'string',
+                                                           'description': 'The command '
+                                                                          'to run.'},
+                                               'timeout': {'type': 'integer',
+                                                           'description': 'Seconds '
+                                                                          'before the '
+                                                                          'command is '
+                                                                          'killed. '
+                                                                          'Default '
+                                                                          '120.'}},
+                                'required': ['command']}}}
+
+
+def test_the_generated_schemas_are_byte_identical_to_the_hand_written_ones():
+    """The equivalence that made the conversion safe to make at all."""
+    from agent.tools import TOOLS
+
+    generated = {name: entry["schema"] for name, entry in TOOLS.items()}
+    assert set(generated) == set(HAND_WRITTEN_SCHEMAS)
+    for name, expected in HAND_WRITTEN_SCHEMAS.items():
+        assert generated[name] == expected, f"{name} drifted from its hand-written schema"
+
+
+def test_a_description_containing_a_colon_is_not_mistaken_for_a_parameter():
+    """search_files' own description says "Returns path:line: matches". A naive
+    split on the first colon would eat it as a parameter line and truncate the
+    text the model reads."""
+    from agent.tools import TOOLS
+
+    described = TOOLS["search_files"]["schema"]["description"]
+    assert "path:line: matches" in described
+    assert described.endswith("which line to look at.")
+
+
+def test_required_comes_from_parameters_without_defaults():
+    from agent.tools import TOOLS
+
+    assert TOOLS["read_file"]["schema"]["input_schema"]["required"] == ["path"]
+    assert TOOLS["edit_file"]["schema"]["input_schema"]["required"] == [
+        "path", "old_string", "new_string"]
+
+
+def test_types_come_from_the_annotations():
+    from agent.tools import TOOLS
+
+    props = TOOLS["search_files"]["schema"]["input_schema"]["properties"]
+    assert props["pattern"]["type"] == "string"
+    assert props["paths_only"]["type"] == "boolean"
+    assert TOOLS["read_file"]["schema"]["input_schema"]["properties"]["offset"]["type"] == "integer"
+
+
+def test_the_decorator_still_declares_risk_in_one_file():
+    """NFR-601 must survive FR-207: risk is the one thing a signature cannot
+    express, so it stays an explicit argument beside the function."""
+    from agent.tools import TOOLS
+
+    assert TOOLS["read_file"]["risk"] == "read"
+    assert TOOLS["search_files"]["risk"] == "read"
+    for name in ("write_file", "edit_file", "run_shell", "run_python"):
+        assert TOOLS[name]["risk"] == "write", name

@@ -5,15 +5,18 @@ schemas is five tools; v1 has three. Add at tool six."* Phase L counted five
 (four built-ins plus MCP's `fetch`) and correctly did NOT create it. Phase M's
 `remember` is the sixth, so the trigger fires.
 
-**What it is NOT is the `@tool` decorator, and that is deliberate.** §13 costed
-that machinery at ~25 lines plus ~5 per tool against ~8 per tool written out, which
-breaks even somewhere above eight HAND-WRITTEN tools; there are five, because
-`fetch`'s schema arrives from the server already in JSON Schema. The stronger
-reason is that the descriptions are load-bearing rather than decorative: the text
-in `edit_file`'s schema coaches the model on picking a unique snippet, and that
-coaching is what took real repositories from 0/9 to 4/7. Deriving a schema from a
-signature either loses that or takes it as a decorator argument - at which point
-the schema has been written anyway.
+**The `@tool` decorator arrived 2026-08-23, and the arithmetic is why.** §13
+costed the machinery at ~25 lines plus ~5 per tool against ~8 per tool written
+out, breaking even above eight HAND-WRITTEN schemas. There were five when this
+file was created and it correctly said no; `search_files` is the eighth, so the
+objection expired. FR-207 is [M] and §0 says a requirement beats existing code,
+but it is worth noting the two only agreed once the count moved.
+
+The descriptions are still load-bearing and are NOT derived from parameter names:
+they come from the docstring, which now carries the exact text the schema dicts
+used to. `edit_file`'s coaching on picking a unique snippet is what took real
+repositories from 0/9 to 4/7, and a decorator that emitted `{"type": "string"}`
+per argument would have satisfied FR-207 while throwing that away.
 
 So this file exists for the reason the tool count actually created: **three modules
 now contribute tools, and something has to own the merge and the budget.**
@@ -26,6 +29,7 @@ module-level import either way would be circular.
 """
 from __future__ import annotations
 
+import inspect
 import json
 
 from agent import config
@@ -38,6 +42,73 @@ class ToolBudgetExceeded(RuntimeError):
     deliberately - by removing a tool or by re-measuring the cap - never by letting
     a run proceed and quietly spending the difference on every turn.
     """
+
+
+# FR-207: "Register a new tool by decorating one function; derive its JSON schema
+# automatically from the signature and docstring."
+#
+# WHY THIS EXISTS NOW AND NOT BEFORE. Section 13 costs the machinery at ~25 lines
+# plus ~5 per tool against ~8 per tool written out, which breaks even above EIGHT
+# hand-written schemas. There were five when registry.py was created, and this
+# file's docstring said so. `search_files` is the eighth, so the arithmetic that
+# argued against it no longer does - and FR-207 is [M], which §0 says beats
+# existing code regardless. Both now point the same way.
+#
+# WHAT IT DOES NOT DERIVE: the prose. Descriptions come from the DOCSTRING, not
+# from the parameter names, because they are the one piece of prompt engineering
+# in this project with a measured effect on the pass rate - `edit_file`'s
+# "the snippet must appear exactly once" coaching is what took real repositories
+# from 0/9 to 4/7. A decorator that generated `{"type": "string"}` per argument
+# would satisfy FR-207 and lose that. The docstring IS the schema text; nothing
+# was rewritten, only moved.
+_JSON_TYPES = {str: "string", int: "integer", bool: "boolean", float: "number"}
+
+
+def _describe(fn) -> tuple[str, dict[str, str]]:
+    """Split a docstring into the tool description and its per-parameter lines.
+
+    The convention is one `name: text` line per parameter, after the prose. A
+    line only counts when `name` is an actual parameter, so a description
+    containing a colon - `Returns path:line: matches` - is not mistaken for one.
+    """
+    names = set(inspect.signature(fn).parameters)
+    prose, params = [], {}
+    for line in (inspect.getdoc(fn) or "").splitlines():
+        head, sep, tail = line.partition(":")
+        if sep and head.strip() in names:
+            params[head.strip()] = " ".join(tail.split())
+        elif not params:
+            prose.append(line)
+    return " ".join(" ".join(prose).split()), params
+
+
+def tool(risk: str):
+    """Attach a generated schema to a tool function (FR-207).
+
+    `risk` is the one thing a signature cannot express, so it stays explicit -
+    and it is declared here, beside the function, which is what keeps NFR-601
+    true: adding a tool touches one file.
+    """
+    def decorate(fn):
+        description, described = _describe(fn)
+        properties, required = {}, []
+        for name, param in inspect.signature(fn).parameters.items():
+            properties[name] = {
+                "type": _JSON_TYPES.get(param.annotation, "string"),
+                "description": described.get(name, ""),
+            }
+            if param.default is inspect.Parameter.empty:
+                required.append(name)
+        fn.spec = {
+            "fn": fn,
+            "risk": risk,
+            "schema": {"name": fn.__name__, "description": description,
+                       "input_schema": {"type": "object", "properties": properties,
+                                        "required": required}},
+        }
+        return fn
+
+    return decorate
 
 
 def toolset() -> dict[str, dict]:

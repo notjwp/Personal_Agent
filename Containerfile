@@ -61,6 +61,18 @@ RUN pip download --no-cache-dir tabulate -d /wheels
 # under --network none, so the agent needs no knowledge of the wheelhouse.
 RUN printf '[global]\nno-index = true\nfind-links = /wheels\n' > /etc/pip.conf
 
+# FR-205 wants git status/diff/branch/add/commit. `git commit` FAILS without an
+# identity, and the failure ("Please tell me who you are") looks like the agent
+# doing something wrong rather than the image missing two lines. Checked, not
+# assumed: user.email was unset until 2026-08-23.
+#
+# safe.directory because the workspace is a bind mount owned by a different uid
+# on the host, which git otherwise refuses to operate on as "dubious ownership".
+RUN git config --system user.email "agent@localhost" \
+ && git config --system user.name  "Personal Agent" \
+ && git config --system init.defaultBranch main \
+ && git config --system --add safe.directory '*'
+
 ENV AGENT_WORKSPACE=/workspace \
     AGENT_HOME=/state \
     PYTHONUNBUFFERED=1 \

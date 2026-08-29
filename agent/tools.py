@@ -13,10 +13,13 @@ one risk is what §13 cut the INSTALL set for.
 
 Adding a tool touches this file only (NFR-601).
 """
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 from agent import config
+from agent.registry import tool
 
 
 def _int(value, default: int) -> int:
@@ -61,8 +64,15 @@ def _nearby(target) -> str:
     return f"{where} contains: {shown}{more}. {SEARCH_HINT}"
 
 
+@tool(risk="read")
 def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
-    """Read `limit` lines starting at `offset` (0-based)."""
+    """Read a text file from the workspace. Returns numbered lines. Use offset
+    and limit to page through a large file.
+
+    path: Path relative to the workspace root.
+    offset: First line to return, 0-based. Default 0.
+    limit: How many lines to return. Default 500.
+    """
     offset, limit = _int(offset, 0), _int(limit, 500)
     target = config.WORKSPACE / path
     if target.is_dir():
@@ -122,31 +132,47 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     return f"{head}\n{body}"
 
 
+@tool(risk="write")
 def write_file(path: str, content: str) -> str:
-    """Write `content` to `path`, replacing the file entirely."""
+    """Write a file in the workspace, replacing its entire contents. Read the
+    file first; this does not patch, it overwrites.
+
+    path: Path relative to the workspace root.
+    content: The complete new contents of the file.
+    """
     target = config.WORKSPACE / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"wrote {path} ({len(content)} chars, {content.count(chr(10)) + 1} lines)"
 
 
+# Why edit_file exists, measured rather than assumed: `write_file` replaces a
+# file ENTIRELY, so a five-line fix means emitting the whole file as a tool
+# argument inside MAX_TOKENS - which caps thinking, text and arguments together.
+# On the first real-repository baseline the files needing edits ran 559 to 2,689
+# lines; `rich/console.py` needs ~25,308 tokens to rewrite, 158% of one reply, so
+# that case was impossible rather than merely expensive. Across 30 runs the agent
+# made 11 writes against 352 reads and scored 0/18, while every run that did
+# manage a write fixed most of its failures.
+#
+# Exact matching only, deliberately. Hermes solves the same problem with a fuzzy
+# patch format; that is hundreds of lines, and CE-02 says a framework earns its
+# place at break-even at the CURRENT scale. If exact matching measurably fails
+# because the model cannot reproduce strings precisely, the traces will show
+# repeated edit errors and fuzzy matching is earned then, not now.
+#
+# The docstring below is the SCHEMA text now (FR-207), so notes that are for a
+# human reader live here instead.
+@tool(risk="write")
 def edit_file(path: str, old_string: str, new_string: str) -> str:
-    """Replace `old_string` with `new_string`. The match must be unique.
+    """Replace an exact snippet of a file with new text. Prefer this over
+    write_file for any change to an existing file: it costs a few hundred
+    characters instead of the whole file. The snippet must appear exactly once -
+    include surrounding lines to make it unique.
 
-    Why this exists, measured rather than assumed: `write_file` replaces a file
-    ENTIRELY, so a five-line fix means emitting the whole file as a tool argument
-    inside MAX_TOKENS - which caps thinking, text and arguments together. On the
-    first real-repository baseline the files needing edits ran 559 to 2,689 lines;
-    `rich/console.py` needs ~25,308 tokens to rewrite, 158% of one reply, so that
-    case was impossible rather than merely expensive. Across 30 runs the agent made
-    **11 writes against 352 reads** and scored 0/18, while every run that did manage
-    a write fixed most of its failures.
-
-    Exact matching only, deliberately. Hermes solves the same problem with a fuzzy
-    patch format; that is hundreds of lines, and CE-02 says a framework earns its
-    place at break-even at the CURRENT scale. If exact matching measurably fails
-    because the model cannot reproduce strings precisely, the traces will show
-    repeated edit errors and fuzzy matching is earned then, not now.
+    path: Path relative to the workspace root.
+    old_string: The exact text to replace, copied from the file including indentation.
+    new_string: The text to put in its place.
     """
     target = config.WORKSPACE / path
     if target.is_dir():
@@ -176,9 +202,17 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
             f"{len(new_string)}, {delta:+d} lines)")
 
 
+# `write` and NOT `destructive`: the DANGER regex in policy.py escalates the
+# dangerous commands, so declaring the whole tool destructive would pause on
+# every `ls`.
+@tool(risk="write")
 def run_shell(command: str, timeout: int = 120) -> str:
-    """Run `command` in the workspace. Exit code, stdout and stderr are reported
-    separately (FR-202)."""
+    """Run a shell command in the workspace. Returns the exit code, stdout and
+    stderr separately. Use this to run tests.
+
+    command: The command to run.
+    timeout: Seconds before the command is killed. Default 120.
+    """
     # Models emit schema-invalid arguments: this one arrived as the STRING "120"
     # on 2 of 5 calls in the first live run, crashing subprocess.run. Coerced here
     # rather than trusting the declared schema, because the OpenAI-compatible path
@@ -240,8 +274,16 @@ except BaseException:
 """
 
 
+@tool(risk="write")
 def run_python(code: str, timeout: int = 120) -> str:
-    """Execute `code` in the workspace and report what it did (FR-203)."""
+    """Run Python in the workspace. Returns stdout, the traceback if it raised,
+    and the VALUE of the final expression - so end with a bare expression to see
+    what it evaluates to, as in a REPL. Prefer this over run_shell for anything
+    that computes: `python -c` throws the value away.
+
+    code: Python source. The last line may be a bare expression to return its value.
+    timeout: Seconds before it is killed. Default 120.
+    """
     done = subprocess.run(
         [sys.executable, "-c", _PYTHON_DRIVER],
         input=code, cwd=config.WORKSPACE,
@@ -254,136 +296,120 @@ def run_python(code: str, timeout: int = 120) -> str:
     )
 
 
-TOOLS = {
-    "read_file": {
-        "fn": read_file,
-        # NFR-601: declared HERE, beside the function and the schema, so adding a
-        # tool touches this file and no other. policy.sync() reads it.
-        "risk": "read",
-        "schema": {
-            "name": "read_file",
-            "description": (
-                "Read a text file from the workspace. Returns numbered lines. "
-                "Use offset and limit to page through a large file."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string",
-                             "description": "Path relative to the workspace root."},
-                    "offset": {"type": "integer",
-                               "description": "First line to return, 0-based. Default 0."},
-                    "limit": {"type": "integer",
-                              "description": "How many lines to return. Default 500."},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    "write_file": {
-        "fn": write_file,
-        "risk": "write",
-        "schema": {
-            "name": "write_file",
-            "description": (
-                "Write a file in the workspace, replacing its entire contents. "
-                "Read the file first; this does not patch, it overwrites."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string",
-                             "description": "Path relative to the workspace root."},
-                    "content": {"type": "string",
-                                "description": "The complete new contents of the file."},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    "edit_file": {
-        "fn": edit_file,
-        "risk": "write",
-        "schema": {
-            "name": "edit_file",
-            "description": (
-                "Replace an exact snippet of a file with new text. Prefer this over "
-                "write_file for any change to an existing file: it costs a few "
-                "hundred characters instead of the whole file. The snippet must "
-                "appear exactly once - include surrounding lines to make it unique."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string",
-                             "description": "Path relative to the workspace root."},
-                    "old_string": {"type": "string",
-                                   "description": ("The exact text to replace, copied "
-                                                   "from the file including indentation.")},
-                    "new_string": {"type": "string",
-                                   "description": "The text to put in its place."},
-                },
-                "required": ["path", "old_string", "new_string"],
-            },
-        },
-    },
-    "run_python": {
-        "fn": run_python,
-        "risk": "write",
-        "schema": {
-            "name": "run_python",
-            "description": (
-                "Run Python in the workspace. Returns stdout, the traceback if it "
-                "raised, and the VALUE of the final expression - so end with a bare "
-                "expression to see what it evaluates to, as in a REPL. Prefer this "
-                "over run_shell for anything that computes: `python -c` throws the "
-                "value away."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string",
-                             "description": "Python source. The last line may be a "
-                                            "bare expression to return its value."},
-                    "timeout": {"type": "integer",
-                                "description": "Seconds before it is killed. Default 120."},
-                },
-                "required": ["code"],
-            },
-        },
-    },
-    "run_shell": {
-        "fn": run_shell,
-        # `write` and NOT `destructive`: the DANGER regex in policy.py escalates
-        # the dangerous commands, so declaring the whole tool destructive would
-        # pause on every `ls`.
-        "risk": "write",
-        "schema": {
-            "name": "run_shell",
-            "description": (
-                "Run a shell command in the workspace. Returns the exit code, "
-                "stdout and stderr separately. Use this to run tests."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The command to run."},
-                    "timeout": {"type": "integer",
-                                "description": "Seconds before the command is killed. Default 120."},
-                },
-                "required": ["command"],
-            },
-        },
-    },
-}
-
-# Order must stay deterministic: tools render first in the prompt, so reordering
-# them invalidates the entire prompt cache on every request.
+# FR-206: repository inspection returning paths and line numbers, NOT file
+# contents. That last clause is the requirement, and it is why `run_shell` with
+# grep does not satisfy it: grep returns every matching line unbounded, which is
+# the context flood shrink() exists to contain. Satisfying the letter of FR-206
+# through run_shell would break the thing the letter protects.
 #
-# Measured in Phase L, and worth knowing before relying on that: the current
-# provider returned cache_read_tokens of 0 on all 15 rows of a scored run, so the
-# cache this ordering protects is not currently being hit at all. The ordering
-# costs nothing to keep and pays off the day the provider changes.
+# Bounds, all three deliberate:
+#   MATCH_CAP     50 results, and the result SAYS when it truncated - a silent cut
+#                 reads as "that is all there is" and the agent stops looking.
+#   LINE_CHARS    120 chars of the matching line. Enough to judge relevance,
+#                 not enough to be a way of reading a file.
+#   rglob root    config.WORKSPACE, so FR-302 holds by construction rather than by
+#                 trusting a pattern not to contain "../".
+MATCH_CAP = 50
+LINE_CHARS = 120
+
+# Directories whose contents are never what anyone is searching for, and which
+# dominate the result cap when included. Measured on this project: .git alone is
+# thousands of files.
+SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "node_modules", ".venv",
+             ".agent", ".mypy_cache", ".tox", "dist", "build", ".eggs"}
+
+
+# Implemented in Python rather than by shelling out to grep or ripgrep, so the
+# walk is rooted at config.WORKSPACE and the gate does not have to parse a
+# command line to know where the search was pointed. (`rg` is also not in the
+# image.)
+#
+# THE ROOT ALONE IS NOT A BOUNDARY, which a test caught rather than review:
+# `Path.glob("../*")` walks straight out of it, and the first version of this
+# returned a file from the parent directory. FR-302 is enforced twice below -
+# once on the pattern, so the refusal is something the agent can act on, and once
+# on each resolved path, which is the check that actually holds because a symlink
+# cannot be spotted in a pattern.
+#
+# Not reusing `policy._inside_workspace` on purpose: policy imports tools, and
+# importing policy here would close the cycle.
+@tool(risk="read")
+def search_files(pattern: str, glob: str = "**/*", paths_only: bool = False) -> str:
+    """Find where something appears in the workspace. Returns path:line: matches,
+    never whole files. **Use this instead of run_shell with grep, find or ls** -
+    it is bounded, so it cannot flood your context the way a raw grep across a
+    large repository will. Use read_file once this has told you which file and
+    which line to look at.
+
+    pattern: Regular expression to search for.
+    glob: Which files to search, e.g. '**/*.py'. Default all files.
+    paths_only: Return only the file paths, one per file, without the matching lines. Default false.
+    """
+    if glob.startswith("/") or ".." in Path(glob).parts:
+        raise ValueError(
+            f"glob {glob!r} points outside the workspace. Patterns are relative "
+            f"to the workspace root - use '**/*' to search everything, or "
+            f"'**/*.py' for one file type.")
+    try:
+        matcher = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(
+            f"{pattern!r} is not a valid regular expression: {exc}. "
+            f"Escape regex characters to search for them literally.") from exc
+
+    root = config.WORKSPACE.resolve()
+    hits, total, scanned = [], 0, 0
+    for target in sorted(config.WORKSPACE.glob(glob)):
+        if not target.is_file() or SKIP_DIRS & set(target.parts):
+            continue
+        # .resolve() follows symlinks, so a link inside the workspace pointing
+        # out resolves outside and is dropped here. Fails closed.
+        resolved = target.resolve()
+        if root not in resolved.parents:
+            continue
+        scanned += 1
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue                      # unreadable is not a failure of the search
+        where = resolved.relative_to(root).as_posix()
+        for number, line in enumerate(text.splitlines(), 1):
+            if not matcher.search(line):
+                continue
+            total += 1
+            if len(hits) >= MATCH_CAP:
+                continue
+            hits.append(where if paths_only
+                        else f"{where}:{number}: {line.strip()[:LINE_CHARS]}")
+
+    if paths_only:
+        # dict.fromkeys keeps first-seen order while collapsing repeats, so a file
+        # with forty matches appears once.
+        hits = list(dict.fromkeys(hits))
+
+    if not hits:
+        return (f"no match for {pattern!r} in {scanned} file(s) under {glob!r}. "
+                f"Widen the glob, or check the pattern is a regular expression.")
+
+    body = "\n".join(hits)
+    if total > MATCH_CAP:
+        body += (f"\n[{MATCH_CAP} of {total} matches shown. Narrow the pattern, "
+                 f"or pass glob= to search fewer files.]")
+    return body
+
+
+# FR-207: the schema is DERIVED from the signature and docstring above, so this
+# is the whole registration. What used to sit here was ~150 lines of dicts whose
+# text had to be kept in step with six functions by hand.
+#
+# Order is deterministic and stays that way: tools render first in the prompt, so
+# reordering them invalidates the prompt cache on every request. (Measured in
+# Phase L: the current provider returns cache_read_tokens of 0, so that cache is
+# not being hit at all today. The ordering costs nothing and pays off the day the
+# provider changes.)
+TOOLS = {fn.__name__: fn.spec for fn in (
+    read_file, search_files, write_file, edit_file, run_python, run_shell)}
+
 SCHEMAS = [entry["schema"] for entry in TOOLS.values()]
 
 

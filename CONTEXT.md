@@ -408,35 +408,26 @@ A requirement without a number is not testable. Targets are the point.
   --------  ---------------  ------------------------------------------------
   NFR-101   Latency          First assistant token within 3 s at p50 on an
                              interactive turn
-                             NOT MEASURABLE as of 2026-08-23, and the reason is
-                             the provider rather than the number: the
-                             OpenAI-compatible path sends no stream=True and
-                             calls on_text only once the whole reply has
-                             arrived, so on NIM there is no first token - there
-                             is one block at the end. The Anthropic path does
-                             stream. Measuring it today would report full-reply
-                             latency under a name that means something else.
+                             NOT MEASURABLE 2026-08-23: the OpenAI-compatible
+                             path sends no stream=True, so there is no first
+                             token - one block arrives at the end. The Anthropic
+                             path does stream.
   NFR-102   Overhead         Framework cost per loop iteration <= 250 ms,
                              excluding model and tool time
-                             MEASURED 2026-08-23: 6.53 ms at p95 over 140
-                             iterations, offline. Satisfied with 38x headroom,
-                             and pinned by a test rather than a one-off script.
+                             MEASURED 2026-08-23: 6.53 ms p95, n=140. Pinned
+                             by a test, not a one-off script.
   NFR-103   Latency          Checkpoint write <= 50 ms at p95
-                             MEASURED 2026-08-23: 11.40 ms at p95 over 180
-                             writes. Satisfied, and pinned by a test.
+                             MEASURED 2026-08-23: 11.40 ms p95, n=180.
   NFR-104   Context          No single tool result exceeds 2,000 tokens after
                              shrinking
   NFR-201   Safety           Zero writes outside the workspace root across the
                              full eval suite
-                             AMENDED 2026-08-21 (Phase K): exactly TWO declared
-                             writable roots - the workspace, and the agent home
-                             holding checkpoints, memory and skills. Memory has
-                             to survive reset.sh, which wipes the workspace by
-                             design, so it cannot live inside it. Everything
-                             else is refused BY THE KERNEL, the project tree
-                             included, and each refusal is recorded with the
-                             path it targeted. Reason and evidence: ROADMAP.md
-                             Phase K, eval/CHANGELOG.md.
+                             AMENDED 2026-08-21: exactly TWO declared writable
+                             roots - the workspace, and the agent home. State
+                             must survive reset.sh, which wipes the workspace,
+                             so it cannot live inside it. Everything else is
+                             refused BY THE KERNEL, the project tree included,
+                             and each refusal is recorded with its target path.
   NFR-202   Safety           No destructive command executes unapproved in
                              interactive mode; none at all in autonomous mode
   NFR-203   Security         Secrets never enter model context; env-var
@@ -466,6 +457,14 @@ A requirement without a number is not testable. Targets are the point.
   NFR-603   Maintainability  Prompts live in version-controlled files, not
                              string literals
   NFR-701   Portability      Runs on Fedora natively and on Windows under WSL2
+                             AMENDED 2026-08-23, measured not asserted. READS
+                             AS: the agent runs wherever a container runtime
+                             does. DEMONSTRATED: the offline suite passes
+                             390/390 on Fedora 41 / Python 3.13.9 and on
+                             python:3.12-slim - two distributions, two Python
+                             minors, same pins. NOT demonstrated: "natively",
+                             since §11 makes a container mandatory anyway, and
+                             WSL2, which remains untested.
   NFR-702   Portability      Model provider swappable behind a single adapter
   NFR-703   Independence     No hosted service required for state; local SQLite
   NFR-801   Usability        Approval or rejection resolvable in one keystroke
@@ -513,77 +512,51 @@ exists.
     search plus text extraction covers most real requests at a fraction of the
     spend.
 
+  NFR-802 vs FR-302 and NFR-201            ADDED 2026-08-23
+    "All agent artifacts under ONE inspectable directory" cannot be satisfied
+    without breaking one of the other two, and the collision is structural
+    rather than a tidying job left undone.
+      - FR-302 confines read_file to the workspace. A spilled artifact written
+        outside it is unreadable BY THE MODEL, and shrink()'s entire design is
+        that the model can re-read a spill it was given a path to.
+      - NFR-201 (as amended) puts durable state outside the workspace precisely
+        because reset.sh wipes the workspace between runs.
+    Resolution: TWO declared inspectable roots, not one.
+      .agent/artifacts/  inside the workspace, where the model can read them
+      /state             outside it, where reset.sh cannot reach
+    Both are declared, both are inspectable, and nothing is hidden - which is
+    what NFR-802 was protecting. Moving artifacts to /state would satisfy the
+    wording and break the mechanism, so the wording is what gives way.
+
 
 --------------------------------------------------------------------------------
 9. BUILD SEQUENCE — THE ONLY ORDER THAT MATTERS
 --------------------------------------------------------------------------------
 
-Do not implement sections 5-7 in order. Build this instead.
+Do not implement sections 5-7 in order. Build in the order below.
 
 TARGET LOOP FOR V1: given a repository with a failing test, make it pass.
-Bounded, scored by exit code, needs no human judgement, and recognisable to
-anyone reviewing the project.
+Bounded, scored by exit code, needs no human judgement.
 
-Each step below has an EXIT CRITERION. Do not begin the next step until it
-holds. If a step overruns its estimate by more than double, stop and reduce
-scope rather than pushing through.
+Each step has an EXIT CRITERION; do not begin the next until it holds. If a step
+overruns its estimate by more than double, stop and reduce scope.
 
-................................................................................
-  STEP 1 — FIXTURES AND A NULL AGENT                              ~1.5 days
-................................................................................
+  STEP 1  FIXTURES AND A NULL AGENT.  Prove the rig works before there is
+          anything to measure. `app.invoke()` returns its input unchanged, so a
+          0/5 is unambiguously the agent rather than a broken reset.sh.
+          EXIT: the harness prints `pass 0/5`; every setup exits 0 and every
+          check exits non-zero; deleting a fixture's bug by hand flips that case
+          to pass, which is what proves the check discriminates.
+          TRAPS, still live whenever a case is added: a check that fails for the
+          WRONG reason (a collection error rather than an assertion) will mask a
+          working agent later, so read the output rather than the exit code; and
+          reset.sh must remove untracked files, not just `git checkout`, because
+          the agent creates them.
 
-  Goal: prove the measurement rig works before there is anything to measure.
-
-  Deliverables
-    Containerfile          python:3.12-slim + git + pytest. No agent code.
-    scripts/reset.sh       takes a case id, restores /workspace to that case's
-                           known-broken state. Must be idempotent: running it
-                           twice in a row produces the identical tree.
-    eval/fixtures/<id>/    the broken repo for each case, committed to git
-    eval/tasks.jsonl       5 dev cases (schema in section 12):
-                             fix-import       a broken relative import
-                             add-endpoint     a missing route plus its test
-                             off-by-one       a range bug in a pure function
-                             broken-fixture   a pytest fixture with a bad yield
-                             missing-dep      an uninstalled package
-    eval/harness.py        runner and scorer
-    agent/graph.py         a NULL AGENT: `app.invoke(...)` returns the input
-                           state unchanged. No model call. No tools.
-
-  Why the null agent: eval/harness.py imports `app` from graph.py. Without a
-  stub you cannot execute the harness at all, so a 0/5 in step 3 is ambiguous
-  between "the agent failed" and "reset.sh is broken". The stub removes that
-  ambiguity permanently.
-
-  EXIT CRITERION
-    Harness runs end to end and prints `pass 0/5`. For every case the setup
-    command exits 0 and the check command exits non-zero. Delete a fixture's
-    bug by hand, re-run, and that case flips to pass — this confirms the check
-    command actually discriminates rather than always failing.
-
-  Traps
-    - A check command that fails for the wrong reason (collection error, not
-      assertion failure) will mask a working agent later. Verify each check
-      fails on the intended assertion.
-    - reset.sh must remove untracked files, not just `git checkout`. The agent
-      will create files.
-
-................................................................................
-  STEP 2 — THE THINNEST LOOP THAT RUNS                            ~1 day
-................................................................................
-
-  Goal: the smallest thing that can pass a case.
-
-  In scope
-    Nodes:        act -> gate -> execute -> observe -> reflect
-    Tools:        read_file, write_file, run_shell
-    Checkpointer: yes. One line, and it is how you inspect failed runs in
-                  step 4. MemorySaver is acceptable for v1; SqliteSaver is
-                  better and no harder.
-    Tracing:      per-case full message dump (see below)
-
-  Explicitly NOT in scope
-    plan node, compact node, memory, web, scheduler, worker, TUI
+  STEP 2  THE THINNEST LOOP THAT RUNS.  act -> gate -> execute -> reflect,
+          three tools, real tool-calling, tracing from the start.
+          EXIT: at least one dev case passes end to end, and the trace shows the
+          tool calls that did it.
 
   Required code changes from the skeleton
     (a) Rewire the entry edge: START -> "act", not START -> "plan".
@@ -619,32 +592,13 @@ scope rather than pushing through.
         list plus per-call metadata: tool name, verdict, duration, input bytes,
         output bytes, spilled path. Step 4 is unactionable without this.
 
-  EXIT CRITERION
-    At least one dev case passes. Trace files exist and are readable for all
-    five. A deliberately introduced tool exception appears as an observation
-    in the trace rather than crashing the run.
 
-................................................................................
-  STEP 3 — BASELINE                                               ~1 hour
-................................................................................
+  STEP 3  BASELINE.  A number with an error bar, not a number: 3 runs per case.
+          EXIT: the baseline is recorded in eval/CHANGELOG.md with its
+          conditions - model, split, date, blocked runs excluded.
+          TRAP: a case that passes 1 of 3 seeds is NOT a passing case. Report
+          pass counts, never a single run.
 
-  Goal: a number with an error bar, not a number.
-
-  Run the 5 dev cases at 3 seeds each = 15 invocations. Record per case:
-  pass count out of 3, median turns, median tokens, terminal verdict
-  distribution.
-
-  Expect 1/5 to 2/5. That is the correct baseline and not a problem.
-
-  EXIT CRITERION
-    A committed baseline row: pass rate, variance across seeds, median turns,
-    median tokens. Everything after this is measured as a delta against it.
-
-  Trap
-    A case that passes 1 of 3 seeds is not a passing case. Report pass counts,
-    never a single run.
-
-................................................................................
   STEP 4 — ONE FIX PER CYCLE                                      repeat
 ................................................................................
 
@@ -674,22 +628,16 @@ scope rather than pushing through.
   EXIT CRITERION per cycle
     Baseline re-run at 3 seeds, delta recorded, decision logged.
 
-................................................................................
-  STEP 5 — HOLD-OUT AND STABILISE                                 ~2 days
-................................................................................
+.............................................................................
 
-  Goal: confirm you improved the agent rather than the five dev cases.
+  STEP 5  HOLD-OUT AND STABILISE.  Confirm you improved the agent rather than
+          the dev cases. Write 10 further cases and DO NOT look at their traces
+          during step 4; run them only at milestones.
+          EXIT: dev stable at >= 4/5 across 3 seeds, and the held-out set scored
+          once with the result recorded WHATEVER it is. A held-out score well
+          below dev is information, not failure - it says which fixes were
+          general.
 
-  Write 10 further cases and DO NOT look at their traces during step 4. Run
-  them only at milestones. Five cases means one flip is a 20% swing, and
-  tuning against five overfits to five.
-
-  EXIT CRITERION
-    Dev set stable at >= 4/5 across 3 seeds, and the held-out 10 run once with
-    the result recorded — whatever it is. A held-out score well below the dev
-    score is information, not failure: it tells you which fixes were general.
-
-................................................................................
   AFTER V1 — LAYER ORDER
 ................................................................................
 
@@ -707,6 +655,9 @@ scope rather than pushing through.
 
   The stated order is a prediction, not a plan. If compaction moves nothing and
   the plan node moves 20 points, the prediction was wrong and the numbers win.
+
+
+--------------------------------------------------------------------------------
 
 
 --------------------------------------------------------------------------------
@@ -743,19 +694,14 @@ scope rather than pushing through.
   - A web UI. CLI/TUI only.
   - Voice (FR-704 is explicitly [W]).
   - A general-purpose plugin marketplace or dynamic tool loading.
-    AMENDED 2026-08-21 (Phase L): dynamic tool loading is permitted ONLY through
-    MCP servers meeting all three of the following. A marketplace, and run-time
+    AMENDED 2026-08-21: permitted ONLY through MCP servers meeting all three of
+    (a) baked into the image at BUILD time, since pip.conf sets no-index and a
+    server therefore cannot be introduced mid-run; (b) run INSIDE the sandbox as
+    a subprocess, so a server cannot have host access the container does not;
+    (c) every tool risk-classified BEFORE its schema reaches the model -
+    policy.register() records an unclassified tool as `destructive`, never
+    `read`. Bounded by config.MAX_SCHEMA_CHARS. A marketplace, and run-time
     installation of a server, remain non-goals.
-      (a) baked into the image at BUILD time - /etc/pip.conf sets no-index, so a
-          server cannot be introduced mid-run;
-      (b) run INSIDE the sandbox, as a subprocess of the agent, inheriting the
-          container's mounts and network namespace. A server on the host would
-          have host access and would make the container decorative;
-      (c) every tool risk-classified BEFORE its schema reaches the model.
-          policy.register() records an unclassified tool as `destructive`, never
-          `read`, so it prompts interactively and is refused unattended.
-    Bounded by config.MAX_SCHEMA_CHARS, because schemas are re-sent on every
-    request. Reason and evidence: ROADMAP.md Phase L, eval/CHANGELOG.md.
   - Vector search before keyword recall has been measured and found wanting.
   - Fine-tuning or local model hosting for the orchestrator.
   - Windows-native support outside WSL2.
@@ -765,195 +711,100 @@ scope rather than pushing through.
 12. REPOSITORY LAYOUT
 --------------------------------------------------------------------------------
 
-This is the V1 layout, not the finished system. Create these files and no
-others. A file that exists before its layer is earned will be filled with
-speculative code and will rot.
+Create these files and no others. A file that exists before its layer is earned
+will be filled with speculative code and will rot.
+
+WHY EACH DEVIATION WAS ALLOWED IS IN eval/CHANGELOG.md, one section per phase.
+This section records WHAT exists and the one-line reason; it is not the place to
+re-argue a decision that has already been measured.
 
   personal-agent/
-    pyproject.toml       dependencies, package metadata
-    Containerfile        sandbox image
-    .gitignore           must include .agent/
-    README.md            baseline and current numbers table
+    pyproject.toml     dependencies, package metadata
+    Containerfile      sandbox image
+    NOTICE             third-party attribution, when any code is derived
+    .gitignore         must include .agent/ and hermes_copy/
+    README.md          baseline and current numbers table
     agent/
       __init__.py
-      config.py          SINGLE source of truth: WORKSPACE root, MODEL, per-
-                         tool output caps, turn/token budgets, compaction
-                         threshold, head/tail line counts
-      tools.py           the v1 tool functions plus their hand-written schemas
-                         and, since 2026-08-23, each tool's RISK - which is what
-                         makes NFR-601 true. run_python added for FR-203: it
-                         returns the value of the final expression, which
-                         run_shell("python -c ...") cannot, because -c discards
-                         it. read_file on a directory returns the listing rather
-                         than an error, which is FR-201 without a second schema
-                         charged on every request.
-      policy.py          classify() — the gate's entire logic, no side effects
-      context.py         shrink()
-      graph.py           AgentState, node functions, graph wiring
-                         PLANNING ADDED (FR-101, FR-105, UR-02): `phase`, `plan`,
-                         `cursor` and `plan_turns` on the state, one DETERMINISTIC
-                         node (`adopt`), and section 9 step 2 (b)'s cursor check
-                         restored - it said to do so "only when the plan node is
-                         added", and this is that moment.
-                         Section 3 draws PLAN as a node that calls a model. It is
-                         built as a PHASE of the existing loop instead, and CE-04
-                         is why: two nodes that never branch apart are one node,
-                         and planning differs from working only in the prompt act
-                         injects, what the gate refuses, and how reflect exits.
-                         Section 13 governs the code shape where the two disagree.
-                         The result is BETTER than section 3's own count - it
-                         budgets three model-calling nodes and this adds none.
-                         NOT justified by `replan`, which fired ONCE in 712
-                         recorded rows. The justification is FR-101, FR-105 and
-                         FR-702, plus UR-02 and UR-05.
-                         DEFAULT OFF, and FR-101 is NOT SATISFIED. Across nine
-                         scored runs the plan was never written: this provider
-                         keeps emitting tool calls once its history holds them -
-                         measured with `tools` absent from the request entirely -
-                         so the phase never reaches a text-only reply and `adopt`
-                         falls back to the goal as a single step every time.
-                         THE CE-04 ARGUMENT ABOVE IS REFUTED BY THAT. Planning and
-                         working DO branch apart, in the one way that mattered:
-                         the MESSAGE LIST. A phase inherits the tool-call history,
-                         and that history is what prevents the plan being written.
-                         Section 3 drew PLAN as its own model-calling node for
-                         exactly this reason. The next attempt gives it a fresh
-                         short context - the goal plus a digest of what was read.
-                         What survives measurement: the read-only gate refused
-                         every write across nine runs, and PLAN_MAX_TURNS kept
-                         research off the working budget. NFR-402 was breached at
-                         60-66k median against 60,000. See eval/CHANGELOG.md.
-      cli.py             entrypoint: python -m agent "goal"
-      tui.py             ADDED with the Textual front end. NOT new scope: FR-701
-                         is [M] and reads "Provide a CLI/TUI chat with streamed
-                         output", and section 11's non-goals say "A web UI.
-                         CLI/TUI only." The CLI half shipped in v1; the TUI half
-                         had no implementation and FR-701's word "chat" had no
-                         answer at all - a follow-up meant killing the process
-                         and resuming with nothing new to say.
-                         Earned under CE-01 as the SECOND implementation of the
-                         interface layer, which is the standard provider.py met
-                         with a second provider. cli.py stays the headless,
-                         scriptable path. textual is imported INSIDE the --tui
-                         branch, never at module top, so the CLI, the eval
-                         harness and the unit suite all still run where it is
-                         not installed (NFR-602).
-                         FR-702's MACHINERY is in - the header carries
-                         "step 2/4" beside turn, tokens and verdict, and the plan
-                         modal shows every step before anything is written - but
-                         the requirement is NOT satisfied, because the plan being
-                         displayed is `adopt`'s fallback: the goal copied verbatim
-                         as one step. See the planning note under graph.py.
+      config.py        SINGLE source of truth: workspace root, model, per-tool
+                       caps, turn/token/second budgets, schema cap
+      tools.py         tool functions, their docstrings (which ARE the schemas
+                       since FR-207) and each tool's risk - one file per tool,
+                       which is what makes NFR-601 true
+      policy.py        classify() - the gate's entire logic, no side effects
+      context.py       shrink(), and redact() inside it (NFR-203)
+      graph.py         AgentState, node functions, graph wiring
+      cli.py           entrypoint: python -m agent "goal"
+      tui.py           Textual front end. FR-701 reads "CLI/TUI chat" and §11
+                       says "CLI/TUI only", so this is scope arriving late, not
+                       new scope. Earned under CE-01 as the SECOND
+                       implementation of the interface layer - provider.py's
+                       standard. textual is imported inside the --tui branch so
+                       the CLI, harness and suite run without it (NFR-602).
+      registry.py      merged tool view, schema budget, and the @tool decorator
+                       (FR-207, added at the eighth hand-written schema, which
+                       is where §13's own arithmetic stops objecting)
+      mcp.py           MCP client: stdio, servers as subprocesses inside the
+                       sandbox, tools risk-classified before exposure (§11
+                       amendment)
+      memory.py        episodes in SQLite FTS5 + the AGENT.md profile
+      skills.py        agentskills.io loading, and extraction at finish
+      provider.py      earned by a SECOND implementation: Anthropic plus any
+                       OpenAI-compatible endpoint (CE-01)
     prompts/
-      SOUL.md            system prompt, version controlled (NFR-603)
-    tests/
-      test_policy.py     path escape, danger regex, mode downgrade
-      test_context.py    under cap, over cap, spill path present in output
-      test_reflect.py    every verdict branch
+      SOUL.md          system prompt, version controlled (NFR-603)
+      PLAN.md          the planning instruction, same rule
+    tests/             test_policy, test_context, test_reflect are the three §12
+                       allowed. SIX stated deviations, each to the same standard
+                       - the component's failure is SILENT or is where consent
+                       is decided: test_nodes (every deterministic node, §10),
+                       test_cli and test_tui (the approval prompt), test_harness
+                       (a wrong denominator does not crash, it misreports),
+                       test_mcp (third-party code inside the trust boundary),
+                       test_memory (a memory that never retrieves is
+                       indistinguishable from a bad day). Do not add a seventh
+                       without meeting that bar.
     eval/
-      harness.py         runner and scorer
-      tasks.jsonl        fixture cases (5 dev + 10 held-out, flagged by field)
-      fixtures/<id>/     the broken repo for each case, committed
-      runs/<ts>/         summary.jsonl + <case-id>.json full traces
-      CHANGELOG.md       one row per tuning cycle
-    tests/
-      test_tui.py        ADDED with the TUI, the SIXTH stated deviation. Same
-                         ground as test_cli.py - the approval prompt is where
-                         consent is decided - but a NEW risk rather than a second
-                         copy of that one: a modal has dismissal paths a keystroke
-                         loop cannot have (escape, a click outside, a closed
-                         window), and one that answers "allow" when dismissed is
-                         a security defect that manual testing finds only by
-                         accident. Driven through Textual's own headless pilot,
-                         so it needs no terminal and no API key.
-      test_memory.py     ADDED Phase M, the FIFTH stated deviation. Justified on
-                         the same standard: memory is the one component whose
-                         failure is SILENT by construction. A broken tool throws;
-                         a memory that never retrieves just makes the agent look
-                         forgetful, which is indistinguishable from a model
-                         having a bad day.
-      test_mcp.py        ADDED Phase L, the FOURTH stated deviation from the
-                         three-file tests/ allowlist. Justification, to the same
-                         standard as the other three: agent/mcp.py is the first
-                         component that puts a THIRD PARTY's code inside the
-                         trust boundary, and its failure mode is not a crash but
-                         a tool that quietly does something other than its
-                         schema says, or one trusted because nobody classified
-                         it. Neither shows up in the other suites.
-    scripts/
-      reset.sh           restore workspace to a fixture's known state
-    .agent/              RUNTIME STATE, gitignored
-      artifacts/         spilled tool output (inside the workspace: the model
-                         has to be able to read a spill without tripping FR-302)
-      egress/            proxy config and the allowlist a run was measured under
-      homes/<case>-<n>/  a BLANK agent home per scored case-run
+      harness.py       runner and scorer
+      tasks.jsonl      fixture cases, flagged by split
+      fixtures/<id>/   the broken repo for each case, committed. No nested .git
+      runs/<ts>/       summary.jsonl + <case-id>.json full traces
+      CHANGELOG.md     one section per cycle: hypothesis, change, before, after
+    scripts/reset.sh   restore the workspace to a fixture's state
+    .agent/            RUNTIME STATE, gitignored
+      artifacts/       spilled tool output. INSIDE the workspace, because the
+                       model must be able to read a spill without tripping
+                       FR-302 - see the NFR-802 conflict in §8.2
+      egress/          proxy config and the allowlist a run was measured under
+      homes/<case>-<n>/ a BLANK agent home per scored case-run
 
-  ~/.personal-agent/     THE AGENT HOME, mounted at /state (amended NFR-201).
-    state.db             checkpoints
-    AGENT.md             durable user profile, written by the agent
-                         Outside the project tree, which the container now
-                         mounts read-only, and outside the workspace, which
-                         reset.sh wipes between runs.
+  ~/.personal-agent/   THE AGENT HOME, mounted at /state (amended NFR-201).
+    state.db           checkpoints
+    memory.db          episodes
+    AGENT.md           durable profile, written by the agent
+                       Outside the project tree (mounted read-only) and outside
+                       the workspace (which reset.sh wipes).
 
-DEFERRED FILES — create each only when its layer is earned
+DEFERRED FILES - create each only when its trigger fires
 
-  agent/registry.py    the @tool decorator and schema derivation. Break-even
-                       against hand-written schemas is five tools; v1 has
-                       three. Add at tool six.
-                       ADDED Phase M: `remember` is the sixth tool, so the
-                       trigger fires. It owns the merged tool view and the
-                       schema budget - check_budget() had been living in mcp.py,
-                       which stopped being right once a second source of tools
-                       appeared.
-                       The @tool DECORATOR is still NOT built, and section 13's
-                       own arithmetic is why: ~25 lines + ~5/tool against ~8/tool
-                       hand-written breaks even above EIGHT hand-written tools,
-                       and there are five (fetch's schema comes from the server).
-                       The descriptions are also load-bearing - edit_file's text
-                       coaches the model and is what took real repositories from
-                       0/9 to 4/7. A derived schema loses it.
-  agent/mcp.py         ADDED Phase L. The MCP client: stdio transport, servers
-                       as subprocesses inside the sandbox, tools registered
-                       through policy.register(). Earned by the §11 amendment
-                       above, which permits it under three stated conditions.
-  agent/memory.py      ADDED Phase M. Its trigger - "when episodic recall has
-                       something worth recalling" - fired once sessions could
-                       chain. Episodes in SQLite FTS5 at /state/memory.db plus
-                       the AGENT.md profile below. FR-406 and FR-407 are [S],
-                       and section 9 puts [S] in scope once the [M] set passes
-                       evaluation, which it has (Definition of Done 9/9): this
-                       is scope arriving on schedule, not a liberty.
-                       FR-408 (vectors) NOT built - keyword recall was measured
-                       and did not fall short, which is the only thing that
-                       earns them.
   agent/web.py         when FR-501/502 enter scope
-  agent/worker.py      when FR-6xx enters scope. NOT in v1 — section 9 lists
-                       the scheduler and worker as explicitly out of scope.
+  agent/worker.py      when FR-6xx enters scope
 
 RESOLVED DEFECTS FROM THE PREVIOUS LAYOUT
 
-  - state.py folded into graph.py. One caller, one implementation.
-  - The workspace root was defined independently in two modules. FR-302 and
-    NFR-201 both depend on those agreeing. It now lives in config.py alone.
-  - AGENT.md moved out of prompts/. It is runtime-mutable state the agent
-    writes; keeping it under a version-controlled prompts directory forces
-    either committed agent scribbles or a gitignored file inside a tracked
-    folder.
-  - tests/ added. NFR-602 requires it and nothing previously satisfied it.
-  - cli.py added. FR-701 is [M] and nothing in the layout was invocable
-    outside the eval harness.
+  - state.py folded into graph.py: one caller, one implementation.
+  - The workspace root was defined in two modules. FR-302 and NFR-201 both
+    depend on those agreeing, so it lives in config.py alone.
+  - AGENT.md moved out of prompts/: it is runtime-mutable state the agent
+    writes, not a version-controlled prompt.
+  - tests/ added (NFR-602). cli.py added (FR-701 is [M] and nothing was
+    invocable outside the harness).
 
 Task fixture schema (one JSON object per line in eval/tasks.jsonl):
 
-  {
-    "id":        "fix-import",
-    "goal":      "Tests in tests/ fail on an import error. Fix it.",
-    "setup":     "scripts/reset.sh fix-import",
-    "check":     "cd /workspace && pytest -q",
-    "split":     "dev",
-    "max_turns": 12,
-    "budget":    200000
-  }
+  {"id": "fix-import", "goal": "Tests in tests/ fail on an import error. Fix it.",
+   "setup": "scripts/reset.sh fix-import", "check": "cd /workspace && pytest -q",
+   "split": "dev", "max_turns": 12, "budget": 200000}
 
 
 --------------------------------------------------------------------------------
@@ -987,48 +838,15 @@ Binding on the implementing agent. Violations are defects, not style notes.
          every already-executed tool fires a second time. This separation is
          load-bearing, not stylistic.
 
-Applying CE-01 to CE-06 to the v1 skeleton removes roughly 80 of 205 lines:
+The v1 skeleton lost roughly 80 of 205 lines to these rules: a custom reducer
+and its sentinel (CE-06), the @tool decorator at three tools (CE-02, since
+earned at eight), observe as a separate node (CE-04), and four state fields
+nothing read (CE-03). The full accounting is in eval/CHANGELOG.md.
 
-  CUT                                    RULE   RATIONALE
-  -------------------------------------  -----  ------------------------------
-  merge() reducer + __replace__ sentinel  CE-06  nodes return the full list;
-                                                 compaction becomes an ordinary
-                                                 return
-  @tool decorator + inspect machinery     CE-02  ~25 lines + 5/tool against
-                                                 ~8/tool hand-written; three
-                                                 tools is below break-even
-  execute and observe as separate nodes   CE-04  also removes raw_results from
-                                                 state
-  scratch field                           CE-03  written by observe, read by
-                                                 nothing
-  plan and cursor fields                  CE-03  no plan node at v1
-  INSTALL set in policy.py                CE-02  the sandbox is why pip install
-                                                 is harmless; two mechanisms
-                                                 guarding one risk
-  max_output threaded through state       CE-03  read from the tool dict at the
-                                                 use site
-  module-level SOUL = open(...).read()    CE-05  load inside the node
-
-V1 STATE SHAPE — no reducers, no Annotated, no operator import
-
-  class AgentState(TypedDict):
-      messages: list[dict]      # default overwrite; nodes return full list
-      turns: int
-      max_turns: int
-      spent_tokens: int
-      budget_tokens: int
-      failures: int             # CONSECUTIVE failed turns, reset on success
-      verdict: str | None
-      approved: list[dict]
-      denied: list[dict]
-
-config.py is new surface area and still nets negative: it collapses the two
-workspace-root definitions into one and pulls the magic numbers (compaction
-threshold, head/tail line counts, per-tool caps) out of three modules.
-
-shrink() returns a plain string, not a tuple. The spill path belongs inside
-the returned text where the model can act on it — that was the only place it
-was ever useful.
+State is a plain TypedDict - no reducers, no Annotated, no operator import.
+Nodes return the FULL messages list, so compaction is an ordinary return rather
+than a custom merge. shrink() returns a plain string, not a tuple: the spill
+path belongs inside the returned text, where the model can act on it.
 
 RECONCILIATION WITH SECTIONS 3 AND 4
 
