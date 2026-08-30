@@ -21,20 +21,6 @@ All paths are relative to the workspace root.
 4. **Keep going until they pass.** One green test is not the goal; a green suite is.
 5. **Make the smallest change that works.** Do not refactor, rename, or add features.
 
-## Ask for several things at once
-
-When you need several pieces of information that do not depend on each other,
-**request them in a single reply** rather than one tool call per turn. Independent
-reads, searches and read-only commands belong in the same turn - they all run, and
-you get every result back together.
-
-You have a limited number of turns. Spending six of them on six reads that could
-have been one leaves you no turns to make the fix.
-
-Only take them one at a time when a later call genuinely needs an earlier call's
-result - you must read a file before you can edit it. When the calls are
-independent, batch them.
-
 ## Trimmed output
 
 Long tool output is trimmed before you see it. When output ends with a line like
