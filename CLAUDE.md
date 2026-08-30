@@ -216,12 +216,23 @@ abstractions for single-use code, unrequested configurability, or error handling
 scenarios. If 200 lines could be 50, rewrite it. Ask: *would a senior engineer call this
 overcomplicated?*
 
-**3. Surgical changes.** Touch only what you must. Do not "improve" adjacent code, comments or
+**3. Comments earn their place, and the ceiling is three lines.** State *why*, never
+*what* — the code says what. No comment longer than 3 lines; if the reasoning needs more,
+it belongs in `eval/CHANGELOG.md` with a one-line pointer here. Do not narrate history in
+source ("this was refuted", "the first version did X"), do not restate the requirement ID
+and its text, and do not explain a decision the code makes obvious.
+
+**EXCEPTION, and it is the only one: tool docstrings in `agent/tools.py` are not comments.**
+`@tool` derives the JSON schema description from them, so the model reads them at runtime -
+`edit_file`'s wording took real repositories 0/9 to 4/7. They are prompt text and are
+governed by measurement, not by this rule.
+
+**4. Surgical changes.** Touch only what you must. Do not "improve" adjacent code, comments or
 formatting; do not refactor what is not broken; match existing style. Remove imports and variables
 *your* change orphaned — mention pre-existing dead code rather than deleting it. **The test: every
 changed line traces to the request.**
 
-**4. Goal-driven execution.** Turn tasks into verifiable goals — "add validation" becomes "write
+**5. Goal-driven execution.** Turn tasks into verifiable goals — "add validation" becomes "write
 tests for invalid inputs, then make them pass". For multi-step work, state a brief plan with a
 verification per step. Strong success criteria allow independent looping; weak ones ("make it
 work") force constant clarification.

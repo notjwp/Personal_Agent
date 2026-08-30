@@ -55,18 +55,9 @@ class ProviderMisconfigured(RuntimeError):
 # releases, so one table serves both without importing both to compare classes.
 RETRYABLE = ("RateLimitError", "APITimeoutError", "APIConnectionError",
              "InternalServerError",
-             # A 404 on the model endpoint. Measured mid-cycle: a run died at turn 0
-             # with 0 tokens on NotFoundError, and the same model answered a probe
-             # minutes later - so the endpoint had blinked, not vanished. Left
-             # unclassified it fell through to "a crashed agent is a real result"
-             # and was scored as a failed case, which is exactly what the standing
-             # rule forbids: a run that never reached the model measured nothing.
-             #
-             # Retryable rather than fatal, deliberately. A genuinely wrong model
-             # name fails every attempt, so the retries cost three quick 404s and
-             # the run is then excluded as blocked - visible, and not counted. A
-             # transient blink recovers on the first retry. Treating it as fatal
-             # would abort a whole scored suite over one hiccup.
+             # A 404 on the model endpoint is RETRYABLE, not fatal: measured mid-cycle, an
+             # endpoint blinked and returned NotFoundError for a model that existed before
+             # and after. Treating it as fatal would score the outage as agent failure.
              "NotFoundError")
 FATAL = ("AuthenticationError", "PermissionDeniedError")
 
@@ -156,11 +147,8 @@ def _call_openai_compatible(messages, system, tools, on_text) -> Reply:
             timeout=settings.REQUEST_TIMEOUT,
             max_retries=settings.MAX_ATTEMPTS - 1,
         )
-        # Deliberately no thinking, no effort, no cache_control: those are Anthropic-only
-        # and sending them here produces confusing 400s rather than a clear failure.
-        # `tools` is omitted rather than sent empty: several OpenAI-compatible
-        # endpoints reject `tools: []` with a 400, and the planning phase's last
-        # turn deliberately exposes none.
+        # Deliberately no thinking, effort or cache_control - Anthropic-only, and
+        # sending them here produces confusing 400s rather than a clear failure.
         request = dict(model=settings.OPENAI_MODEL,
                        max_tokens=settings.MAX_TOKENS,
                        messages=to_openai_messages(system, messages))

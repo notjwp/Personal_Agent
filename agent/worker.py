@@ -40,10 +40,8 @@ import uuid
 
 from agent import config
 
-# FR-604's five, enforced by SQLite rather than by convention. A CHECK constraint
-# is the difference between a status vocabulary and a suggestion: a typo in a
-# transition fails loudly at the write instead of quietly creating a sixth state
-# nothing lists.
+# FR-604's five states, enforced by SQLite rather than by convention: a CHECK
+# constraint refuses a typo that a Python-side check would let through.
 STATUSES = ("queued", "running", "awaiting-approval", "done", "failed")
 
 SCHEMA = """
@@ -95,10 +93,8 @@ def _alive(pid: int | None, started: float | None) -> bool:
     """
     if pid is None:
         return False
-    # No fast path for "that is my own pid". A test caught why: it would skip the
-    # start-time comparison below, which is the ONLY thing that distinguishes the
-    # original owner from a later process that inherited its number - and the
-    # worker's own pid is as recyclable as any other.
+    # No fast path for "that is my own pid": it would skip the start-time compare,
+    # which is the only thing distinguishing the owner from a recycled pid.
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -245,10 +241,8 @@ def run_once(app, task: dict, trace: list | None = None) -> dict | None:
         return conclude(task["id"], status="awaiting-approval", verdict=verdict,
                         detail=f"refused while unattended: {names}")
 
-    # `done` means the AGENT finished the job, not merely that the worker stopped
-    # running it. A task whose agent ended `stuck` or `budget` filed under `done`
-    # would make the status column useless - you would have to read the verdict
-    # to learn that nothing was achieved. The verdict is kept either way.
+    # `done` means the AGENT finished, not that the worker exited cleanly - a
+    # crashed worker leaves the task running so recover() can requeue it.
     if verdict == "done":
         return conclude(task["id"], status="done", verdict=verdict)
     return conclude(task["id"], status="failed", verdict=verdict,

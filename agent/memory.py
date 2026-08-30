@@ -27,10 +27,8 @@ import time
 
 from agent import config, policy
 
-# Names this module put into policy.RISK, so deactivate() removes exactly those.
-# Tracked per-module rather than diffed against a snapshot: mcp.py registers too,
-# and a snapshot taken by whichever imported first would silently own the other's
-# entries.
+# Names this module put into policy.RISK, so deactivate() removes exactly
+# those and cannot strip a built-in's classification.
 _REGISTERED: list[str] = []
 
 SCHEMA = """

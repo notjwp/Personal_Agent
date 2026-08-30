@@ -45,10 +45,8 @@ from agent.registry import ToolBudgetExceeded  # noqa: E402,F401  (re-export)
 
 _ACTIVE: dict[str, dict] = {}
 _RUNNER: _Runner | None = None
-# Names this module put into policy.RISK, so shutdown() removes exactly those.
-# Tracked per-module rather than diffed against a snapshot of the built-ins:
-# memory.py registers too, and a snapshot taken by whichever imported first would
-# silently own the other's entries and strip them on shutdown.
+# Names this module put into policy.RISK, so shutdown() removes exactly those
+# and cannot strip a built-in's classification.
 _REGISTERED: list[str] = []
 
 
@@ -216,12 +214,8 @@ def activate() -> list[str]:
                 "server": label,
             }
 
-    # Checked with the servers already up, so the error can name what was actually
-    # discovered rather than what config.py hoped for. Discovery is cheap; the
-    # per-turn cost of keeping them is what the cap exists to refuse.
-    #
-    # Registered into _ACTIVE first, so the check sees the REAL merged set - built-ins
-    # plus memory's tool plus these - rather than a hand-assembled approximation of it.
+    # Checked with the servers already up so the error can name the offender.
+    # Fatal rather than blocked: retrying cannot shrink a schema.
     from agent.registry import check_budget
 
     try:

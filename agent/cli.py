@@ -49,10 +49,8 @@ class LiveTrace(list):
         super().__init__()
         self.turn = 0
         self.tokens = 0
-        # Only the RENDERING is swappable. The counters are not, because the TUI
-        # needs the same turn and token totals this printer does - so they live
-        # in append(), where every sink gets them, rather than inside one
-        # particular way of showing them.
+        # Only the RENDERING is swappable; the counters are not - two callers
+        # tracking spend separately is how two numbers come to disagree.
         self._sink = sink or self._render
 
     def append(self, entry: dict) -> None:
@@ -283,10 +281,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         return list_threads(app)          # no model, so no tools, so no startup
 
-    # Started before EITHER path that calls a model, and torn down in `finally` so a
-    # server subprocess never outlives the session that asked for it. --resume needs
-    # it as much as a fresh goal does: a thread that used an MCP tool and is resumed
-    # without one would have that tool refused as unknown, mid-task.
+    # Started before EITHER path that calls a model and torn down after both,
+    # so a resumed thread does not start a second set of servers.
     memory.activate()
     try:
         loaded = skills.activate()
@@ -367,11 +363,8 @@ def _dispatch(args, app, parser) -> int:
         return 0
 
     if args.tui:
-        # Imported HERE, never at module top: the plain CLI, the eval harness and
-        # the unit suite must all keep running where textual is not installed
-        # (NFR-602), and CE-05 forbids settling at import time what belongs at
-        # the call site. main() has already activated memory, skills and MCP, so
-        # the TUI inherits the same lifecycle - and the same `finally` teardown.
+        # Imported HERE, never at module top: the plain CLI must not pay Textual's
+        # import cost, and the TUI is optional (CE-05).
         from agent import tui
         return tui.run(app, goal=args.goal, thread=args.resume)
 

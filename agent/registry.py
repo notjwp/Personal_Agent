@@ -44,23 +44,9 @@ class ToolBudgetExceeded(RuntimeError):
     """
 
 
-# FR-207: "Register a new tool by decorating one function; derive its JSON schema
-# automatically from the signature and docstring."
-#
-# WHY THIS EXISTS NOW AND NOT BEFORE. Section 13 costs the machinery at ~25 lines
-# plus ~5 per tool against ~8 per tool written out, which breaks even above EIGHT
-# hand-written schemas. There were five when registry.py was created, and this
-# file's docstring said so. `search_files` is the eighth, so the arithmetic that
-# argued against it no longer does - and FR-207 is [M], which §0 says beats
-# existing code regardless. Both now point the same way.
-#
-# WHAT IT DOES NOT DERIVE: the prose. Descriptions come from the DOCSTRING, not
-# from the parameter names, because they are the one piece of prompt engineering
-# in this project with a measured effect on the pass rate - `edit_file`'s
-# "the snippet must appear exactly once" coaching is what took real repositories
-# from 0/9 to 4/7. A decorator that generated `{"type": "string"}` per argument
-# would satisfy FR-207 and lose that. The docstring IS the schema text; nothing
-# was rewritten, only moved.
+# FR-207: the schema is derived from the signature and docstring. What it does
+# NOT derive is the prose - descriptions come from the DOCSTRING, which is the
+# one piece of prompt text here with a measured effect on the pass rate.
 _JSON_TYPES = {str: "string", int: "integer", bool: "boolean", float: "number"}
 
 

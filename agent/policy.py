@@ -27,18 +27,8 @@ DANGER = re.compile(
     r"|\bcurl\b[^|]*\|\s*(ba)?sh\b"
 )
 
-# The single source of a tool's risk, and still the single path through classify()
-# (section 9 step 2, correction d). What changed is WHERE a built-in's risk is
-# written down.
-#
-# NFR-601 requires that adding a tool touches exactly one file, and it did not:
-# the function and the schema lived in tools.py while the risk was a literal here,
-# so every new built-in touched two. A tool now declares `risk` beside its schema -
-# the shape memory.tools() and skills.tools() already used - and this map is
-# refreshed from there.
-#
-# MCP tools are still added by register(), because their risk comes from
-# config.MCP_SERVERS rather than from a TOOLS entry. One map, two ways in.
+# The single source of a tool's risk and the single path through classify().
+# Built from tools.TOOLS so a new tool cannot be offered unclassified.
 RISK: dict[str, str] = {}
 
 
@@ -60,57 +50,23 @@ sync()
 
 VERDICT_BY_RISK = {"read": "auto", "write": "auto", "destructive": "confirm"}
 
-# Arguments whose value is a filesystem path and must stay inside the workspace.
-#
-# The first three are the names THIS PROJECT's tools happen to use, and that was
-# enough while the tool set was closed. It is not enough once a third party can
-# register a tool: a server calling its argument `filename` or `directory` would
-# have walked straight past this check. Widened deliberately, and tested for the
-# bypass rather than assumed closed.
-#
-# `url` and `uri` are deliberately NOT here. They are not filesystem paths, and
-# running one through the workspace check would resolve "https://x/y" into a
-# subdirectory of the workspace and quietly approve it — a check that produces a
-# confident wrong answer is worse than no check.
+# Arguments whose value is a filesystem path and must stay inside the
+# workspace (FR-302). Named explicitly: guessing by key name would miss one.
 PATH_ARGS = ("path", "file", "filename", "filepath", "cwd", "dir", "directory",
              "folder", "source", "destination", "dest", "target", "output")
 
 
-# Commands that may run while the agent is PLANNING (UR-02). An allowlist, and
-# it fails closed: anything unrecognised is refused.
-#
-# This is deliberately an allowlist where CLAUDE.md warns that a partial check is
-# worse than none - and the two are not the same case. That lesson was about
-# running a `url` through a PATH check, which produced a confident WRONG answer.
-# This one fails in the safe direction: an unlisted command is refused, so the
-# failure mode is a starved planner, visible in the traces as plan_denied, rather
-# than a silent write.
-#
-# It has to exist at all because there is no directory-listing tool among the
-# built-ins (FR-201 names one; read_file, write_file, edit_file and run_shell are
-# what exist). Refusing run_shell outright would leave the planner unable to see
-# the tree, so it would plan against files it had guessed at.
+# Commands allowed while PLANNING (UR-02). An allowlist, not a denylist: the
+# planning gate exists to prevent unapproved EDITS, so anything not provably
+# read-only is refused.
 _READ_ONLY_VERB = re.compile(
     r"^\s*("
     r"ls|cat|head|tail|find|grep|rg|wc|tree|file|stat|nl|du|basename|dirname"
     r"|sed\s+-n"                       # -n prints; without it sed WRITES
     r"|git\s+(status|log|diff|show|ls-files|branch)"
-    # RUNNING THE TEST SUITE IS RESEARCH, and refusing it was the single largest
-    # defect in the planning phase. Measured over TWELVE planning runs - nine in
-    # the earlier cycles, three today - `plan_denied` recorded `pytest -q` in
-    # every one. The trace shows why it matters: turn 1 is always `pytest -q`,
-    # it is refused, and the agent then spends its remaining research turns
-    # GUESSING which file is broken from `find` and `read_file`. It plans a fix
-    # for a failure it has never observed.
-    #
-    # The residual risk, stated rather than waved away: a test suite executes
-    # project code and could in principle write. Accepted, because the planning
-    # gate exists to prevent unapproved EDITS - and running the suite is not an
-    # edit, it is the thing the agent is being asked to make pass. It will run it
-    # in the working phase regardless.
-    #
-    # `python -m pytest` is spelled out because bare `python` stays denied:
-    # `python setup.py build` is a build, not a read.
+    # Running the test suite is RESEARCH, and refusing it was the single largest
+    # defect in the planning phase - the agent planned a fix for a failure it had
+    # never observed. Bare `python` stays denied; see eval/CHANGELOG.md Stage 7.
     r"|python\s+-m\s+pytest"
     r"|pytest"
     r")\b")

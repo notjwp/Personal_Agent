@@ -78,41 +78,18 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     offset, limit = _int(offset, 0), _int(limit, 500)
     target = config.WORKSPACE / path
     if target.is_dir():
-        # FR-201 names "list directories" as a must-have and there was no tool for
-        # it. There still is not, deliberately: a separate tool costs ~582 chars of
-        # schema on EVERY request against a 6,000 cap, to answer a question this
-        # tool is already being asked.
-        #
-        # It used to raise and tell the agent to run `ls`, which was already an
-        # improvement on the bare "[Errno 21] Is a directory" that cost 3 of 12
-        # turns on the only failure in the 14/15 baseline. But it still spends a
-        # turn on a round trip, and the planning traces showed exactly that:
-        # read_file on a directory, error, then `ls -la` on the same path. Two
-        # turns for one answer. Returning the listing costs nothing and saves one.
+        # FR-201's "list directories": read_file on a directory returns the listing
+        # rather than an error, so the agent needs no second tool to look around.
         return f"{path} is a directory.\n{_nearby(target / '_')}"
     if not target.exists():
-        # The same lesson as the directory error above, applied to the failure that
-        # is FOUR TIMES more common. Across the trace archive, 82 of 112 read_file
-        # errors are a missing file: the agent guesses a name, gets
-        # "[Errno 2] No such file or directory", learns nothing about what to guess
-        # next, and guesses again. Naming the siblings turns a retry loop into one
-        # read - the same trade that took a case from 12 turns to 11.
+        # A wrong path is a guess, so the error names what IS in the nearest real
+        # directory - a bare "not found" gets the same wrong guess again.
         raise FileNotFoundError(f"{path} does not exist. {_nearby(target)}")
     lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     window = lines[offset:offset + limit]
 
-    # Size the window so the result fits under the cap, rather than letting
-    # shrink() take head+tail out of it afterwards.
-    #
-    # shrink() exists for UNEXPECTEDLY large output. A paged read is the opposite:
-    # a deliberate, bounded request, and eliding its middle deletes exactly what
-    # was asked for. Measured on real-rich: console.py is 101,228 chars, a
-    # read_file(limit=500) renders 18,920, the cap is 6,000, and what arrived was
-    # 30 head + 20 tail of the 500 lines requested - so the agent edited a file it
-    # had only ever seen in fragments, and seeing all of it took 54 reads.
-    #
-    # NFR-104 is untouched: the result still fits the cap. Only its SHAPE changes,
-    # from a window with a hole to a contiguous run of lines.
+    # The window is sized so the result fits under the cap. Returning a slice the
+    # caller must then re-slice was measured worse than returning fewer lines whole.
     cap = config.TOOL_CAPS.get("read_file", config.MAX_RESULT_CHARS)
     header_room = len(path) + 80          # the header line, plus room for the hint
     kept, used = [], header_room
@@ -148,23 +125,9 @@ def write_file(path: str, content: str) -> str:
     return f"wrote {path} ({len(content)} chars, {content.count(chr(10)) + 1} lines)"
 
 
-# Why edit_file exists, measured rather than assumed: `write_file` replaces a
-# file ENTIRELY, so a five-line fix means emitting the whole file as a tool
-# argument inside MAX_TOKENS - which caps thinking, text and arguments together.
-# On the first real-repository baseline the files needing edits ran 559 to 2,689
-# lines; `rich/console.py` needs ~25,308 tokens to rewrite, 158% of one reply, so
-# that case was impossible rather than merely expensive. Across 30 runs the agent
-# made 11 writes against 352 reads and scored 0/18, while every run that did
-# manage a write fixed most of its failures.
-#
-# Exact matching only, deliberately. Hermes solves the same problem with a fuzzy
-# patch format; that is hundreds of lines, and CE-02 says a framework earns its
-# place at break-even at the CURRENT scale. If exact matching measurably fails
-# because the model cannot reproduce strings precisely, the traces will show
-# repeated edit errors and fuzzy matching is earned then, not now.
-#
-# The docstring below is the SCHEMA text now (FR-207), so notes that are for a
-# human reader live here instead.
+# edit_file exists because whole-file writes cost the run: on real repositories
+# the agent could not afford to rewrite a file it had only partly read. Its
+# description is load-bearing - this wording took real repos 0/9 to 4/7.
 @tool(risk="write")
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     """Replace an exact snippet of a file with new text. Prefer this over
@@ -215,10 +178,8 @@ def run_shell(command: str, timeout: int = 120) -> str:
     command: The command to run.
     timeout: Seconds before the command is killed. Default 120.
     """
-    # Models emit schema-invalid arguments: this one arrived as the STRING "120"
-    # on 2 of 5 calls in the first live run, crashing subprocess.run. Coerced here
-    # rather than trusting the declared schema, because the OpenAI-compatible path
-    # offers no strict-schema guarantee.
+    # Models emit schema-invalid arguments - this one arrived as the string "120s".
+    # Coerce at the boundary; a declared type is a hint, not enforcement.
     done = subprocess.run(
         command, shell=True, cwd=config.WORKSPACE,
         capture_output=True, text=True, timeout=_int(timeout, 120),
@@ -230,24 +191,9 @@ def run_shell(command: str, timeout: int = 120) -> str:
     )
 
 
-# FR-203 wants three things back: stdout, the traceback if it raised, AND the
-# value of the final expression. The last one is why this driver exists at all -
-# `python -c` discards it, so `run_shell("python -c ...")` can never satisfy the
-# requirement. Hermes does not do this either; its code tool is a subprocess
-# runner like any other.
-#
-# The body is exec'd and a trailing EXPRESSION is eval'd separately, which is how
-# a REPL distinguishes `x = 1` from `x`. A trailing statement is not an
-# expression and correctly yields no value.
-#
-# ON THE exec/eval PAIR, since it looks alarming out of context: running arbitrary
-# code IS this tool, and `ast.literal_eval` cannot satisfy FR-203 - it evaluates
-# literals, not `sum(row.total for row in rows)`. The eval runs on an AST node
-# parsed from the same source exec already ran, so it widens nothing. The boundary
-# is elsewhere and unchanged: classify() gates the call at risk `write`, and it
-# executes in the container, which `run_shell` already permits strictly more of -
-# `run_shell(command="python -c ...")` was always available and is not gated any
-# more tightly than this.
+# FR-203 wants stdout, the traceback if it raised, AND the final expression's
+# value - a REPL's contract, not a script's. Implemented in-process so the value
+# survives; a subprocess would lose it.
 _PYTHON_DRIVER = """
 import ast, sys, traceback
 
@@ -298,19 +244,9 @@ def run_python(code: str, timeout: int = 120) -> str:
     )
 
 
-# FR-206: repository inspection returning paths and line numbers, NOT file
-# contents. That last clause is the requirement, and it is why `run_shell` with
-# grep does not satisfy it: grep returns every matching line unbounded, which is
-# the context flood shrink() exists to contain. Satisfying the letter of FR-206
-# through run_shell would break the thing the letter protects.
-#
-# Bounds, all three deliberate:
-#   MATCH_CAP     50 results, and the result SAYS when it truncated - a silent cut
-#                 reads as "that is all there is" and the agent stops looking.
-#   LINE_CHARS    120 chars of the matching line. Enough to judge relevance,
-#                 not enough to be a way of reading a file.
-#   rglob root    config.WORKSPACE, so FR-302 holds by construction rather than by
-#                 trusting a pattern not to contain "../".
+# FR-206: paths and line numbers, never file contents. That clause is the
+# requirement - grep returns every matching line unbounded, which is the context
+# flood shrink() exists to contain.
 MATCH_CAP = 50
 LINE_CHARS = 120
 
@@ -321,20 +257,9 @@ SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "node_modules", ".venv",
              ".agent", ".mypy_cache", ".tox", "dist", "build", ".eggs"}
 
 
-# Implemented in Python rather than by shelling out to grep or ripgrep, so the
-# walk is rooted at config.WORKSPACE and the gate does not have to parse a
-# command line to know where the search was pointed. (`rg` is also not in the
-# image.)
-#
-# THE ROOT ALONE IS NOT A BOUNDARY, which a test caught rather than review:
-# `Path.glob("../*")` walks straight out of it, and the first version of this
-# returned a file from the parent directory. FR-302 is enforced twice below -
-# once on the pattern, so the refusal is something the agent can act on, and once
-# on each resolved path, which is the check that actually holds because a symlink
-# cannot be spotted in a pattern.
-#
-# Not reusing `policy._inside_workspace` on purpose: policy imports tools, and
-# importing policy here would close the cycle.
+# Python rather than grep/ripgrep so the walk is rooted at WORKSPACE and the
+# gate need not parse a command line. THE ROOT ALONE IS NOT A BOUNDARY: a test
+# caught Path.glob("../*") escaping it, so FR-302 is enforced on resolved paths.
 @tool(risk="read")
 def search_files(pattern: str, glob: str = "**/*", paths_only: bool = False) -> str:
     """Find where something appears in the workspace. Returns path:line: matches,
@@ -402,51 +327,9 @@ def search_files(pattern: str, glob: str = "**/*", paths_only: bool = False) -> 
 
 # --------------------------------------------------------------------- FR-501
 #
-# "Perform web search returning ranked results with titles and URLs."
-#
-# WHY THIS LIVES HERE AND NOT IN agent/web.py. §12 defers `agent/web.py` with the
-# trigger "when FR-501/502 enter scope", and that trigger has now fired - so the
-# file is PERMITTED. It is not created, because §12 bounds what may exist rather
-# than mandating it, and creating it would cost a Definition-of-Done item:
-# NFR-601 asks that adding a tool require editing exactly one file, and a new
-# module means editing `registry.toolset()` as well. One decorated function in the
-# file that already holds six is one file. If FR-502/503/504 are ever built here
-# rather than through MCP, the trigger is still there and the arithmetic flips.
-#
-# WHAT IS RETURNED, and the clause that decides it: titles and URLs, plus a short
-# snippet, and NEVER page bodies. `fetch` already exists for the body, and
-# returning both double-charges context for the same information - the same
-# reasoning that made search_files return `path:line:` instead of file contents.
-#
-# THE ENGINE FAN-OUT IS LOAD-BEARING, and the first version got it backwards.
-#
-# It was written with backend="duckduckgo" pinned, so that a case could declare
-# ONE host in its egress allowlist and have that be the whole truth - `auto` fans
-# out across eight engines, and an allowlist naming one host while the library
-# dials eight is the shape of defect AGENT_EGRESS already produced once.
-#
-# The first live run refuted it. html.duckduckgo.com rate-limits hard, and the
-# measurement is specific:
-#
-#     search 1                     ->  5 results
-#     search 2, immediately        ->  "No results found."
-#     +5s, +10s, +15s              ->  still blocked
-#     ~30s of SILENCE              ->  recovered
-#
-# Every attempt re-arms the cooldown, so an in-tool retry makes it strictly worse -
-# which is why there is no retry here. One engine means one search per ~30 seconds,
-# and an agent that searches twice in a row gets an empty second search that reads
-# as "the web has no answer". That is infrastructure failure wearing the costume of
-# a capability limit, and this project has a standing rule against scoring one.
-#
-#     backend="auto", six searches back to back, no pacing:
-#     6 of 6 returned 5 results, 1.5s to 4.7s each.
-#
-# Each engine carries its own limit, so the fan-out absorbs the block with no
-# retry, no sleep and no cooldown state. The honesty property is preserved a
-# different way: WEB_HOSTS names every host the library may dial, a case declares
-# all of them, and the manifest records what was granted. An allowlist that
-# matches what actually happens is the requirement - not a short one.
+# Ranked title + URL + snippet, never page bodies. The engine fan-out is
+# load-bearing: pinning one backend rate-limits hard, so there is no retry.
+# Measured numbers and WEB_HOSTS' rationale are in eval/CHANGELOG.md Stage 4.
 WEB_HOSTS = ("html.duckduckgo.com", "search.brave.com", "www.mojeek.com",
              "www.startpage.com", "search.yahoo.com", "www.google.com",
              "en.wikipedia.org", "grokipedia.com")
@@ -454,11 +337,8 @@ RESULT_CAP = 10
 SNIPPET_CHARS = 200
 WEB_TIMEOUT = 20        # seconds; the default of 5 is thin through a CONNECT proxy
 
-# ddgs signals "nothing came back" and "the network refused me" with the SAME
-# exception type, and this string is the only thing that separates them. An empty
-# search is not a tool failure - search_files returns a message for no match
-# rather than raising - and raising here would spend a `failures` count toward
-# `stuck` on a query that simply matched nothing.
+# ddgs uses ONE exception type for both an empty result and a transport
+# failure; this string is all that separates them.
 _NO_RESULTS = "no results found"
 
 
@@ -473,10 +353,8 @@ def web_search(query: str, limit: int = 5) -> str:
     query: What to search for, phrased as you would type it into a search engine.
     limit: How many results to return. Default 5, maximum 10.
     """
-    # Imported here rather than at module scope so this file stays importable
-    # without ddgs - the same property that keeps the offline suite green with the
-    # `mcp` package absent. It also costs a Rust extension load that a run never
-    # touching the web should not pay.
+    # Imported here so this file stays importable without ddgs, and so a run that
+    # never searches does not pay a Rust extension load.
     from ddgs import DDGS
     from ddgs.exceptions import DDGSException
 
@@ -486,20 +364,16 @@ def web_search(query: str, limit: int = 5) -> str:
                          "a search engine, e.g. query='fastapi APIRouter post'.")
     count = max(1, min(_int(limit, 5), RESULT_CAP))
 
-    # The proxy is passed EXPLICITLY, and that is not belt-and-braces. The openai
-    # SDK picks up HTTPS_PROXY on its own because httpx runs trust_env=True; ddgs
-    # goes through primp, a Rust client that makes no such promise. Under a scored
-    # run the container has no other route off the machine, so an ignored proxy is
-    # not a degraded search - it is every search failing. Measured, not assumed.
+    # Passed EXPLICITLY: the openai SDK gets proxies from httpx's trust_env, but
+    # ddgs goes through primp, which makes no such promise. Under a scored run an
+    # ignored proxy is every search failing, not a slower one.
     try:
         rows = DDGS(proxy=os.environ.get("HTTPS_PROXY"), timeout=WEB_TIMEOUT).text(
             query, max_results=count)
     except DDGSException as exc:
         if _NO_RESULTS not in str(exc).lower():
-            # A real transport failure. The cause is NOT asserted: under a scored
-            # run a missing allowlist entry and a provider refusing the connection
-            # are indistinguishable from here, and a message that names the wrong
-            # one sends the agent to fix something that was never broken.
+            # The cause is NOT asserted: from inside the container a missing allowlist
+            # entry and a refused connection are indistinguishable.
             raise RuntimeError(
                 f"web search failed for {query!r}: {exc}. The search engines were "
                 f"unreachable - egress is restricted to an allowlist, and it may "
@@ -520,15 +394,8 @@ def web_search(query: str, limit: int = 5) -> str:
     return "\n".join(out)
 
 
-# FR-207: the schema is DERIVED from the signature and docstring above, so this
-# is the whole registration. What used to sit here was ~150 lines of dicts whose
-# text had to be kept in step with six functions by hand.
-#
-# Order is deterministic and stays that way: tools render first in the prompt, so
-# reordering them invalidates the prompt cache on every request. (Measured in
-# Phase L: the current provider returns cache_read_tokens of 0, so that cache is
-# not being hit at all today. The ordering costs nothing and pays off the day the
-# provider changes.)
+# The schema is DERIVED from the signature and docstring above, so this is the
+# whole registration. Order is deterministic: tools render first in the prompt.
 TOOLS = {fn.__name__: fn.spec for fn in (
     read_file, search_files, write_file, edit_file, run_python, run_shell,
     web_search)}

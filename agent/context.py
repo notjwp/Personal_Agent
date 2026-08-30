@@ -11,15 +11,8 @@ from hashlib import sha256
 
 from agent import config
 
-# NFR-203: secrets never enter model context. Env-var indirection was already true
-# - the key is read from the environment and never appears in a prompt - but the
-# requirement's second half, output redaction, did not exist at all. A tool can
-# echo a secret straight back: `run_shell(command="env")`, a traceback carrying a
-# URL with credentials in it, a config file the agent was asked to read.
-#
-# Applied inside shrink() rather than at each tool, because shrink() is the ONE
-# place every tool result passes through on its way into context (FR-401). Here it
-# cannot be forgotten by a tool added later.
+# NFR-203: secrets never enter model context. Matches VALUES, not env-var
+# names - the agent echoes a key far more often than it names the variable.
 SECRET_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASSWD",
                    "_CREDENTIALS")
 
@@ -69,12 +62,8 @@ def shrink(tool: str, text: str) -> str:
         head, tail = text[:half], text[-half:]
         elided = f"[{len(text) - 2 * half} chars elided, {len(text)} chars total]"
 
-    # NFR-104 bounds CHARACTERS; the line branch above bounds LINES, and real test
-    # output has long ones. Measured on the first real-repository run, not by a unit
-    # test: 50 lines of pytest output became 11,340 chars against a 6,000 cap. The
-    # practice fixtures never had lines long enough to expose it. Clamping here keeps
-    # the bound true in both branches, and the spill path below still carries the
-    # whole text - nothing is lost, only deferred to a read the model can choose.
+    # NFR-104 bounds CHARACTERS while the branch above bounds LINES; a single
+    # enormous line satisfies the line cap and breaches the char one.
     half = cap // 2
     head, tail = head[:half], tail[-half:]
 
@@ -86,33 +75,10 @@ def shrink(tool: str, text: str) -> str:
     )
 
 
-# ============================================================ compaction (FR-403, FR-404)
+# ============================================================ compaction (§4.3)
 #
-# §4.3: "Compaction preserves the first two messages and the last six verbatim,
-# summarising only the middle."
-#
-# THAT ARITHMETIC IS WRONG FOR THIS MESSAGE SHAPE, and it was measured before a
-# line was written. The list alternates assistant[tool_use] / user[tool_result],
-# so "the first two" keeps a tool_use whose tool_result is message 2 - which the
-# summariser eats. Over every recorded trace with more than eight messages:
-#
-#     traces examined                            466
-#     head boundary orphans a tool_use           466   (100%)
-#     tail boundary orphans a tool_result        282   (61%)
-#
-# Both providers reject that: Anthropic requires every tool_use to have a
-# matching tool_result, and the OpenAI-compatible path requires every `tool`
-# message to follow an assistant carrying that call. §0 says a requirement wins
-# over code and that the disagreement is stated rather than reinterpreted - so
-# §4.3's INTENT (keep the opening and the recent turns) is implemented, and its
-# arithmetic is corrected here rather than silently.
-#
-# The correction is Hermes Agent's, from trajectory_compressor.py:524-560
-# (Nous Research, MIT - see NOTICE): snap a boundary onto the nearest turn that
-# does not split a pair, preferring forward so an orphaned result folds in with
-# the call it answers. Ours differs in what it inspects: Hermes checks a
-# `from == "tool"` turn marker, we check BLOCK TYPES, because our messages carry
-# Anthropic-shaped content lists rather than a role string.
+# §4.3's stated boundary is invalid in 100% of real runs; its INTENT is kept and
+# the arithmetic corrected. Derivation and the borrow are in NOTICE/CHANGELOG.
 HEAD_MESSAGES = 2
 TAIL_MESSAGES = 6
 SUMMARY_PREFIX = "[CONTEXT SUMMARY]: "
