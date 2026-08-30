@@ -148,7 +148,7 @@ def test_oversized_shell_output_is_spilled(tmp_workspace):
     can page or grep directly. Command output has no second copy, so this is where
     the spill mechanism actually earns its place.
     """
-    big = chr(10).join(f"line {i}" for i in range(5000))
+    big = chr(10).join(f"line {i} " + "z" * 200 for i in range(config.MAX_RESULT_CHARS // 100))
     (tmp_workspace / "big.txt").write_text(big)
     out = execute(state(approved=[call("run_shell", command="cat big.txt")]), cfg())
     body = out["messages"][-1]["content"][0]["content"]
@@ -159,7 +159,7 @@ def test_oversized_shell_output_is_spilled(tmp_workspace):
 
 def test_oversized_read_narrows_instead_of_spilling(tmp_workspace):
     """The counterpart: a paged read returns fewer lines, all of them contiguous."""
-    big = chr(10).join(f"line {i}" for i in range(5000))
+    big = chr(10).join(f"line {i} " + "z" * 200 for i in range(config.MAX_RESULT_CHARS // 100))
     (tmp_workspace / "big.txt").write_text(big)
     out = execute(state(approved=[call("read_file", path="big.txt", limit=5000)]), cfg())
     body = out["messages"][-1]["content"][0]["content"]
@@ -213,7 +213,7 @@ def test_read_file_returns_a_contiguous_window_under_the_cap(tmp_workspace):
     Sizing the window inside read_file keeps NFR-104 intact - the result still fits
     under the cap - while making paging actually work.
     """
-    body = [f"line{i:04d} " + "x" * 60 for i in range(2000)]
+    body = [f"line{i:04d} " + "x" * 60 for i in range(config.MAX_RESULT_CHARS // 30)]
     (tmp_workspace / "big.py").write_text(chr(10).join(body), encoding="utf-8")
 
     out = read_file("big.py", offset=0, limit=500)
@@ -230,7 +230,7 @@ def test_read_file_returns_a_contiguous_window_under_the_cap(tmp_workspace):
 
 def test_read_file_says_where_to_continue_when_it_narrows(tmp_workspace):
     """An error the model cannot act on costs a turn; so does a silent truncation."""
-    body = [f"line{i:04d} " + "y" * 60 for i in range(2000)]
+    body = [f"line{i:04d} " + "y" * (config.MAX_RESULT_CHARS // 400) for i in range(600)]
     (tmp_workspace / "big.py").write_text(chr(10).join(body), encoding="utf-8")
     out = read_file("big.py", offset=0, limit=500)
     assert "offset=" in out, "the agent must be told how to fetch the next page"
@@ -1445,7 +1445,7 @@ def test_redaction_covers_the_spilled_artifact_too(tmp_workspace, monkeypatch):
     """Redacting only the returned string would leave the secret on disk inside
     the workspace, one read_file away."""
     monkeypatch.setenv("SOME_TOKEN", "tok-0123456789abcdef")
-    big = ("AUTH=tok-0123456789abcdef\n" + "filler line\n" * 2000)
+    big = ("AUTH=tok-0123456789abcdef\n" + "filler line\n" * (config.MAX_RESULT_CHARS // 6))
 
     out = shrink("run_shell", big)
     spilled = out.split("[full output: ", 1)[1].split("]", 1)[0]
@@ -2071,7 +2071,7 @@ def _history(turns):
              "input": {"path": f"f{i}.py"}}]})
         out.append({"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": f"t{i}",
-             "content": f"contents of f{i}.py " + "x" * 2_000}]})
+             "content": f"contents of f{i}.py " + "x" * (config.COMPACT_AT_CHARS // 20)}]})
     return out
 
 

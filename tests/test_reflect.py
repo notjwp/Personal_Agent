@@ -20,6 +20,24 @@ def state(**over):
     return base
 
 
+def over_threshold():
+    """A history just past COMPACT_AT_CHARS, sized from the constant.
+
+    Hardcoding a pair count silently stops testing compaction the moment the
+    threshold moves - which is exactly what happened when it went 45k -> 200k.
+    """
+    from agent.context import context_chars
+
+    pair = [assistant_call(), tool_result()]
+    messages, n = [], 0
+    while context_chars(messages) <= config.COMPACT_AT_CHARS:
+        messages += pair
+        n += 1
+        if n > 100_000:                       # a runaway guard, never reached
+            raise AssertionError("could not exceed COMPACT_AT_CHARS")
+    return messages
+
+
 def assistant_text(text="Looking into it."):
     return {"role": "assistant", "content": [{"type": "text", "text": text}]}
 
@@ -44,7 +62,7 @@ def test_a_large_context_compacts():
     crossed - compact, act, compact, act - now that the verdict is no longer
     terminal.
     """
-    big = state(messages=[assistant_call(), tool_result()] * 400)
+    big = state(messages=over_threshold())
     assert reflect(big)["verdict"] == "compact"
 
 
@@ -63,7 +81,7 @@ def test_a0_budget_exhaustion_is_its_own_terminal_verdict():
 def test_a1_the_compaction_cap_stops_a_loop():
     """Compacted the maximum number of times and still over the threshold. Stop,
     rather than spend a model call per turn clearing nothing."""
-    big = state(messages=[assistant_call(), tool_result()] * 400,
+    big = state(messages=over_threshold(),
                 compact_count=config.MAX_COMPACTIONS)
     assert reflect(big)["verdict"] == "stuck"
 
@@ -126,7 +144,7 @@ def test_text_only_reply_after_a_tool_call_is_done():
 def test_budget_exhaustion_beats_everything():
     """A run that has spent its budget stops, whatever else is true - including a
     context large enough to compact, which would otherwise spend more."""
-    big = state(messages=[assistant_call(), tool_result()] * 400,
+    big = state(messages=over_threshold(),
                 spent_tokens=200_000, turns=99)
     assert reflect(big)["verdict"] == "budget"
 
@@ -134,7 +152,7 @@ def test_budget_exhaustion_beats_everything():
 def test_compaction_beats_the_turn_cap():
     """Order matters: a run with room to compact should compact rather than be
     declared stuck, or compaction never fires on the runs that need it."""
-    big = state(messages=[assistant_call(), tool_result()] * 400, turns=99)
+    big = state(messages=over_threshold(), turns=99)
     assert reflect(big)["verdict"] == "compact"
 
 
@@ -163,7 +181,7 @@ def test_every_verdict_is_reachable(verdict):
     routes to the compaction node and back to act.
     """
     cases = {
-        "compact": state(messages=[assistant_call(), tool_result()] * 400),
+        "compact": state(messages=over_threshold()),
         "budget": state(spent_tokens=200_000),
         "stuck": state(turns=12),
         "done": state(messages=[assistant_call(), tool_result(), assistant_text("Done.")]),
@@ -203,7 +221,7 @@ def test_the_recorded_size_is_the_one_the_trigger_used():
     threshold check that never happened."""
     from agent.context import context_chars
 
-    big = state(messages=[assistant_call(), tool_result()] * 400)
+    big = state(messages=over_threshold())
     trace = []
     verdict = reflect(big, {"configurable": {"trace": trace}})["verdict"]
 
@@ -233,7 +251,7 @@ def test_the_compaction_threshold_is_settable_without_editing_source(monkeypatch
 
 
 def test_the_cap_is_settable_too(monkeypatch):
-    big = state(messages=[assistant_call(), tool_result()] * 400, compact_count=1)
+    big = state(messages=over_threshold(), compact_count=1)
     monkeypatch.setattr(config, "MAX_COMPACTIONS", 1)
     assert reflect(big)["verdict"] == "stuck", "at the cap, stop rather than loop"
     monkeypatch.setattr(config, "MAX_COMPACTIONS", 5)
