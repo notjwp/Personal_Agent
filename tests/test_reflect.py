@@ -238,3 +238,98 @@ def test_the_cap_is_settable_too(monkeypatch):
     assert reflect(big)["verdict"] == "stuck", "at the cap, stop rather than loop"
     monkeypatch.setattr(config, "MAX_COMPACTIONS", 5)
     assert reflect(big)["verdict"] == "compact"
+
+
+# ============================ the thrash detector is risk-aware (real-humanize)
+
+
+def _repeat(name, n, **args):
+    """A history with the same call made n times, each answered."""
+    out = [{"role": "user", "content": "go"}]
+    for i in range(n):
+        out += [{"role": "assistant", "content": [
+                    {"type": "tool_use", "id": f"t{i}", "name": name, "input": args}]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": f"t{i}", "content": "x"}]}]
+    return out
+
+
+def test_three_identical_reads_are_not_thrash():
+    """THE REGRESSION THIS EXISTS FOR, measured on real-humanize.
+
+    A failing run and a passing run were identical for 12 turns. The failing one
+    read the same window a third time and was killed at turn 13 of 30; the
+    passing one called edit_file instead and took the case 4 failures to 0. A
+    read changes nothing, so repeating it is confusion, not a loop - and killing
+    a run mid-diagnosis threw away 17 turns.
+    """
+    from agent.graph import _last_three_signatures_identical as thrash
+    from agent.policy import sync
+
+    sync()
+    assert not thrash(_repeat("read_file", 3, path="a.py"))
+    assert not thrash(_repeat("search_files", 3, pattern="x"))
+    assert not thrash(_repeat("read_file", 4, path="a.py"))
+
+
+def test_a_read_repeated_far_past_reason_is_still_thrash():
+    """Idempotent does not mean unlimited: five identical reads is a loop."""
+    from agent.graph import _last_three_signatures_identical as thrash
+    from agent.policy import sync
+
+    sync()
+    assert thrash(_repeat("read_file", 5, path="a.py"))
+
+
+def test_three_identical_writes_are_still_thrash():
+    """Unchanged, and deliberately: a repeated write or command is the harmful
+    signal the detector was built for."""
+    from agent.graph import _last_three_signatures_identical as thrash
+    from agent.policy import sync
+
+    sync()
+    assert thrash(_repeat("run_shell", 3, command="ls"))
+    assert thrash(_repeat("edit_file", 3, path="a", old_string="b", new_string="c"))
+    assert not thrash(_repeat("run_shell", 2, command="ls"))
+
+
+def test_a_mixed_turn_is_judged_by_its_riskiest_call():
+    """A turn holding a read AND a write gets the write's budget - otherwise a
+    repeated write hides behind a read in the same turn."""
+    from agent.graph import _last_three_signatures_identical as thrash
+    from agent.policy import sync
+
+    sync()
+    mixed = [{"role": "user", "content": "go"}]
+    for i in range(3):
+        mixed += [{"role": "assistant", "content": [
+                      {"type": "tool_use", "id": f"r{i}", "name": "read_file",
+                       "input": {"path": "a.py"}},
+                      {"type": "tool_use", "id": f"w{i}", "name": "run_shell",
+                       "input": {"command": "ls"}}]},
+                  {"role": "user", "content": [
+                      {"type": "tool_result", "tool_use_id": f"r{i}", "content": "x"},
+                      {"type": "tool_result", "tool_use_id": f"w{i}", "content": "y"}]}]
+    assert thrash(mixed)
+
+
+def test_an_unknown_tool_gets_the_strict_budget():
+    """Fails closed. An unclassified tool must not buy itself extra repeats."""
+    from agent.graph import _last_three_signatures_identical as thrash
+
+    assert thrash(_repeat("not_a_real_tool", 3, x=1))
+
+
+def test_differing_calls_are_never_thrash():
+    from agent.graph import _last_three_signatures_identical as thrash
+    from agent.policy import sync
+
+    sync()
+    varied = [{"role": "user", "content": "go"}]
+    for i in range(6):
+        varied += [{"role": "assistant", "content": [
+                       {"type": "tool_use", "id": f"t{i}", "name": "read_file",
+                        "input": {"path": f"file{i}.py"}}]},
+                   {"role": "user", "content": [
+                       {"type": "tool_result", "tool_use_id": f"t{i}", "content": "x"}]}]
+    assert not thrash(varied)

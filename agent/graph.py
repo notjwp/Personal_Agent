@@ -612,11 +612,36 @@ def _signature(call: dict) -> str:
     return f"{call['name']}:{sha256(blob).hexdigest()[:12]}"
 
 
+# A READ is idempotent, so repeating one is confusion, not a loop; a repeated
+# WRITE or command is the harmful signal. Budgets differ per risk; the trace that
+# produced these numbers is in eval/CHANGELOG.md.
+REPEAT_LIMIT = {"read": 5, "write": 3, "destructive": 3}
+
+
 def _last_three_signatures_identical(messages: list[dict]) -> bool:
+    """Whether the agent is repeating itself past the limit for what it repeated."""
+    from agent.policy import risk_of
+
     turns = [[_signature(c) for c in _tool_calls(m)]
              for m in messages if m.get("role") == "assistant"]
+    names = [[c["name"] for c in _tool_calls(m)]
+             for m in messages if m.get("role") == "assistant"]
+    names = [n for n, t in zip(names, turns) if t]
     turns = [t for t in turns if t]
-    return len(turns) >= 3 and turns[-1] == turns[-2] == turns[-3]
+    if len(turns) < 3:
+        return False
+
+    repeats = 1
+    for earlier in reversed(turns[:-1]):
+        if earlier != turns[-1]:
+            break
+        repeats += 1
+
+    # The turn's own risk decides its budget, and the RISKIEST call in it wins:
+    # a turn mixing a read with a write is judged as a write.
+    risks = {risk_of(name) or "destructive" for name in names[-1]}
+    limit = min(REPEAT_LIMIT.get(r, 3) for r in risks) if risks else 3
+    return repeats >= limit
 
 
 def _summarise(args: dict) -> str:

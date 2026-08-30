@@ -202,6 +202,45 @@ Execution is confined to a container on any host that runs one (§11; NFR-701 as
 machine is Windows 11 with Docker Desktop and Git Bash — not WSL2. `.agent/` and `hermes_copy/`
 are gitignored.
 
+## Say when it does not work
+
+**Report failure plainly, in the first sentence, without softening.** "This did not work",
+"the number did not move", "I got this wrong" — not "partially successful", not a win
+reframed around a caveat. A capability that ships and is never used is a failure and gets
+described as one: `learn` was called 0 times in 15 sessions, planning costs 30% more tokens
+for no pass-rate gain, and both are recorded that way rather than as features.
+
+**Unmeasured means unproven, and gets said out loud.** Code that exists is not a
+requirement satisfied. A cycle is kept only when a number moved; anything that did not move
+is reverted, including changes that "seem right". One favourable n=3 is a hypothesis - this
+project has already retracted a 1/3 that re-measured at 3/3.
+
+**Never quote a number better than the one measured.** No cherry-picking the better of two
+identical runs, no set-level percentage when only part of the set ran, no attributing a pass
+to a mechanism without checking the instrumentation says it fired.
+
+## `hermes_copy/` is the reference implementation — consult it first
+
+**Before building anything, look for how Hermes Agent solved it** (`hermes_copy/hermes-agent`,
+127k lines, 21 plugin domains, gitignored and never shipped). It has been through more real
+use than this project has, and three of its designs are already here — the compaction
+boundary snap, the worker's transition/liveness pair, and the thrash detector's
+idempotent/mutating split. Each was found by reading its code rather than reasoning from
+scratch, and each was better than what this project had.
+
+Three rules that make that safe rather than sloppy:
+
+- **Take the DESIGN, port the code.** Every borrow so far was re-implemented against this
+  project's shapes and was better for it: their `search_files` is ripgrep-backed and `rg` is
+  not in the image; their tool sets are hand-kept frozensets where `policy.RISK` already
+  classifies everything. Lifting verbatim would have imported dependencies and defects.
+- **Do not create or edit `NOTICE` unless asked.** Hermes is MIT, so a borrow that copies
+  its CODE carries an attribution obligation - raise that and let the user decide. A borrow
+  that takes only the IDEA does not; note it at the site and move on.
+- **A Hermes design still has to earn its place here.** §13 governs, and their fuzzy
+  `edit_file` matching is a design this project measured (0/3 → 0/3) and reverted. Consult
+  first, measure before keeping.
+
 ## Working guidelines
 
 Behavioural rules that reduce common mistakes. These govern *how* to work; the sections above
