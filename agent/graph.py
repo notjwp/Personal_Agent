@@ -244,6 +244,42 @@ def gate(state: AgentState, config: RunnableConfig) -> dict:
     return {"approved": approved, "denied": denied}
 
 
+# Warn BEFORE killing. reflect ends a run silently at REPEAT_LIMIT; the model
+# is never told it is looping and cannot correct. Hermes warns on the 2nd
+# identical call and blocks later, which is the half Cycle D left behind.
+WARN_AFTER = 2
+
+
+def _repeat_notice(messages: list, call: dict, raw: str) -> str:
+    """A nudge when this exact call has already returned this exact result.
+
+    Keys on the RESULT as well as the arguments. Hashing arguments alone
+    cannot tell a pointless re-read from a legitimate one after an edit -
+    the file changed, so the result changed, so it is not a repeat.
+    """
+    signature = _signature(call)
+    digest = sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    seen = 1
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for earlier in _tool_calls(message):
+            if _signature(earlier) == signature:
+                seen += 1
+    if seen < WARN_AFTER or digest not in _RESULTS.get(signature, ()):
+        _RESULTS.setdefault(signature, set()).add(digest)
+        return ""
+    return (
+        f"\n\n[This exact {call["name"]} call has now returned the same result "
+        f"{seen} times. Use the result you already have - repeating it "
+        f"unchanged will end the run.]")
+
+
+# Per-process, and that is deliberate: a thread resumed tomorrow starts fresh
+# rather than inheriting a warning about a call it can no longer see.
+_RESULTS: dict = {}
+
+
 def execute(state: AgentState, config: RunnableConfig) -> dict:
     """Run approved calls, then observe. CE-04 merges the two stages into one node
     because no edge ever separates them."""
@@ -262,6 +298,7 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
         if is_error:
             failed += 1
         body = shrink(call["name"], raw)            # FR-401/402
+        body += _repeat_notice(state["messages"], call, raw)
         results.append({"type": "tool_result", "tool_use_id": call["id"],
                         "content": body, "is_error": is_error})
         _log(trace, call, "auto", time.monotonic() - started, raw, body, is_error)
