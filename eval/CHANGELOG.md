@@ -4283,3 +4283,70 @@ what `e0d52e4` addresses.
 unused - and never edited a file.**
 
 That is the finding the day actually produced. Everything else was apparatus.
+
+---
+
+## Cycles I and J re-measured on the fixed loop — NEGATIVE SIGNAL, PARKED
+
+Cycles I (`edit_file` returns a diff) and J (warn before killing, hash the result)
+were first scored through the truncation defect of Cycle L, so their `0/3, zero
+writes` result described a loop that ended runs while the agent was mid-sentence.
+This is the re-measurement, on a loop with that defect fixed and `MAX_SECONDS` at
+1500. The control is the same tree with those two cycles reverted and nothing else
+changed.
+
+```
+CONTROL   (I + J removed)   n=2   WRITES 1, 1     pass 0/2
+TREATMENT (I + J present)   n=3   WRITES 0, 0, 0  pass 0/3
+```
+
+**The arm WITHOUT the cycles wrote in both runs. The arm with them wrote in none.**
+
+The plausible mechanism is Cycle J. It appends a notice to the result of every
+repeated read - extra text on the single tool this agent uses most - and may be
+steering the model away from the read-then-edit sequence rather than toward it.
+That is a hypothesis about a mechanism, not a measurement of one.
+
+**PARKED, NOT CONCLUDED, and both words are meant.**
+
+n=2 against n=3 does not settle anything on a case that has swung 0/3 -> 1/3 -> 0/3
+today on unchanged code. Two runs each writing once is well inside the noise that
+produced a single write this morning. Neither arm passed, so the pass rate
+contributes nothing.
+
+What stops this being dismissed is the direction and the split: **2 of 2 against 0
+of 3**, and it is the first signal all day pointing at something ADDED being
+harmful rather than merely useless. Everything else refuted has been inert.
+
+**Why it is parked rather than resolved.** A proper n=3 on both arms is about two
+hours of wall clock, because `real-humanize` now takes 20-30 minutes per run - the
+truncation fix and the raised `MAX_SECONDS` both let runs go longer. Two hours to
+resolve a two-run difference on a case where neither arm passes is poor value
+against every other open question.
+
+**The bar for un-parking it:** run both arms at n=3 before either cycle is cited as
+working, and revert J first if the split holds. Until then Cycles I and J are
+KEPT but UNATTRIBUTED, and neither should be described as having helped.
+
+The control tree is preserved on branch `control-c2c3`.
+
+---
+
+## The cap ladder, recorded because each fix created the next
+
+Three premature endings in sequence, each uncovered by fixing the one before it:
+
+```
+stop_reason=length ended runs at ~12 turns      -> fixed (04bcde9)
+MAX_SECONDS 900 ended them at 13-22 turns       -> raised to 1500 (e0d52e4)
+BUDGET_TOKENS 400k now ends them at ~20 turns   -> 421,265 observed
+```
+
+At roughly 21,000 tokens per turn - this provider caches nothing, so every turn
+re-sends the whole history - a 30-turn allowance needs about 630,000 tokens. The
+budget permits 19.
+
+**Do not simply raise it.** A run that spent 421,265 tokens to make one edit is not
+budget-starved; it is spending its budget on reading, which is the finding that has
+survived every cycle today wearing a different verdict each time. Raising the cap
+buys more reading.

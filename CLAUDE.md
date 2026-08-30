@@ -49,6 +49,10 @@ Ordered by how often they have caught something.
 
 **The loop and the model**
 
+- **Fixing one premature ending reveals the next.** Truncation ended runs at ~12 turns;
+  fixing it exposed `MAX_SECONDS`; raising that exposed `BUDGET_TOKENS` at ~20 turns.
+  Before raising a cap, check whether the run is starved or just spending badly - one
+  spent 421,265 tokens to make a single edit.
 - **A truncated reply is not a finished one.** `stop_reason == "length"` means the model
   ran out of output budget mid-sentence. Measured: 8 of 8 runs ending that way were
   scored `done`, and none passed. Any terminal check that ignores `stop_reason` will
