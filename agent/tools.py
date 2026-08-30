@@ -69,7 +69,9 @@ def _nearby(target) -> str:
 @tool(risk="read")
 def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     """Read a text file from the workspace. Returns numbered lines. Use offset
-    and limit to page through a large file.
+    and limit to page through a large file. If you have already read a region,
+    use what you have and move on to editing - reading it again returns the same
+    text and costs a turn.
 
     path: Path relative to the workspace root.
     offset: First line to return, 0-based. Default 0.
@@ -130,10 +132,13 @@ def write_file(path: str, content: str) -> str:
 # description is load-bearing - this wording took real repos 0/9 to 4/7.
 @tool(risk="write")
 def edit_file(path: str, old_string: str, new_string: str) -> str:
-    """Replace an exact snippet of a file with new text. Prefer this over
-    write_file for any change to an existing file: it costs a few hundred
-    characters instead of the whole file. The snippet must appear exactly once -
-    include surrounding lines to make it unique.
+    """Replace an exact snippet of a file with new text. Use this to change an
+    existing file - prefer it over write_file, which costs the whole file. The
+    snippet must appear exactly once; include surrounding lines to make it unique.
+    It is safe to edit from what you already know: this refuses rather than
+    guessing when the snippet does not match, so you need not re-read the file
+    first. Do not re-read the file afterwards to check the edit landed - if this
+    returns without an error, it landed.
 
     path: Path relative to the workspace root.
     old_string: The exact text to replace, copied from the file including indentation.

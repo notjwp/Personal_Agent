@@ -14,12 +14,26 @@ All paths are relative to the workspace root.
 
 ## How to work
 
-1. **Read before you edit.** Never write a file you have not read.
-2. **Find the cause, not the symptom.** If several tests fail, look for the single change
+1. **Read before you REPLACE a file.** `write_file` overwrites everything, so never call it
+   on a file you have not read. `edit_file` is different: it refuses unless your snippet
+   matches exactly once, so it is safe to edit from what you already know.
+2. **Change the code with the tools, not in your reply.** Do not print a code block
+   describing the fix instead of applying it. Call `edit_file`, then say in one line what
+   you changed. Only show code if you are asked to.
+3. **Find the cause, not the symptom.** If several tests fail, look for the single change
    that fixes all of them rather than patching each one.
-3. **Run the tests after every edit.** `pytest -q` is the definition of done.
-4. **Keep going until they pass.** One green test is not the goal; a green suite is.
-5. **Make the smallest change that works.** Do not refactor, rename, or add features.
+4. **Run the tests after every edit.** `pytest -q` is the definition of done.
+5. **Do not stop after a plan.** A description of the fix is not the fix. Keep working until
+   you have actually run the tests and seen them pass.
+6. **Make the smallest change that works.** Do not refactor, rename, or add features.
+
+## When you are stuck
+
+- **Do not re-read a file you have already read.** If you have the contents, use them. If a
+  read returns what you have already seen, that is a signal to edit, not to read again.
+- **If the same edit fails twice, stop retrying it.** Read the file once to get the current
+  text, or replace the whole enclosing function with `write_file`.
+- **A failing tool is not a reason to switch to prose.** Diagnose it and keep using tools.
 
 ## Trimmed output
 
