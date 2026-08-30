@@ -3792,3 +3792,301 @@ editing `registry.toolset()` too. Written into §12 itself rather than left to b
 
 **456 offline tests**, up from 441. Scored spend for the stage: **445,366 tokens** across
 both halves.
+
+---
+
+# 2026-08-30 — eight cycles, four of them refutations
+
+The must-have set closed the day before. Everything here is measurement, and the
+honest headline is that **four separate explanations for the real-repository
+failure were tested and killed.** `real-humanize` ended the day at 1 pass in 9
+runs, and in the failing runs the information the agent needed was on its screen.
+
+Scored spend: **3,677,100 tokens** across five suites. That alone retires the
+"~1.1M/day free-tier ceiling" this project has been planning around - no throttle
+was ever observed.
+
+---
+
+## Cycle A — Three instruments, because the next measurement could not be read
+
+**No quota.** Built before the compaction stop-gate, because that stop-gate had no
+readable answer.
+
+1. **Peak context on every turn.** `before`/`after` live on the `compact` trace
+   entry, which by definition exists only once compaction has fired. A stop-gate
+   returning `compact_count: 0` across six runs was therefore uninterpretable -
+   peaking at 44,000 chars means raise the threshold, peaking at 12,000 means
+   compaction is irrelevant. Recorded in `reflect`, where the value is already
+   computed for the trigger.
+
+2. **A run that vanishes is now loud.** The result line is printed by the
+   CONTAINER, so a container that dies without writing returns a code that is
+   neither BLOCKED nor MISCONFIGURED - the retry loop breaks and the suite moves
+   on with the denominator one smaller. Observed the day before: `run 0` left no
+   row and no line. No row is synthesised; inventing one for a half-executed run
+   would be a fabrication.
+
+3. **`AGENT_COMPACT_AT` / `AGENT_MAX_COMPACTIONS`.** A threshold that can only be
+   changed by editing `config.py` cannot be tuned by measurement, only by
+   argument.
+
+**All three earned themselves the same day.** Instrument 1 produced the finding in
+Cycle C; instrument 2 fired twice on abandoned runs; instrument 3 made Cycle F's
+experiment possible at all.
+
+---
+
+## Cycle B — Stage 3 Task 6: compaction fires, and one run shows it failing
+
+**The stop-gate passed decisively. Compaction fired in 6 of 6 runs** - the first
+time it has ever fired in a live scored run.
+
+```
+                pass  turns  compact#  removed %                peak_ctx
+real-humanize 0   F     20       1     [49.4]                    45,290
+real-humanize 1   F     20       1     [66.2]                    49,679
+real-humanize 2   F      7       3     [0.2, 3.1, 0.7]           72,027   <- broken
+real-click    0   T     29       3     [63.6, 50.7, 72.0]        50,842
+real-click    1   T     29       1     [77.4]                    46,181
+real-click    2   T     31       2     [73.5, 75.6]              46,596
+```
+
+`real-click` went **0/3 in the Phase J baseline to 3/3**. NOT a controlled
+comparison - `edit_file`, `read_file`, `search_files`, memory, skills and the plan
+node have all changed since - and it is recorded as the first completion of that
+case, not as evidence compaction caused it.
+
+**The finding is `real-humanize` run 2.** Compaction fired three times, removed
+0.2%, 3.1% and 0.7%, hit `MAX_COMPACTIONS` and killed the run as `stuck` at turn 7
+of 30 - 23 turns unused, three model calls spent achieving nothing. The trace:
+
+```
+context  8,665 -> 9,101 -> 11,444 -> 12,217 -> 65,085   (+52,868 in ONE turn)
+COMPACT  before 65,085  after 64,929  removed_messages 2  = 0.2%
+```
+
+One assistant TEXT block of 52,866 chars - 73% of the whole context. `shrink()`
+was working correctly (`max_result_chars` 5,851 against a 6,000 cap); nothing
+bounded the model's own prose. §4.3 assumes context grows through tool results.
+Here it grew through the model.
+
+**Kept.** Cost: 1,867,801 tokens across both cases.
+
+---
+
+## Cycle C — Cap the model's own text — KEPT
+
+Derived, not picked. Across all 460 recorded assistant text blocks the
+distribution is bimodal with an empty middle: p50 135 chars, p95 1,028, then
+nothing at all between 2,796 and 9,047 before a tail running to 64,918. Any cap
+inside that gap truncates the identical 15 blocks (3.3%), so the number is
+insensitive. `MAX_RESULT_CHARS` is 6,000 and sits in the gap - the same cap for
+the same reason, applied where it had been left off.
+
+```
+                peak_ctx   compact#   removed %          turns   verdict
+BEFORE  run 0     45,290       1       [49.4]              20     stuck
+BEFORE  run 1     49,679       1       [66.2]              20     stuck
+BEFORE  run 2     72,027       3       [0.2, 3.1, 0.7]      7     stuck
+AFTER   run 0     29,930       0       []                  13     stuck
+AFTER   run 1     39,549       0       []                  14     stuck  PASS
+AFTER   run 2     45,022       1       [54.8]              17     stuck
+```
+
+Every mechanical prediction held: the pathological shape is gone, peak context is
+capped at 45,022 against 72,027, and the one compaction that fired removed 54.8%.
+Tokens fell 39% (733,734 -> 595,813).
+
+**The pass rate moved 0/3 -> 1/3, and I had registered that it would NOT.** By
+this project's own rule that is a hypothesis, not a finding - and it is still
+unrepeated. The passing run also ended `stuck`: it fixed the tests and then ran
+out of turns.
+
+**A consequence worth recording:** with the cap, `real-humanize` compacted 0, 0, 1
+times against 1, 1, 3 before. Cycle B's "compaction fires 6/6" describes a system
+this cycle changed. The `real-click` half is unaffected - its context came from a
+long history, not one giant message.
+
+---
+
+## Cycle D — The thrash detector: a repeated READ is not thrash
+
+Two runs of `real-humanize` were identical for twelve turns:
+
+```
+failing   read 502,58   read 502,58   read 502,58   -> STUCK at turn 13 of 30
+passing   read 502,58   read 502,58   edit_file     -> 4 failures -> 0
+```
+
+The difference between pass and fail was ONE READ. A read is idempotent -
+repeating one changes nothing and signals confusion, not a loop. The harmful
+pattern is a repeated WRITE or failing command. This matters most on real
+repositories, where the recorded read-to-write ratio is 37:1.
+
+The shape is Hermes Agent's (`agent/tool_guardrails.py`): it keeps idempotent
+tools apart from mutating ones and gives the idempotent set a LARGER budget rather
+than exempting it. That refinement matters - five identical reads really is a
+loop. No code was taken; risk comes from `policy.RISK`, which already classifies
+every tool.
+
+```
+REPEAT_LIMIT = {"read": 5, "write": 3, "destructive": 3}
+read_file x3 -> continue   x5 -> stuck
+run_shell x2 -> continue   x3 -> stuck
+```
+
+**MEASURED ONLY INDIRECTLY, and that is a gap.** Its own scored run was abandoned
+after three `APITimeoutError` blocks and then stopped so Cycle E could land. The
+dev guard (Cycle G) shows it costs nothing on short work, and Cycle E's runs show
+turns rising 13 -> 22 where a run previously died - survival, not progress.
+
+**Kept, unproven.**
+
+---
+
+## Cycle E — The prompt was NOT manufacturing the reads — REVERTED
+
+**Hypothesis.** `SOUL.md` rule 1 said *"Read before you edit. Never write a file
+you have not read"*, and `edit_file` returned only a character count. We command a
+read before every edit, then hand back no evidence it landed - so the model reads
+again to check. Hermes has no read-before-edit gate at all and its edit tool says
+*"do NOT re-read the file to check the write landed"*; their trajectory mining
+measured 154 verify-reads per 400k messages and engineered them out.
+
+**Change.** Prose only. The read gate narrowed to `write_file` (which overwrites
+everything) and dropped for `edit_file` (which refuses unless the snippet matches
+exactly once). Three rules added: change the code with the tools not in your
+reply; do not stop after a plan; and a "When you are stuck" section.
+
+**Result.**
+
+```
+                passes   total writes   turns        tokens (median)
+BEFORE            1/3          1        13/14/17       177,411
+AFTER             0/3          1        22/13/13       171,823
+```
+
+**Writes did not move.** One write across three runs, identical to baseline, and
+the single pass disappeared. All three runs ended `stuck` with the same 4 failing
+tests they started with.
+
+**REVERTED**, on two rows of its own pre-registered reading table at once. 0/3 vs
+1/3 is inside this case's noise; the write count is not, and the write count is
+what the cycle targeted.
+
+---
+
+## Cycle F — Hermes-level result caps are incompatible with our compaction — ABANDONED
+
+**Hypothesis, and it was wrong.** `pytest -q` emitted 346 lines / 49,629 bytes and
+`shrink()` returned 4,784. I checked for `E AssertionError` lines, found three of
+four missing, and concluded the agent could not see the bug. Hermes caps file and
+terminal results at 100,000 chars - 16.7x ours.
+
+**Refuted before it was measured, by reading the tail I had never looked at.**
+pytest's `short test summary info` block lands in the last 20 lines and carries
+every input and every expected value:
+
+```
+FAILED test_metric[[999.9,     'V']-1.00 kV]  - assert '1000 V'  == ...
+FAILED test_metric[[999.99,    'V']-1.00 kV]  - assert '1000 V'  == ...
+FAILED test_metric[[999999,    'V']-1.00 MV]  - assert '1000 kV' == ...
+FAILED test_metric[[0.0009999, 'V']-1.00 mV]  - assert '1000 μV' == ...
+```
+
+**The agent saw all four failures on turn 1 and still wrote nothing.** The
+diagnosis was mine and it was sloppy - I never checked what the tail contained
+before calling truncation the cause.
+
+**A real structural finding came out of it anyway.** Raising the cap to 100,000
+broke 15 tests, and one failure was genuine: compaction returned `after == before`.
+
+```
+protected messages     HEAD 2 + TAIL 6 = 8
+one result may hold    100,000 chars
+protected region       can hold 800,000 chars alone
+threshold              200,000
+
+compaction can only help while COMPACT_AT_CHARS > (HEAD+TAIL) x MAX_RESULT_CHARS
+```
+
+With a 100,000-char result cap, 8 protected messages can hold four times the
+threshold that triggers compaction - so it fires, finds nothing removable, and
+dies at `MAX_COMPACTIONS`. That is `real-humanize` run 2 as the DEFAULT
+configuration. Raising the cap is a compaction redesign, not a config change.
+
+Also caught: raising `MAX_RESULT_CHARS` silently undid Cycle C, because
+`shrink()` bounds every per-tool cap by it. `model_reply` needs its own entry.
+
+**Not committed. Caps unchanged at 6,000 / 45,000.**
+
+---
+
+## Cycle G — Dev regression guard — 14/15, unchanged
+
+Three committed-but-unproven changes at once (the cap, the thrash fix, the
+instruments), which breaks one-change-per-cycle and is stated rather than hidden:
+had the score moved, it could not have been attributed.
+
+```
+pass            14/15, unchanged
+compaction      fired 0 of 15 runs
+peak context    3,756 / 8,309 / 14,583   against a 45,000 threshold
+NFR-402         28,072 median / 60,000   OK
+NFR-104          4,604 largest / 6,000   OK
+```
+
+**Short cases peak at a third of the compaction threshold** - so compaction is
+structurally irrelevant to dev work, not merely idle. Only visible because Cycle A
+records peak context on every turn.
+
+`add-endpoint` came in at 2/3 with planning off, against a recorded 1/3 baseline
+for that configuration. Cost: 521,461 tokens.
+
+---
+
+## Cycle H — The model comparison cannot be run on this key
+
+The one lever with recorded evidence behind it - a model swap once moved 4/15 ->
+14/15 with zero code changes. Six candidates passed the tool-calling probe. Then:
+
+```
+nemotron-3-super-120b-a12b      2.1s   ok      <- the model we are on
+nemotron-3-ultra-550b-a55b    300.1s   TIMEOUT
+moonshotai/kimi-k3             90.6s   TIMEOUT
+deepseek-v4-pro-0813           90.3s   TIMEOUT
+openai/gpt-oss-120b            90.3s   TIMEOUT
+deepseek-v4-flash-0731         90.1s   TIMEOUT
+moonshotai/kimi-k2.6            0.6s   NotFoundError
+```
+
+**Every alternative fails a 16-token "say ok" request.** Exactly the failure
+`config.py` already records for `llama-3.3-70b`: passes the probe, then the
+endpoint stops responding. A free-tier capacity property, not a property of the
+models. Cost: ~600 tokens.
+
+**The model hypothesis is untestable without a different provider.**
+
+---
+
+## What this day establishes
+
+**Four explanations tested and dead:** the prompt manufacturing reads (measured,
+zero effect); the thrash detector as the blocker (limits raised, still no writes);
+truncation hiding the failures (disproved - the agent saw all four); and a better
+model (unavailable).
+
+`real-humanize` is **1 pass in 9 runs** across four configurations. In the failing
+runs the four assertions, with inputs and expected values, were on screen from
+turn 1. The agent read, experimented, and did not edit.
+
+**Two things remain unspent with evidence behind them:** `edit_file` returning a
+unified diff rather than a character count - the one Hermes mechanism aimed
+squarely at an agent that does not trust its edit landed - and a provider that
+serves more than one model.
+
+**A rig lesson worth the entry:** every fixture that sized itself with a magic
+number stopped testing what it was named after the moment a constant moved.
+`test_a_large_context_compacts` passed while asserting the thrash detector. They
+now derive from the constants, verified at two settings.

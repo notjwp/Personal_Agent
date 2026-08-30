@@ -10,14 +10,14 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, web search, measurement rig. **456 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, web search, measurement rig. **476 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
 |---|---|
 | dev baseline | **14/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b` |
 | held out | **29/30** — the dev score was not overfitted |
-| real repositories | **4/10**, and only 4 of 6 cases have run with the current toolset |
+| real repositories | **4/10**; `real-humanize` 1 pass in 9 runs across four configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
 | still unbuilt | streaming |
@@ -79,6 +79,9 @@ Ordered by how often they have caught something.
   ~58% of a median run's billed tokens. `MAX_SCHEMA_CHARS = 10,000` is derived, not chosen: it is
   the largest cap at which NFR-402's median still holds. Measure whether a provider caches before
   assuming tool breadth is cheap.
+- **The ~1.1M/day ceiling was wrong.** 3,677,100 scored tokens in one day with no throttle
+  observed. Budget by wall-clock and blocked-run rate instead - the binding limit is that
+  a single `real-*` run takes 10-20 minutes and can block on `APITimeoutError`.
 - **A 30-run scored pass costs ~1.1M tokens and saturates the free tier for the day.** Budget one
   scored run per day; after that the tier rejects ~2 of 3 requests.
 
@@ -177,7 +180,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 456 tests, no API key, no network
+pytest                            # 476 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,
