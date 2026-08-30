@@ -1855,7 +1855,9 @@ def test_git_commit_has_an_identity(tmp_workspace):
 # changes them has to change this literal too, deliberately.
 
 HAND_WRITTEN_SCHEMAS = {'read_file': {'name': 'read_file',
-               'description': 'Read a text file from the workspace. Returns numbered lines. Use offset and limit to page through a large file. If you have already read a region, use what you have and move on to editing - reading it again returns the same text and costs a turn.',
+               'description': 'Read a text file from the workspace. Returns numbered '
+                              'lines. Use offset and limit to page through a large '
+                              'file.',
                'input_schema': {'type': 'object',
                                 'properties': {'path': {'type': 'string',
                                                         'description': 'Path relative '
@@ -1931,7 +1933,12 @@ HAND_WRITTEN_SCHEMAS = {'read_file': {'name': 'read_file',
                                                                            'file.'}},
                                  'required': ['path', 'content']}},
  'edit_file': {'name': 'edit_file',
-               'description': 'Replace an exact snippet of a file with new text. Use this to change an existing file - prefer it over write_file, which costs the whole file. The snippet must appear exactly once; include surrounding lines to make it unique. It is safe to edit from what you already know: this refuses rather than guessing when the snippet does not match, so you need not re-read the file first. Do not re-read the file afterwards to check the edit landed - if this returns without an error, it landed.',
+               'description': 'Replace an exact snippet of a file with new text. '
+                              'Prefer this over write_file for any change to an '
+                              'existing file: it costs a few hundred characters '
+                              'instead of the whole file. The snippet must appear '
+                              'exactly once - include surrounding lines to make it '
+                              'unique.',
                'input_schema': {'type': 'object',
                                 'properties': {'path': {'type': 'string',
                                                         'description': 'Path relative '
