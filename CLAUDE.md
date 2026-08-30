@@ -10,12 +10,12 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, web search, measurement rig. **476 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, web search, measurement rig. **500 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
 |---|---|
-| dev baseline | **14/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b` |
+| dev baseline | **15/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b` |
 | held out | **29/30** — the dev score was not overfitted |
 | real repositories | **4/10**; `real-humanize` 1 pass in 9 runs across four configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
@@ -48,6 +48,14 @@ Ordered by how often they have caught something.
   the thing ran before attributing anything to it.
 
 **The loop and the model**
+
+- **A truncated reply is not a finished one.** `stop_reason == "length"` means the model
+  ran out of output budget mid-sentence. Measured: 8 of 8 runs ending that way were
+  scored `done`, and none passed. Any terminal check that ignores `stop_reason` will
+  score a cut-off reply as success.
+- **A cap sized against one failure mode outlives it.** `MAX_SECONDS` was set for a
+  hanging tool; tools take 9s of a 950s run and it was ending working runs instead.
+  Re-derive a cap when the thing it bounds changes shape.
 
 - **Deterministic injection works; agent choice does not.** `write_episode` → `context_for` needed
   no decision and went 0/18 → 15/18. The `learn` tool needed one and was called 0 times in 15
@@ -180,7 +188,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 476 tests, no API key, no network
+pytest                            # 500 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

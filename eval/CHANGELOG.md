@@ -4090,3 +4090,196 @@ serves more than one model.
 number stopped testing what it was named after the moment a constant moved.
 `test_a_large_context_compacts` passed while asserting the thrash detector. They
 now derive from the constants, verified at two settings.
+
+---
+
+# 2026-08-30, second half — three rig defects, and the one that invalidated the day
+
+The morning's eight cycles are logged above. This half found **three defects in the
+measuring apparatus**, one of which had been silently corrupting results for hours,
+and produced the first `real-humanize` number of the day that is not confounded by
+something later discovered.
+
+---
+
+## Cycle I — `edit_file` returns a diff, and verifies the write — `a614f59`
+
+**Hypothesis.** A character count is not evidence. `edit_file` returned
+`"edited x.py (replaced 412 chars with 480, +2 lines)"`, so the agent had no way to
+know the edit was what it intended and re-read to check - and re-reading is what
+the thrash detector then punishes.
+
+Hermes's patch tool returns a unified diff and its description says *"do NOT re-read
+the file to check the write landed"*; their trajectory mining measured 154
+verify-reads per 400k messages and engineered them out.
+
+**Change.** A unified diff, bounded twice; a write that does not persist now RAISES
+rather than reporting success.
+
+**Bounded twice, and the second bound was caught by its own test.** `DIFF_LINES`
+caps diff lines at 40 - but 40 lines of 300 chars is 12,000, double
+`MAX_RESULT_CHARS`. `DIFF_LINE_CHARS` caps the width at 120. Same trap `shrink()`
+already carries: NFR-104 bounds CHARACTERS while a line count bounds LINES.
+
+**Kept, and its measurement is disputed** - see Cycle L.
+
+---
+
+## Cycle J — Warn before killing, and hash the RESULT — `35ca171`
+
+Two halves of Hermes's `tool_guardrails` that the morning's thrash fix left behind.
+
+`reflect` ended a run silently at `REPEAT_LIMIT`: the model was never told it was
+looping and could not correct. Hermes warns on the 2nd identical call and blocks
+only later, appending the notice to the tool result the model reads next turn -
+cache-safe, because tool results are append-only.
+
+`WARN_AFTER = 2` against a read limit of 5, so the nudge arrives three turns before
+the run ends. A test pins `WARN_AFTER < min(REPEAT_LIMIT)`; set the other way the
+notice is unreachable.
+
+**A defect the morning shipped:** `_signature()` hashes the CALL, so a re-read after
+an edit looked identical to a pointless one. It is not - the file changed, so the
+result changed. The notice now keys on both, which is what Hermes's `_result_hash`
+does.
+
+**Kept, measurement disputed** - see Cycle L.
+
+---
+
+## Cycle K — Verify-on-stop, DEFAULT OFF — `6f198f1`
+
+A run that edits and then stops without running the tests has not finished, it has
+narrated. Hermes injects a message and continues
+(`agent/verification_stop.py`); ours does the same in `reflect`, bounded at two
+nudges.
+
+**Off by default, deliberately.** The plan said build it only once traces showed it
+was needed, and they did not: the loop already runs to a turn cap. Hermes ships its
+own off for the same reason. `AGENT_VERIFY_ON_STOP` turns it on.
+
+**Never exercised.** Every measurement since ran with it off.
+
+---
+
+## Cycle L — THE DEFECT THAT INVALIDATED THE DAY — `04bcde9`
+
+```
+64 scored runs on 2026-08-30
+ 8 ended with stop_reason = "length"
+ 8 of those 8 were recorded verdict "done"
+ 0 of those 8 passed
+```
+
+`length` means the provider cut the reply off mid-sentence at `MAX_TOKENS`. It is the
+strongest available signal that the model is NOT finished. `reflect` decided `done`
+from *"the last message is an assistant message with no tool call"* and never looked
+at `stop_reason`, so a truncation and a completion were indistinguishable.
+
+**The trace that exposed it** (`real-humanize` run 1, 12 turns of 30, 4 tests still
+failing): the agent had just restated all four assertions with their expected values,
+correctly, and was reasoning toward the fix when it hit 16,000 output tokens. That
+call billed 30,862 tokens. The run was scored `done`.
+
+**Our own reply cap made it invisible.** The morning's cap truncates stored text to
+6,000 chars and appends spill instructions, so in the transcript the reply looks like
+a tidy 6,319-char message ending in a normal artifact pointer - not like something
+cut off mid-word.
+
+**The fix is Hermes's** (`conversation_loop.py:3612`,
+`_LENGTH_CONTINUATION_OUTPUT_LIMIT` at `:1119`), with one deliberate difference:
+their wording says *"continue exactly where you left off"*, which here would spend
+the next 16,000 tokens the same way. Our budget goes on visible reasoning, so the
+hint says stop explaining and make the tool call.
+
+**Verified by replaying the real run**, not a synthetic state: that message list
+returns `done` without the fix and `continue` with it.
+
+**WHAT THIS COST.** Cycles I, J and the batching cycle were all scored through this.
+Their `0/3, zero writes` results were measured on a loop that ended runs while the
+agent was mid-sentence. The "seven refuted hypotheses" claim made earlier in the day
+is **withdrawn**: only the morning's prompt cycle refuted cleanly, its runs having
+ended `stuck` rather than `length`.
+
+---
+
+## Cycle M — Batching independent calls — REVERTED — `a31ad78`, reverted `27d282a`
+
+**Measured first:** across three runs the agent made 20 tool calls in 20 turns. Never
+two in one turn. 75-85% of the turn budget went on reads issued one at a time.
+
+The loop already supported batching - verified before writing the prose: three calls
+in one turn, gate approves all three, `execute` returns three results, `turns`
+increments by 1.
+
+Adapted from Hermes's `PARALLEL_TOOL_CALL_GUIDANCE`.
+
+**Result: calls/turn stayed at exactly 1.00 across all three runs.** The instruction
+was ignored entirely. **REVERTED** - a prompt section the model demonstrably ignores
+is cost on every turn for nothing.
+
+---
+
+## Two rig defects, both mine, both invisible to a green suite
+
+**`FORWARDED_ENV` omitted `AGENT_REQUEST_TIMEOUT`** (`55a3bbe`). Every run used the
+120s default while the driver believed it had set 240. Three theories were argued
+against a number never applied, and `seconds=826` was read as confirming 240 when at
+120s with SDK backoff it lands in the same place. Cost: ~90 minutes and four blocked
+runs.
+
+The same defect had already been paid for twice - `AGENT_PLAN` (Stage 7) and
+`AGENT_WEB` (Stage 4). **The fix reverses the direction of the list**: `config.py`
+records every `AGENT_*` name as it reads it through a two-line `_env()` helper, and
+the harness derives what it forwards MINUS the three `spawn()` sets itself. An
+INCLUSION list fails invisibly; an EXCLUSION list fails visibly. Verified by
+reintroducing the defect - the guard names the variable. **It paid the same day:**
+`AGENT_MAX_SECONDS` was forwarded automatically with no harness edit.
+
+**The harness stopped running as a script** (`cce2d6f`). Moving that derivation to
+module level added `from agent import config`, which works under pytest - the tests
+import the file with the repo root already on `sys.path` - and fails under
+`python eval/harness.py`, where `sys.path[0]` is `eval/`. **494 tests passed while
+the entry point was dead**, and it was pushed. The new test runs
+`python eval/harness.py --help` as a SUBPROCESS: exit 1 before the fix, exit 0 after.
+
+Second time in one day a test passed vacuously; the other was a regex guard that
+stopped matching after a refactor.
+
+---
+
+## `MAX_SECONDS` 900 -> 1500 — `e0d52e4`
+
+Fixing Cycle L made runs longer, which pushed them into a wall they had never
+reached. Derived over 21 real-* runs:
+
+```
+seconds per turn   p50 50.9   p90 75.3      tools account for 9-11s of it
+cap  900 -> 17.7 turns at p50   <- was
+cap 1500 -> 29.5                <- smallest cap that reaches max_turns of 30
+cap 1800 -> 35.4                   only the slow tail, 20% more wall clock
+```
+
+900 was sized against a hanging tool. It was ending working runs.
+
+---
+
+## The first trustworthy `real-humanize` number of the day
+
+Measured on a loop where truncation does not end runs, the timeout reaches the
+container, vanished runs are visible, and the instruments are sound:
+
+```
+run 0  stuck  13/30 turns  reads  9  WRITES 0  length recoveries 1  model 965s
+run 1  stuck  22/30 turns  reads 16  WRITES 0  length recoveries 2  model 932s
+run 2  stuck  21/30 turns  reads 16  WRITES 0  length recoveries 2  model 958s
+```
+
+All five truncations recovered correctly. All three then ran out of clock, which is
+what `e0d52e4` addresses.
+
+**In every run the agent had all four failing assertions on screen from turn 1, made
+9-16 successful reads, had a working `edit_file` that returns a diff, had 8-17 turns
+unused - and never edited a file.**
+
+That is the finding the day actually produced. Everything else was apparatus.

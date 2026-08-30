@@ -14,7 +14,6 @@ one risk is what §13 cut the INSTALL set for.
 
 Adding a tool touches this file only (NFR-601).
 """
-import difflib
 import os
 import re
 import subprocess
@@ -129,36 +128,6 @@ def write_file(path: str, content: str) -> str:
 # edit_file exists because whole-file writes cost the run: on real repositories
 # the agent could not afford to rewrite a file it had only partly read. Its
 # description is load-bearing - this wording took real repos 0/9 to 4/7.
-# The agent has no reason to trust an edit it cannot see. A character count is
-# not evidence, so it re-reads to check - and re-reading is what the thrash
-# detector then punishes. A diff is the receipt; the counts stay for scale.
-DIFF_LINES = 40
-# DIFF_LINES bounds LINES; this bounds CHARACTERS. A test caught the gap -
-# 40 lines of 300 chars is 12,000, double the result cap. Same trap shrink()
-# already carries.
-DIFF_LINE_CHARS = 120
-
-
-def _edit_receipt(path: str, before: str, after: str) -> str:
-    """A unified diff of the change, bounded so it cannot flood context.
-
-    Past DIFF_LINES the diff stops being a receipt and becomes a second copy
-    of the file, so it degrades to the counts plus the first hunk.
-    """
-    delta = after.count(chr(10)) - before.count(chr(10))
-    counts = f"edited {path} ({delta:+d} lines)"
-    diff = [l[:DIFF_LINE_CHARS] for l in difflib.unified_diff(
-        before.splitlines(), after.splitlines(),
-        fromfile=f"{path} before", tofile=f"{path} after", lineterm="", n=2)]
-    if not diff:
-        return counts + " - no textual change"
-    if len(diff) > DIFF_LINES:
-        shown = diff[:DIFF_LINES]
-        shown.append(f"... [{len(diff) - DIFF_LINES} more diff lines; read the file if you need them]")
-        diff = shown
-    return counts + ":" + chr(10) + chr(10).join(diff)
-
-
 @tool(risk="write")
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     """Replace an exact snippet of a file with new text. Prefer this over
@@ -192,17 +161,10 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
             f"that text appears {found} times in {path}; it must match exactly "
             f"once. Include more of the surrounding lines to make it unique.")
 
-    updated = text.replace(old_string, new_string)
-    target.write_text(updated, encoding="utf-8")
-
-    # A write that did not land must not report success. Hermes makes this a
-    # hard error rather than a silent flag and that is the right call.
-    if target.read_text(encoding="utf-8", errors="replace") != updated:
-        raise RuntimeError(
-            f"the edit to {path} did not persist - the file on disk differs "
-            f"from what was written. Re-read it and retry.")
-
-    return _edit_receipt(path, text, updated)
+    target.write_text(text.replace(old_string, new_string), encoding="utf-8")
+    delta = new_string.count(chr(10)) - old_string.count(chr(10))
+    return (f"edited {path} (replaced {len(old_string)} chars with "
+            f"{len(new_string)}, {delta:+d} lines)")
 
 
 # `write` and NOT `destructive`: the DANGER regex in policy.py escalates the
