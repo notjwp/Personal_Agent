@@ -139,17 +139,13 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
     # into the message list, which "pollutes history and creates gaps" - the same
     # placement memory and skills already use.
     if state.get("phase") == "planning":
-        # Research only. The plan itself is written by the `plan` node, which gets
-        # a message list of its own - two earlier cycles tried to extract it from
-        # THIS conversation and could not, because a tool-call history keeps
-        # producing tool calls on this provider whether or not a tool is offered.
+        # Research only - the plan itself is written by the `plan` node, which gets a
+        # message list of its own.
         system = f"{system}\n\n{PLAN.read_text(encoding='utf-8')}"
     elif state.get("plan"):
         plan, cursor = state["plan"], min(state.get("cursor", 0), len(state["plan"]) - 1)
-        # The WHOLE plan, not just the current step. It costs about 70 tokens a
-        # turn on a provider that caches nothing, and buys the model sight of
-        # what it already did and what is still coming - without which step 3
-        # arrives with no idea that step 4 is "run the suite".
+        # The WHOLE plan, not just the current step: ~70 tokens, and without it the
+        # agent re-derives the shape of the work every turn.
         listing = "\n".join(
             f"{'->' if i == cursor else '  '} {i + 1}. {step}"
             for i, step in enumerate(plan))
@@ -160,10 +156,8 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
             trace.append({"kind": "step", "cursor": cursor, "of": len(plan),
                           "text": plan[cursor]})
 
-    # Retrieved memory goes in the SYSTEM PROMPT, not the message list. A message
-    # appended per turn would add a fresh copy each turn and grow quadratically;
-    # the system prompt is one fixed cost per request. It is still charged EVERY
-    # request on a provider that caches nothing, which is why context_for() caps it.
+    # Retrieved memory goes in the SYSTEM PROMPT, not the message list - a fake
+    # turn in the history is indistinguishable from something the agent did.
     recalled = memory.context_for(_goal(state["messages"]))
     if recalled:
         system = f"{system}\n\n{recalled}"
@@ -206,10 +200,8 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
     return {
         "messages": state["messages"] + [{"role": "assistant", "content": reply.blocks}],
         "spent_tokens": state["spent_tokens"] + reply.billed_tokens,
-        # NFR-304. Accumulated by the two nodes that spend real time - this one
-        # waiting on the provider, execute waiting on tools - rather than read
-        # off the clock, so a thread resumed tomorrow is not instantly over its
-        # cap because the calendar moved.
+        # NFR-304. Accumulated by the nodes that actually spend time, so a thread
+        # resumed tomorrow is not instantly over its cap because the calendar moved.
         "spent_seconds": state.get("spent_seconds", 0.0) + elapsed,
     }
 
@@ -274,10 +266,8 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
         _log(trace, call, "deny", 0.0, "", "", True)  # a denial is still a tool call
         failed += 1
 
-    # Research turns are counted SEPARATELY and are not charged against max_turns.
-    # This is what makes planning affordable: MAX_TURNS is 12, and a shared
-    # counter would let four turns of reading starve the very cases planning
-    # exists to help.
+    # Research turns are counted SEPARATELY and are not charged against max_turns;
+    # a shared counter would starve the cases planning exists to help.
     planning = state.get("phase") == "planning"
     return {
         "messages": state["messages"] + [{"role": "user", "content": results}],
@@ -290,37 +280,45 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
-def reflect(state: AgentState) -> dict:
-    """Deterministic only. Checks run in a fixed order; the first match wins."""
-    # NFR-401 wants the token budget enforced as a HARD STOP, and until now
-    # nothing did it: the old check fired at 60% and terminated, which looked
-    # like a budget stop while actually being a compaction trigger. With
-    # compaction real, exhaustion needs its own terminal verdict - otherwise a
-    # run compacts its way past the budget it was given.
+def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
+    """Deterministic only. Checks run in a fixed order; the first match wins.
+
+    `config` is optional and used for ONE thing: recording context size. _timed()
+    inspects the signature and passes it when present, and every direct caller in
+    the tests passes state alone, so the default keeps both working.
+    """
+    # NFR-401's HARD stop. The old check fired at 60% and terminated, which read
+    # as a budget stop while actually being a compaction trigger.
     if state["spent_tokens"] >= state["budget_tokens"]:
         return {"verdict": "budget"}                                    # (a0)
 
     # FR-403, on CONTEXT SIZE rather than cumulative spend. See the derivation in
     # config.COMPACT_AT_CHARS: spent_tokens never decreases, so using it here
     # would fire on every turn once crossed.
-    if context_chars(state["messages"]) > settings.COMPACT_AT_CHARS:
+    size = context_chars(state["messages"])
+
+    # Recorded on EVERY turn, not only when compaction fires: `before`/`after` live
+    # on the compact entry, so a run that never compacts would leave no evidence of
+    # how close it came - and 44,000 vs 12,000 call for opposite actions.
+    trace = (config or {}).get("configurable", {}).get("trace")
+    if trace is not None:
+        trace.append({"kind": "context", "chars": size})
+
+    if size > settings.COMPACT_AT_CHARS:
         if state.get("compact_count", 0) < settings.MAX_COMPACTIONS:
             return {"verdict": "compact"}                               # (a)
         # Compacted the maximum number of times and still over. Stop rather than
         # loop: the loop costs a model call per turn and clears nothing.
         return {"verdict": "stuck"}                                     # (a1)
     # NFR-304's third cap, checked before the phase branch so it binds during
-    # research as well as work. Terminates as `stuck` rather than as a fifth
-    # verdict, deliberately: FR-104 already names exactly four terminal outcomes
-    # and running out of time is a way of being stuck, not a new kind of ending.
+    # research too. Terminates as `stuck` - running out of time is a way of being
+    # stuck, not a fifth verdict.
     if state.get("spent_seconds", 0.0) >= settings.MAX_SECONDS:
         return {"verdict": "stuck"}                                     # (a2)
 
     if state.get("phase") == "planning":
         # A reply carrying no tool call IS the plan - the planner saying it has
-        # finished looking. Running out of research turns produces one too:
-        # a planner that will not stop reading must still yield something rather
-        # than spend the whole run on reconnaissance.
+        # finished researching.
         if state["messages"][-1]["role"] == "assistant":
             return {"verdict": "planned"}
         # Strictly GREATER than the cap, so reaching it buys one more act turn -
@@ -334,17 +332,13 @@ def reflect(state: AgentState) -> dict:
         return {"verdict": "stuck"}                                     # (b)
     if _last_three_signatures_identical(state["messages"]):
         return {"verdict": "stuck"}                                     # (c)
-    # FR-104 names exactly four terminal outcomes and `replan` is not one. It
-    # fired ONCE in 712 recorded rows, and the plan node that would consume it
-    # does not work yet, so three consecutive failures is a way of being stuck.
-    # `failures` is on the row, so the cause is still distinguishable.
+    # FR-104 names exactly four terminal outcomes and `replan` is not one; it
+    # fired once in 712 rows, and `failures` still distinguishes the cause.
     if state["failures"] >= 3:
         return {"verdict": "stuck"}                                     # (d)
     if state["messages"][-1]["role"] == "assistant":                    # (e)
-        # Section 9 step 2 (b) said to restore the cursor check "only when the
-        # plan node is added". This is that moment - and the made-a-call guard
-        # stays, because with AGENT_PLAN=off `plan` is [] and that guard is the
-        # only thing standing between a first text-only reply and a false `done`.
+        # §9 step 2(b): `done` is gated on whether any tool call was ever made, not on
+        # a cursor - a plan with an unfinished cursor must still be able to end.
         if not _made_a_call(state["messages"]):
             return {"verdict": "continue"}
         plan = state.get("plan") or []
@@ -447,11 +441,8 @@ def plan(state: AgentState, config: RunnableConfig) -> dict:
     """
     goal = _goal(state["messages"])
     digest = _digest(state["messages"])
-    # Read OUTSIDE the try. A missing prompt file is a deploy error, not a
-    # provider error - and the first version swallowed it as one: `prompts/
-    # STEPS.md` did not exist, every call fell back to the goal, and it looked
-    # EXACTLY like the bug this stage was built to fix. Prompts are
-    # version-controlled files (NFR-603); an absent one must fail loudly.
+    # Read OUTSIDE the try. A missing prompt is a deploy error, not a provider
+    # one; swallowed, it looked exactly like the bug this node was built to fix.
     instruction = STEPS.read_text(encoding="utf-8")
     try:
         reply = call_model(
@@ -543,10 +534,8 @@ def finish(state: AgentState, config: RunnableConfig) -> dict:
                       if ok and c["name"] == "run_shell"
                       and isinstance(c["input"].get("command"), str)])
 
-    # Phase O-redux. Knowledge is retained WITHOUT the agent electing to retain it:
-    # Phase O measured `learn` called 0 times in 15 sessions, with the tool exposed
-    # and the prompt asking for it. Everything needed is already in `messages`, so
-    # this adds no model call and `finish` stays deterministic.
+    # Phase O-redux: knowledge is retained WITHOUT the agent electing to record
+    # it. Deterministic injection went 0/18 to 15/18; the `learn` tool went 0/15.
     for name in skills.extract(state["messages"], _goal(state["messages"])):
         if trace is not None:
             trace.append({"kind": "skill", "name": name})

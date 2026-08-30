@@ -36,13 +36,9 @@ CHECK_TIMEOUT = 600
 IMAGE = "personal-agent"
 ENV_FILE = REPO / ".env"
 
-# How the inner runner tells the outer driver what happened.
-#
-# The distinction is the whole point: a BLOCKED run never reached the model, so it
-# measured nothing and must not be scored - counting it as a failure understates
-# the agent and corrupts every comparison made against the baseline afterwards. A
-# MISCONFIGURED one cannot be fixed by retrying, so the suite stops at once rather
-# than recording fifteen identical "failures".
+# How the inner runner tells the outer driver what happened. A BLOCKED run
+# never reached the model, so it is excluded and retried rather than scored -
+# infrastructure failure is not a result.
 COMPLETED, BLOCKED, MISCONFIGURED = 0, 3, 4
 BLOCKED_RETRIES = 2
 
@@ -60,13 +56,9 @@ FORWARDED_ENV = (
     "OPENAI_MODEL",
     "NIM_BASE_URL",
     "NIM_MODEL",
-    # Override a case's token budget and turn cap for ONE run without editing
-    # tasks.jsonl. Deliberately overrides rather than edits: an experiment that
-    # mutates the case definition quietly changes what every later run measures.
-    #
-    # Both exist because raising one alone is not a test of "resource-limited" -
-    # measured: lifting the budget to 1M simply moved the wall to the 30-turn cap
-    # at 281k tokens, answering nothing.
+    # Override a case's budget and turn cap for ONE run without editing
+    # tasks.jsonl. Raising one alone answers nothing: lifting the budget to 1M
+    # simply moved the wall to the turn cap.
     "AGENT_BUDGET",
     "AGENT_MAX_TURNS",
     # Phase L's kill switch. Forwarded so a scored suite can be run with MCP off
@@ -78,15 +70,17 @@ FORWARDED_ENV = (
     # Phase N's. Same reason again: the comparison is only controlled because the
     # same binary can be run with skills off.
     "AGENT_SKILLS",
+    # Stage 3 Task 6's. The compaction trigger and its cap, so a threshold
+    # experiment is a harness flag rather than a source edit. A number that can
+    # only be changed by editing config.py cannot be tuned by measurement.
+    "AGENT_COMPACT_AT",
+    "AGENT_MAX_COMPACTIONS",
     # Stage 4's. Same reason, and the same lesson applied one stage later: the
     # control run for web search is only a control because the SAME binary can be
     # run with the tool removed.
     "AGENT_WEB",
-    # Stage 7's. It was MISSING, which meant the planning kill switch could not be
-    # exercised by the harness at all: with PLAN_ENABLED defaulting to off, a
-    # scored run had no way to turn planning ON. Every kill switch has to be
-    # reachable from here or the controlled comparison it exists for cannot be
-    # run.
+    # Stage 7's, and it was MISSING - with PLAN_ENABLED defaulting off no scored
+    # run could turn planning ON. Every kill switch must be reachable from here.
     "AGENT_PLAN",
     # Which library a run was measured against. Set by spawn() for every scored
     # run - the benchmark's skills are FIXTURES describing a fictional project,
@@ -98,23 +92,8 @@ FORWARDED_ENV = (
 
 # --------------------------------------------------------------- egress (H)
 #
-# NFR-205 asks for egress restricted to an allowlist, not removed. A scored run
-# reaches the model through a filtering proxy and has NO other route off the
-# machine, because the agent container sits on an --internal network whose only
-# neighbour is the proxy.
-#
-# Why this needs no TLS interception: HTTPS through a forward proxy uses CONNECT,
-# and the destination hostname travels in the CONNECT line in cleartext. The proxy
-# allowlists on that hostname without decrypting anything, so the model connection
-# stays end-to-end encrypted and no CA has to be injected into the image.
-#
-# VERIFIED on this machine before being relied on (Phase H1):
-#   allowed host through the proxy      -> http 200
-#   non-allowlisted host                -> "CONNECT tunnel failed, response 403",
-#                                          proxy logs "refused on filtered domain"
-#   direct connection by RAW IP, no DNS -> curl exit 7, failed to connect
-# That last one is the one that matters: it proves the block is routing, not just
-# DNS. A DNS-only barrier is bypassed by dialling an IP.
+# NFR-205 restricts egress to an allowlist rather than removing it: the agent
+# container's only neighbour on its --internal network is the proxy.
 EGRESS_NET = "personal-agent-egress"
 EGRESS_PROXY = "personal-agent-egress-proxy"
 EGRESS_IMAGE = "personal-agent-egress"
@@ -169,11 +148,8 @@ def model_hosts() -> list[str]:
     return sorted(h for h in hosts if h)
 
 
-# The web split's server: fixed content, on the egress network, started by the
-# harness. Deliberately NOT the live internet - a case that fetches a real page
-# fails on someone else's outage, changes its answer without warning, and cannot be
-# re-verified a month later. Every one of those is a property this rig exists to
-# refuse.
+# The web split's fixed-content server, on the egress network. Started by the
+# harness, not by the case, so a case cannot silently depend on it.
 FIXTURE_WEB = "fixture-web"
 FIXTURE_WEB_IMAGE = "python:3.12-slim"
 FIXTURE_WEB_DIR = REPO / "eval" / "fixtures" / "web-content"
@@ -279,10 +255,9 @@ def ensure_egress(hosts=None) -> bool:
     global _APPLIED
     hosts = model_hosts() if hosts is None else hosts
     EGRESS_DIR.mkdir(parents=True, exist_ok=True)
-    # newline="" defeats Windows CRLF translation. These files are parsed by a LINUX
-    # container: tinyproxy reads "User tinyproxy\r" and dies with "Syntax error on
-    # line 1". Same family as the .gitattributes lesson from Phase A - a text file
-    # crossing an OS boundary needs its line endings pinned.
+    # newline="" defeats Windows CRLF translation: tinyproxy reads a trailing
+    # CR in "User tinyproxy" and dies with a syntax error on a file that looks
+    # correct.
     (EGRESS_DIR / "tinyproxy.conf").write_text(
         PROXY_CONF.format(port=PROXY_PORT), encoding="utf-8", newline="")
     _write_allowlist(hosts)
@@ -295,20 +270,13 @@ def ensure_egress(hosts=None) -> bool:
         _docker("network", "create", "--internal", EGRESS_NET)
 
     running = _docker("inspect", "-f", "{{.State.Running}}", EGRESS_PROXY)
-    # Recreated unless THIS process started it. A proxy left running by an earlier
-    # invocation loaded whatever filter file existed at ITS startup, and that is not
-    # observable from outside - so the only way to know what a running proxy
-    # enforces is to have started it. Two seconds, once per invocation, and without
-    # it a stale widening survives into a suite that believes it is restricted.
+    # Recreated unless THIS process started it: a proxy left by an earlier run
+    # enforces an allowlist nobody can see from outside.
     if _APPLIED is None or running.stdout.strip() != "true":
         _docker("rm", "-f", EGRESS_PROXY)
-        # Explicit resolvers. Docker's embedded DNS (127.0.0.11) answered an A-only
-        # lookup here but returned NOTHING for the dual-family AF_UNSPEC query
-        # tinyproxy actually makes, so every CONNECT failed with EAI_AGAIN while
-        # `getent hosts` still looked healthy. Measured mid-run, after it blocked a
-        # scored suite. Pinning the resolvers drops the dependency on Docker
-        # Desktop's forwarder and does NOT widen egress - the CONNECT filter is what
-        # bounds where the proxy may go, not which resolver it asks.
+        # Explicit resolvers. Docker's embedded DNS answered an A-only query but not
+        # the AF_UNSPEC one tinyproxy makes, so every CONNECT failed with EAI_AGAIN.
+        # This bounds where the proxy may go, not which resolver it asks.
         if _docker("run", "-d", "--name", EGRESS_PROXY, "--network", EGRESS_NET,
                    "--dns", "8.8.8.8", "--dns", "1.1.1.1",
                    "-v", f"{(EGRESS_DIR / 'tinyproxy.conf').as_posix()}:/etc/tinyproxy/tinyproxy.conf:ro",
@@ -352,13 +320,9 @@ def _proxy_can_resolve() -> bool:
     return True
 
 
-# Scored runs sit on the internal egress network and reach the model only through
-# the proxy above. Overridable for local iteration, but `outer()` refuses to score
-# a split without the proxy: a number produced with egress silently open would be
-# exactly the quiet untruth the rest of this rig exists to prevent.
-#
-# Hermeticity of the `missing-dep` case does NOT depend on any of this: /etc/pip.conf
-# sets no-index, so pip resolves from /wheels whether or not the network is up.
+# Scored runs sit on the internal egress network and reach the model only
+# through the proxy. Overridable for local iteration, but outer() refuses to
+# score a split without it - a number with egress silently open is not one.
 NETWORK = os.environ.get("AGENT_NETWORK", EGRESS_NET)
 
 # Running `python eval/harness.py` puts eval/ on sys.path, not the project root,
@@ -681,6 +645,18 @@ def checkpoint_ms(trace) -> list[float]:
     return [e["ms"] for e in trace if e.get("kind") == "checkpoint"]
 
 
+def peak_context_chars(trace) -> int:
+    """The largest context the run ever held, whether or not compaction fired.
+
+    Without this a `compact_count` of 0 says only "it did not happen" - not
+    whether the run came within a thousand chars of the threshold or never got
+    close. Those two readings call for opposite actions, so the number that
+    separates them belongs on the row.
+    """
+    sizes = [e.get("chars", 0) for e in trace if e.get("kind") == "context"]
+    return max(sizes) if sizes else 0
+
+
 def previous_run(out: Path) -> Path | None:
     """The most recent EARLIER run over the same population, or None.
 
@@ -772,12 +748,8 @@ def run_dir(args, cases) -> Path | None:
     if not args.continue_:
         out = root / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         out.mkdir(parents=True, exist_ok=True)
-        # Provider, model and network are RECORDED but deliberately kept out of
-        # `want`: they describe the number, they do not decide whether resuming is
-        # safe, and folding them into the comparison would make every older run
-        # directory unresumable. The model is on every row too - this is the
-        # summary a reader hits first, and it was missing when a scored set was
-        # audited, which is why it is here.
+        # Provider, model and network are RECORDED but kept out of the resume key: a
+        # run continued after a model change would silently mix two measurements.
         from agent import config as _cfg
         (out / "manifest.json").write_text(
             json.dumps({**want, "image": IMAGE,
@@ -869,23 +841,16 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
         return BLOCKED
     cmd = [
         "docker", "run", "--rm", "--network", NETWORK,
-        # NFR-201, enforced by the kernel instead of asserted in a test. --read-only
-        # makes the ROOT FILESYSTEM immutable and leaves bind mounts untouched, so
-        # every writable path has to be declared here and nowhere else. Until Phase K
-        # the project was mounted writable, which silently handed the agent the
-        # harness, tasks.jsonl and the fixtures it is scored against - a boundary
-        # asserted by a post-hoc tamper check rather than held by the kernel.
-        # PIP_USER/PYTHONUSERBASE in the image keep `missing-dep` solvable under
-        # --read-only; the Containerfile records that measurement.
+        # NFR-201, enforced by the kernel rather than asserted in a test. --read-only
+        # makes the ROOT FILESYSTEM immutable and leaves bind mounts untouched, which
+        # is why the project tree is mounted :ro separately.
         "--read-only", "--tmpfs", "/tmp:exec",
         "-v", f"{REPO.as_posix()}:/app:ro",
         "-v", f"{(REPO / 'eval' / 'runs').as_posix()}:/app/eval/runs",
         "-v", f"{(REPO / 'eval' / 'workspace').as_posix()}:/workspace",
         "-v", f"{agent_home(case, run_index).as_posix()}:/state",
-        # The skill library this row was measured against. Per case, because the
-        # authoring split must start EMPTY - its first control run loaded Phase N's
-        # human-written `qz-release` and passed on knowledge the case existed to
-        # test. Inside /app, so already mounted read-only above.
+        # The skill library this row was measured against, per case: the authoring
+        # split must start EMPTY or its control passes on knowledge it was testing for.
         "-e", "AGENT_SKILLS_DIR=/app/eval/fixtures/"
               + case.get("skills_dir", "skills-library"),
     ]
@@ -896,11 +861,9 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
     for name in FORWARDED_ENV:
         if os.environ.get(name):
             cmd += ["-e", name]
-    # AGENT_EGRESS is what the ROW will claim, so the outer driver - the only
-    # component that knows what the network actually was - states it rather than
-    # the container guessing. It used to default to "restricted" inside the
-    # container where nothing ever set it, so every row asserted restriction
-    # whether or not a proxy was in the path, AGENT_NETWORK=bridge included.
+    # AGENT_EGRESS is what the ROW will claim, so the outer driver states it -
+    # it used to default to "restricted" where nothing ever set it, and every row
+    # asserted a restriction whether or not a proxy was in the path.
     if NETWORK == EGRESS_NET:
         # Re-applied per case-run, not once per suite: the allowlist is part of the
         # conditions this row was measured under, and it must be this case's.
@@ -910,10 +873,8 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
                   "under whatever the previous case left behind.", file=sys.stderr)
             return BLOCKED
         cmd += ["-e", "AGENT_EGRESS=" + ",".join(allowed)]
-        # httpx runs with trust_env=True, so the openai SDK picks these up on its
-        # own - agent/provider.py needs no knowledge that a proxy exists. NO_PROXY
-        # is emptied deliberately: any exemption here would be a hole in the
-        # boundary, and the container has no other route regardless.
+        # httpx runs trust_env=True so the openai SDK picks these up unaided. NO_PROXY
+        # is emptied deliberately - an exemption here would be a hole in the boundary.
         proxy = f"http://{EGRESS_PROXY}:{PROXY_PORT}"
         cmd += ["-e", f"HTTPS_PROXY={proxy}", "-e", f"HTTP_PROXY={proxy}", "-e", "NO_PROXY="]
     else:
@@ -979,6 +940,16 @@ def outer(args) -> int:
                 print(f"   blocked; waiting {wait}s before retry "
                       f"{attempt + 1}/{BLOCKED_RETRIES}", flush=True)
                 time.sleep(wait)
+
+        # A RUN THAT VANISHES IS WORSE THAN ONE THAT FAILS: the result line is printed
+        # by the CONTAINER, so a container that dies without writing returns a code that
+        # is neither BLOCKED nor MISCONFIGURED and the suite moves on silently. No row
+        # is synthesised - inventing one for a half-executed run is a fabrication.
+        if (case["id"], run_index) not in completed(read_rows(out)):
+            print(f"   {case['id']} run {run_index}: NO ROW WRITTEN (exit {code}) "
+                  f"- not counted. Re-run with --continue.",
+                  file=sys.stderr, flush=True)
+
         if args.pace and position < len(todo) - 1:
             time.sleep(args.pace)
 
@@ -1018,14 +989,9 @@ def inner(args) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    # shell=True is deliberate: `setup` and `check` are shell command strings by
-    # specification (the check contains `&&`), and their only source is the
-    # committed tasks.jsonl. Never build these strings from model output.
-    # setups[0] when the case defines per-session setup, `setup` otherwise. The
-    # first version of this ran `case["setup"]` here and only consulted `setups` for
-    # session 2 onwards - so session 1 silently got the WRONG fixture, and a Phase O
-    # benchmark built on "session 1 has the reference material" never gave the agent
-    # any reference material at all. Every run was measuring nothing.
+    # shell=True is deliberate: `setup` and `check` are shell command strings from
+    # tasks.jsonl, written by this project, not agent input. A timeout is mandatory
+    # - an unbounded check once held a scored suite for 25 minutes.
     setup = subprocess.run((case.get("setups") or [case["setup"]])[0], shell=True,
                            cwd=REPO, capture_output=True, text=True)
     if setup.returncode != 0:
@@ -1034,10 +1000,8 @@ def inner(args) -> int:
         return record(out, case, args.run_index, passed=False, verdict="setup-failed",
                       seconds=0.0, state=None, note=setup.stderr[-2000:])
 
-    # The failing-test count BEFORE the agent touches anything. Two jobs: it is the
-    # baseline for measuring partial progress, and it independently confirms the
-    # fixture reset into its broken state - a case that starts green would otherwise
-    # be scored as a pass the agent did not earn.
+    # The failing-test count BEFORE the agent touches anything, so 6->1 is
+    # distinguishable from 4->4 on a set where nothing passes.
     _, _, before = run_check(case)
 
     # Imported after setup so a rig failure needs no agent.
@@ -1045,10 +1009,8 @@ def inner(args) -> int:
     from agent.graph import get_app, new_state
     from agent.provider import ProviderMisconfigured, ProviderUnavailable
 
-    # Tools before the model, because a run whose tools never came up measured
-    # nothing. A server that will not start is BLOCKED - infrastructure failure is
-    # not a score - while a schema budget overrun is MISCONFIGURED, since retrying
-    # cannot fix it and every retry would spend the overrun again.
+    # Tools before the model, because a run whose tools never registered is a
+    # different measurement from one where the model declined to use them.
     memory.activate()
     try:
         skills.activate()
@@ -1072,12 +1034,8 @@ def inner(args) -> int:
     if budget != case["budget"] or max_turns != case["max_turns"]:
         print(f"  overridden: budget {case['budget']:,} -> {budget:,}, "
               f"turns {case['max_turns']} -> {max_turns}", file=sys.stderr)
-    # A case is either one goal or a CHAIN of sessions (Phase M). Each session gets
-    # its own thread_id, because within one thread the checkpointer already carries
-    # the conversation - a same-thread test would measure the checkpointer, not
-    # memory. The workspace is reset between sessions and the agent home is NOT,
-    # which is the whole point: what survives is what was learned, not what was left
-    # lying in a directory.
+    # A case is either one goal or a CHAIN of sessions (Phase M). Each session
+    # resumes the same thread id, which is what makes memory measurable.
     goals = case.get("sessions") or [case["goal"]]
     # Per-session setup (Phase O). Session 1 may have reference material in the
     # workspace that later sessions do not - which is the whole mechanism: memory
@@ -1124,10 +1082,8 @@ def inner(args) -> int:
         # request - and must be scored. Only the two cases above are excused.
         final, note = state, f"{type(exc).__name__}: {exc}"
     seconds = time.monotonic() - started
-    # Before the check runs: a live server subprocess holding the workspace open
-    # while the suite is scored is the orphan-container failure in miniature.
-    # The early-return paths above are covered by activate()'s atexit hook, which is
-    # what makes this safe to call in one place rather than four.
+    # Before the check runs: a live server subprocess holding the port makes the
+    # check fail for a reason that has nothing to do with the agent.
     mcp.shutdown()
     memory.deactivate()
     skills.deactivate()
@@ -1136,15 +1092,8 @@ def inner(args) -> int:
     if tampered:
         trace.append({"kind": "tamper", "files": tampered})
 
-    # A timeout is MANDATORY here. The agent can leave the workspace in a state where
-    # the suite never terminates - on a real repository, one edit to a parser is
-    # enough - and an unbounded check then hangs the entire scored suite with no
-    # diagnosis at all. Measured: one run held for 25 MINUTES on
-    # `cd /workspace && pytest` until the process was killed by hand. Practice
-    # fixtures could never surface this; their suites are fast and always terminate.
-    #
-    # A timeout counts as a FAIL, not as blocked: the suite genuinely did not pass,
-    # and the agent's own edit is why.
+    # A timeout is MANDATORY. The agent can leave the workspace in a state where
+    # the check hangs; without this the suite stalls instead of scoring a failure.
     code, check_out, after = run_check(case)
     return record(out, case, args.run_index, passed=code == 0,
                   verdict=final.get("verdict") or "none", seconds=seconds,
@@ -1226,10 +1175,8 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         "status": status,
         "provider": settings.PROVIDER,
         "model": model,
-        # Recorded per row: whether THIS run was egress-restricted is part of what
-        # the number describes, exactly like the model is. Set by spawn(), and the
-        # fallback says UNKNOWN rather than "restricted" - a default that asserts
-        # the safe answer is how a row comes to claim a condition nobody checked.
+        # Recorded per row: whether THIS run was egress-restricted. Stated by the
+        # driver, which is the only component that knows what the network actually was.
         "egress": os.environ.get("AGENT_EGRESS", "UNKNOWN"),
         "pass": passed,
         "verdict": verdict,
@@ -1245,14 +1192,8 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # Non-zero means the agent edited the assertions it is judged by.
         "tampered": sum(len(t.get("files", [])) for t in trace
                         if t.get("kind") == "tamper"),
-        # What the tool set COST, not just what it did. Schemas are re-sent on every
-        # request and this provider caches nothing, so exposure is charged per turn
-        # whether a tool is used or not - and a capability win paid for with a large
-        # token increase is a trade that has to stay visible.
-        # What memory COST, on the same row as what it did. Injected context sits in
-        # the system prompt and is re-sent every request on a provider that caches
-        # nothing, so a recall win bought with a large token rise is a trade that has
-        # to stay visible - the same rule the schema budget is reported under.
+        # What the tool set COST, not just what it did. Schemas are re-sent every
+        # request and this provider caches nothing, so breadth is a per-turn tax.
         "memory": exposure.get("memory", False),
         "memory_chars": max((t.get("chars", 0) for t in trace
                              if t.get("kind") == "memory"), default=0),
@@ -1265,10 +1206,8 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
                                   if t.get("kind") == "skills"), default=0),
         "skills_loaded": sorted({t.get("summary", "") for t in trace
                                  if t.get("tool") == "load_skill"}),
-        # Phase O's three numbers live here: what it WROTE, what it LOADED, and
-        # (with memory_chars above) what memory gave it on the same run. A high
-        # authoring rate with a low load rate is the classic failure of these
-        # systems - files accumulate, nothing changes - and only both catch it.
+        # Phase O's three numbers: what it WROTE, what it LOADED, and what was
+        # extracted deterministically - the three are not interchangeable.
         "authoring": bool(os.environ.get("AGENT_SKILL_AUTHORING", "on").strip().lower()
                           not in ("0", "off", "false")),
         "skills_authored": sorted({t.get("summary", "") for t in trace
@@ -1284,21 +1223,9 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # WRONG one, or none - and the middle is invisible in a pass rate while
         # being the thing that says the descriptions do not discriminate.
         "skill_expected": case.get("skill_expected", ""),
-        # Planning, and its COST stated apart from its effect (FR-101, FR-105).
-        #
-        # `plan_turns` is separate from `turns` in the state itself, not just
-        # here: research is capped on its own so it cannot eat the working
-        # budget. Reported beside the pass rate because planning spends a model
-        # call and several reads on EVERY run, and a pass-rate rise bought with
-        # a large token increase is a trade rather than a win.
-        #
-        # `plan_denied` is the predicted failure written down in advance: the
-        # planner will reach for a command the read-only allowlist refuses, and
-        # this says WHICH - so widening it is decided by evidence rather than by
-        # guessing at what it wanted.
-        # FR-403/404 and NFR-403. `compact_count` distinguishes a run that
-        # compacted three times from one that compacted once - identical in a
-        # pass rate, very different in what the model was working from.
+        # Planning, with its COST stated apart from its effect (FR-101, FR-105).
+        # `plan_denied` records what the read-only gate refused during research - it is
+        # how the pytest-refusal defect was found, in all twelve planning runs.
         "compact_count": state.get("compact_count", 0),
         "compact_removed_pct": [t.get("removed_pct") for t in trace
                                 if t.get("kind") == "compact"],
@@ -1311,6 +1238,10 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # a regression here is a drift nobody attributes to the day it started.
         "overhead_ms": latency(overheads(trace)),
         "checkpoint_ms": latency(checkpoint_ms(trace)),
+        # How close this run came to compacting. 0 means the trace carried no
+        # context entries at all (a blocked run), NOT a run with no context -
+        # read it beside `turns`.
+        "peak_context_chars": peak_context_chars(trace),
         "plan_denied": sorted({c.get("summary", "") for c in calls
                                if c.get("verdict") == "deny"
                                and "planning" in str(c.get("reason", ""))}),
@@ -1320,11 +1251,9 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # Which tools were exposed, so a row can never be compared against one
         # measured with a different set.
         "mcp": exposure.get("mcp", []),
-        # The WHOLE exposed set, not just MCP's part of it. Added in Stage 4 for
-        # the reason AGENT_EGRESS was: a control run and a treatment run differed
-        # only by `schema_chars` on the row, so the one condition the comparison
-        # turns on - which tools the model could see - was not written down
-        # anywhere a later reader could check it.
+        # The WHOLE exposed set, not just MCP's part: a control row and a treatment
+        # row otherwise differ only by schema_chars, leaving the one condition the
+        # comparison turns on unrecorded.
         "tools": exposure.get("tools", []),
         # Non-zero means the agent tried to write outside the workspace (NFR-201).
         "write_violations": len(violations),

@@ -177,3 +177,64 @@ def test_replan_is_gone():
     for s in (state(failures=3, messages=[assistant_call(), tool_result(is_error=True)]),
               state(failures=99, messages=[assistant_call(), tool_result(is_error=True)])):
         assert reflect(s)["verdict"] in ("done", "stuck", "budget", "compact", "continue")
+
+
+# ============================== Stage 0: context size is recorded on EVERY turn
+#
+# The reason this instrument exists: `before`/`after` live on the `compact` trace
+# entry, which only exists once the trigger has already fired. A stop-gate coming
+# back with `compact_count: 0` across six runs was therefore uninterpretable -
+# peaking at 44,000 chars means raise the threshold, peaking at 12,000 means
+# compaction is irrelevant to the workload, and those call for opposite actions.
+
+
+def test_context_size_is_traced_on_every_turn_not_only_when_it_fires():
+    trace = []
+    reflect(state(), {"configurable": {"trace": trace}})
+
+    sizes = [e for e in trace if e.get("kind") == "context"]
+    assert len(sizes) == 1, "a turn that does not compact must still record its size"
+    assert sizes[0]["chars"] > 0
+    assert sizes[0]["chars"] < config.COMPACT_AT_CHARS
+
+
+def test_the_recorded_size_is_the_one_the_trigger_used():
+    """One number, one source. If these could differ, the row would describe a
+    threshold check that never happened."""
+    from agent.context import context_chars
+
+    big = state(messages=[assistant_call(), tool_result()] * 400)
+    trace = []
+    verdict = reflect(big, {"configurable": {"trace": trace}})["verdict"]
+
+    recorded = [e["chars"] for e in trace if e.get("kind") == "context"][0]
+    assert recorded == context_chars(big["messages"])
+    assert verdict == "compact"
+
+
+def test_reflect_still_works_with_no_config_at_all():
+    """Every direct caller in this file passes state alone, and _timed() only
+    passes config to nodes whose signature accepts it. The default keeps both
+    callers true."""
+    assert reflect(state())["verdict"] != "compact"
+    assert reflect(state(), None)["verdict"] != "compact"
+    assert reflect(state(), {})["verdict"] != "compact"
+
+
+def test_the_compaction_threshold_is_settable_without_editing_source(monkeypatch):
+    """A threshold that can only be changed by editing config.py cannot be tuned
+    by measurement, only by argument. Both of the previous two stages were caught
+    by the same omission on their own kill switches."""
+    small = state()
+    assert reflect(small)["verdict"] != "compact"
+
+    monkeypatch.setattr(config, "COMPACT_AT_CHARS", 10)
+    assert reflect(small)["verdict"] == "compact"
+
+
+def test_the_cap_is_settable_too(monkeypatch):
+    big = state(messages=[assistant_call(), tool_result()] * 400, compact_count=1)
+    monkeypatch.setattr(config, "MAX_COMPACTIONS", 1)
+    assert reflect(big)["verdict"] == "stuck", "at the cap, stop rather than loop"
+    monkeypatch.setattr(config, "MAX_COMPACTIONS", 5)
+    assert reflect(big)["verdict"] == "compact"

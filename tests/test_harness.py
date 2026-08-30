@@ -10,6 +10,7 @@ against it.
 `eval/` is not a package, so the harness is loaded by path rather than adding an
 `__init__.py` the allowlist does not name.
 """
+import json
 import importlib.util
 import pathlib
 import sys
@@ -486,3 +487,69 @@ def test_every_capability_kill_switch_is_reachable_from_the_harness():
     assert not unreachable, (
         f"config.py reads {sorted(unreachable)} but the harness cannot forward "
         f"it, so no scored run can exercise it. Add it to FORWARDED_ENV.")
+
+
+# ===================== Stage 0: a run that vanishes, and how close it came
+#
+# Two instruments added 2026-08-29, both because a measurement was about to be
+# taken that could not have been read.
+
+
+def test_peak_context_chars_reports_the_largest_context_the_run_held():
+    from eval_harness import peak_context_chars
+
+    trace = [{"kind": "context", "chars": 12_000},
+             {"kind": "model", "ms": 1.0},
+             {"kind": "context", "chars": 41_500},
+             {"kind": "context", "chars": 38_000}]
+
+    assert peak_context_chars(trace) == 41_500
+
+
+def test_peak_context_chars_is_zero_when_the_run_never_reached_reflect():
+    """A blocked run has an empty trace. 0 here means "no context entries", which
+    is why the field is read beside `turns` rather than on its own."""
+    from eval_harness import peak_context_chars
+
+    assert peak_context_chars([]) == 0
+    assert peak_context_chars([{"kind": "model", "ms": 1.0}]) == 0
+
+
+def test_a_vanished_case_run_is_not_counted_as_complete(tmp_path):
+    """THE DEFECT THIS GUARDS, observed 2026-08-29.
+
+    The result line is printed by the CONTAINER, not by the driver. A container
+    that dies without writing - a docker kill, an OOM, exit 137 - returns a code
+    that is neither BLOCKED nor MISCONFIGURED, so the driver's retry loop breaks
+    and the suite moves on with the denominator quietly one smaller. A run that
+    disappears is worse than one that fails, because a failure is visible.
+    """
+    from eval_harness import completed, read_rows
+
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / "summary.jsonl").write_text(
+        json.dumps({"id": "case-a", "run_index": 0, "status": "ok"}) + "\n"
+        + json.dumps({"id": "case-a", "run_index": 1, "status": "blocked"}) + "\n",
+        encoding="utf-8")
+
+    done = completed(read_rows(out))
+
+    assert ("case-a", 0) in done
+    assert ("case-a", 1) not in done, "a blocked run is not complete - that is what --continue is for"
+    # run 2 never wrote anything at all. It must be absent, so the driver's
+    # membership check fires and says so on stderr.
+    assert ("case-a", 2) not in done
+
+
+def test_the_vanished_run_check_uses_the_same_helpers_the_resume_path_does():
+    """Not a new notion of "done". --continue already decides what to re-run from
+    completed(read_rows(...)); a second, subtly different definition is how two
+    parts of a harness come to disagree about what was measured."""
+    import inspect
+
+    import eval_harness
+
+    source = inspect.getsource(eval_harness.outer)
+    assert "NO ROW WRITTEN" in source
+    assert "completed(read_rows(out))" in source
