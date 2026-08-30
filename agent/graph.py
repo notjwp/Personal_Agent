@@ -71,6 +71,7 @@ class AgentState(TypedDict):
     compact_count: int        # compactions so far; capped by config.MAX_COMPACTIONS
     edited_unverified: bool   # a write happened with no test since
     verify_nudges: int        # bounded by MAX_VERIFY_NUDGES
+    truncated: bool           # last reply hit the output cap (stop_reason=length)
 
 
 def new_state(goal: str, max_turns: int | None = None,
@@ -208,6 +209,7 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
 
     return {
         "messages": state["messages"] + [{"role": "assistant", "content": blocks}],
+        "truncated": reply.stop_reason == "length",
         "spent_tokens": state["spent_tokens"] + reply.billed_tokens,
         # NFR-304. Accumulated by the nodes that actually spend time, so a thread
         # resumed tomorrow is not instantly over its cap because the calendar moved.
@@ -400,6 +402,17 @@ def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
         plan = state.get("plan") or []
         if state.get("cursor", 0) + 1 < len(plan):
             return {"verdict": "continue", "cursor": state["cursor"] + 1}
+        # A TRUNCATED REPLY IS NOT A FINISHED ONE. `length` means the model ran
+        # out of output budget mid-sentence - the strongest signal it is NOT
+        # done. Measured 2026-08-30: 8 of 8 runs ending on `length` were scored
+        # `done`, and none passed.
+        if state.get("truncated"):
+            return {
+                "verdict": "continue",
+                "truncated": False,
+                "messages": state["messages"] + [
+                    {"role": "user", "content": TRUNCATED_HINT}],
+            }
         nudge = _verify_nudge(state)
         if nudge is not None:
             return nudge
@@ -414,6 +427,15 @@ VERIFY_HINT = (
     "[You edited a file but have not run the tests since. Run them now - "
     "`run_shell(command='pytest -q')` - and fix what fails. If you cannot "
     "verify, say what is blocking you rather than stopping here.]")
+
+
+# Adapted from Hermes _LENGTH_CONTINUATION_OUTPUT_LIMIT. It adds the one thing
+# their wording does not need and ours does: our budget is spent on visible
+# reasoning, so the way to finish is to call a tool rather than think further.
+TRUNCATED_HINT = (
+    "[System: your previous reply was cut off by the output length limit. "
+    "Do not restart or repeat it. Stop explaining and make the next tool call "
+    "now - edit the file you were reasoning about, or run the tests.]")
 
 
 def _verify_nudge(state: AgentState):

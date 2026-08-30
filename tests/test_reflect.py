@@ -426,3 +426,66 @@ def test_the_switch_is_reachable_from_the_harness():
     from eval_harness import FORWARDED_ENV
 
     assert "AGENT_VERIFY_ON_STOP" in FORWARDED_ENV
+
+
+# =============== a truncated reply is not a finished one (stop_reason=length)
+
+
+def _finished(**over):
+    """The shape in which reflect would otherwise return `done`: a call was made,
+    and the last message is an assistant reply carrying no tool call."""
+    base = dict(messages=[{"role": "user", "content": "fix it"},
+                          {"role": "assistant", "content": [
+                              {"type": "tool_use", "id": "t1", "name": "read_file",
+                               "input": {"path": "a.py"}}]},
+                          {"role": "user", "content": [
+                              {"type": "tool_result", "tool_use_id": "t1",
+                               "content": "x = 1"}]},
+                          {"role": "assistant", "content": [
+                              {"type": "text", "text": "The bug is that metric() does"}]}])
+    base.update(over)
+    return state(**base)
+
+
+def test_a_truncated_reply_does_not_finish_the_run():
+    """MEASURED 2026-08-30: 8 of 8 runs whose last reply hit the output cap were
+    scored `done`, and none of them passed. In the trace, the agent had just
+    restated all four failing assertions correctly and was cut off mid-sentence -
+    the strongest possible signal it was NOT finished."""
+    out = reflect(_finished(truncated=True))
+
+    assert out["verdict"] == "continue"
+    assert "cut off" in out["messages"][-1]["content"]
+
+
+def test_the_hint_tells_it_to_act_not_to_think_further():
+    """Our output budget is spent on visible reasoning, so 'continue where you left
+    off' would spend the next budget the same way. The way out is a tool call."""
+    out = reflect(_finished(truncated=True))
+    hint = out["messages"][-1]["content"]
+
+    assert "tool call" in hint
+    assert "not restart" in hint.lower()
+
+
+def test_the_flag_is_cleared_so_one_truncation_costs_one_turn():
+    """Left set, every later turn would be nudged and the run could never end."""
+    assert reflect(_finished(truncated=True))["truncated"] is False
+
+
+def test_an_untruncated_reply_still_finishes():
+    """`stop` is a genuine completion and must stay one - 29 runs today ended that
+    way legitimately."""
+    assert reflect(_finished(truncated=False))["verdict"] == "done"
+    assert reflect(_finished())["verdict"] == "done"
+
+
+def test_truncation_beats_the_verify_nudge(monkeypatch):
+    """Both want to continue; the truncation hint is the more specific and must be
+    the one the model sees, or it gets told to run tests when it was mid-sentence."""
+    from agent import config
+
+    monkeypatch.setattr(config, "VERIFY_ON_STOP", True)
+    out = reflect(_finished(truncated=True, edited_unverified=True))
+
+    assert "cut off" in out["messages"][-1]["content"]
