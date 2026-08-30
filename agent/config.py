@@ -89,7 +89,14 @@ BUDGET_TOKENS = 200_000
 
 # WORKING seconds, accumulated by the nodes that spend time - not wall-clock
 # since the goal arrived, or a thread resumed next week dies on its first turn.
-MAX_SECONDS = 900
+#
+# RAISED 900 -> 1500 and DERIVED, not chosen. 900 was sized against a hanging
+# tool; measured over 21 real-* runs, tools take 9-11s and the model takes the
+# rest. At 50.9s/turn (p50) a 900s cap buys 17.7 of a 30-turn allowance, so it
+# was ending working runs, not runaway ones - all three of the last baseline
+# died at 932-965s with 8-17 turns unused. 1500 is the smallest cap at which a
+# median run can reach max_turns; 1800 only helps the slow tail and costs 20%.
+MAX_SECONDS = int(_env("AGENT_MAX_SECONDS", "1500"))
 
 # Fires on CONTEXT SIZE, not cumulative spend: spent_tokens only grows, so a
 # spend-based trigger would fire every turn forever once crossed. 45,000 is
