@@ -28,6 +28,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+
+# `python eval/harness.py` puts eval/ on sys.path, not the repo root, so a
+# module-level `from agent import ...` fails while the tests - which import
+# this file with the path already set - pass. Green tests, broken program.
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 # Ceiling on the scored check. The slowest real-repository suite is ~59s, so this
 # is roughly 10x headroom - generous enough never to fail honest work, tight
 # enough that a non-terminating suite costs minutes rather than a whole run.

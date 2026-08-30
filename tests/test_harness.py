@@ -564,3 +564,20 @@ def test_the_vanished_run_check_uses_the_same_helpers_the_resume_path_does():
     source = inspect.getsource(eval_harness.outer)
     assert "NO ROW WRITTEN" in source
     assert "completed(read_rows(out))" in source
+
+
+def test_the_harness_runs_as_a_script_not_only_as_an_import():
+    """A module-level `from agent import ...` works under pytest, which sets the
+    path, and fails under `python eval/harness.py`, which puts eval/ on sys.path
+    instead of the repo root. 494 tests passed while the entry point was broken -
+    so this exercises the real one."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    done = subprocess.run([sys.executable, "eval/harness.py", "--help"],
+                          cwd=repo, capture_output=True, text=True, timeout=60)
+
+    assert done.returncode == 0, done.stderr[-500:]
+    assert "ModuleNotFoundError" not in done.stderr
