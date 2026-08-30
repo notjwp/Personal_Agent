@@ -351,3 +351,78 @@ def test_differing_calls_are_never_thrash():
                    {"role": "user", "content": [
                        {"type": "tool_result", "tool_use_id": f"t{i}", "content": "x"}]}]
     assert not thrash(varied)
+
+
+# ================= a run must not finish on an edit it never verified (Cycle 4)
+
+
+def _edited(**over):
+    """State where an edit has happened and the last message is an assistant reply -
+    the shape in which reflect would otherwise return `done`."""
+    base = dict(messages=[{"role": "user", "content": "fix it"},
+                          {"role": "assistant", "content": [
+                              {"type": "tool_use", "id": "t1", "name": "edit_file",
+                               "input": {"path": "a.py", "old_string": "a",
+                                         "new_string": "b"}}]},
+                          {"role": "user", "content": [
+                              {"type": "tool_result", "tool_use_id": "t1",
+                               "content": "edited"}]},
+                          {"role": "assistant", "content": [
+                              {"type": "text", "text": "Fixed it."}]}],
+                edited_unverified=True)
+    base.update(over)
+    return state(**base)
+
+
+def test_off_by_default_the_run_finishes(monkeypatch):
+    """Our loop already runs to a turn cap, so this may be machinery for a problem
+    we do not have. It ships off until measured."""
+    from agent import config
+
+    assert config.VERIFY_ON_STOP is False
+    assert reflect(_edited())["verdict"] == "done"
+
+
+def test_on_it_refuses_to_finish_and_says_why(monkeypatch):
+    from agent import config
+
+    monkeypatch.setattr(config, "VERIFY_ON_STOP", True)
+    out = reflect(_edited())
+
+    assert out["verdict"] == "continue"
+    assert "pytest" in out["messages"][-1]["content"]
+    assert out["verify_nudges"] == 1
+
+
+def test_a_verified_edit_finishes_normally(monkeypatch):
+    """Running the suite clears the flag; the nudge must not fire on a run that
+    already did the thing it asks for."""
+    from agent import config
+
+    monkeypatch.setattr(config, "VERIFY_ON_STOP", True)
+    assert reflect(_edited(edited_unverified=False))["verdict"] == "done"
+
+
+def test_the_nudge_is_bounded(monkeypatch):
+    """Past MAX_VERIFY_NUDGES it is nagging, and a loop that cannot end is worse
+    than a run that ends early."""
+    from agent import config
+
+    monkeypatch.setattr(config, "VERIFY_ON_STOP", True)
+    at_cap = _edited(verify_nudges=config.MAX_VERIFY_NUDGES)
+    assert reflect(at_cap)["verdict"] == "done"
+
+
+def test_a_run_that_never_edited_is_never_nudged(monkeypatch):
+    from agent import config
+
+    monkeypatch.setattr(config, "VERIFY_ON_STOP", True)
+    assert reflect(_edited(edited_unverified=False))["verdict"] == "done"
+
+
+def test_the_switch_is_reachable_from_the_harness():
+    """Every kill switch must be forwardable or the comparison it exists for
+    cannot be run - the defect Stage 7 and Stage 4 each paid for once."""
+    from eval_harness import FORWARDED_ENV
+
+    assert "AGENT_VERIFY_ON_STOP" in FORWARDED_ENV

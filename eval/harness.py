@@ -70,6 +70,8 @@ FORWARDED_ENV = (
     # Phase N's. Same reason again: the comparison is only controlled because the
     # same binary can be run with skills off.
     "AGENT_SKILLS",
+    # Cycle 4's. Default off, so a scored run must be able to turn it ON.
+    "AGENT_VERIFY_ON_STOP",
     # Stage 3 Task 6's. The compaction trigger and its cap, so a threshold
     # experiment is a harness flag rather than a source edit. A number that can
     # only be changed by editing config.py cannot be tuned by measurement.

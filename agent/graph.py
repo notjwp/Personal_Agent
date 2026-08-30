@@ -69,6 +69,8 @@ class AgentState(TypedDict):
     cursor: int
     plan_turns: int           # counted apart from `turns`; see config.PLAN_MAX_TURNS
     compact_count: int        # compactions so far; capped by config.MAX_COMPACTIONS
+    edited_unverified: bool   # a write happened with no test since
+    verify_nudges: int        # bounded by MAX_VERIFY_NUDGES
 
 
 def new_state(goal: str, max_turns: int | None = None,
@@ -313,7 +315,17 @@ def execute(state: AgentState, config: RunnableConfig) -> dict:
     # Research turns are counted SEPARATELY and are not charged against max_turns;
     # a shared counter would starve the cases planning exists to help.
     planning = state.get("phase") == "planning"
+    # A write makes the run unverified; running the suite clears it. Only the
+    # calls that SUCCEEDED count - a failed edit changed nothing.
+    edited = state.get("edited_unverified", False)
+    for call in state["approved"]:
+        if call["name"] in ("edit_file", "write_file"):
+            edited = True
+        elif call["name"] == "run_shell" and "pytest" in str(
+                call["input"].get("command", "")):
+            edited = False
     return {
+        "edited_unverified": edited,
         "messages": state["messages"] + [{"role": "user", "content": results}],
         "turns": state["turns"] + (0 if planning else 1),
         "plan_turns": state.get("plan_turns", 0) + (1 if planning else 0),
@@ -388,8 +400,34 @@ def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
         plan = state.get("plan") or []
         if state.get("cursor", 0) + 1 < len(plan):
             return {"verdict": "continue", "cursor": state["cursor"] + 1}
+        nudge = _verify_nudge(state)
+        if nudge is not None:
+            return nudge
         return {"verdict": "done"}
     return {"verdict": "continue"}                                      # (f)
+
+
+# A run that edits and then stops without running the tests has not finished,
+# it has narrated. Hermes injects a message and continues rather than ending;
+# ours does the same, bounded, and only when AGENT_VERIFY_ON_STOP is on.
+VERIFY_HINT = (
+    "[You edited a file but have not run the tests since. Run them now - "
+    "`run_shell(command='pytest -q')` - and fix what fails. If you cannot "
+    "verify, say what is blocking you rather than stopping here.]")
+
+
+def _verify_nudge(state: AgentState):
+    """A state update that keeps the run going, or None to let it finish."""
+    if not settings.VERIFY_ON_STOP or not state.get("edited_unverified"):
+        return None
+    if state.get("verify_nudges", 0) >= settings.MAX_VERIFY_NUDGES:
+        return None                       # bounded: past this it is nagging
+    return {
+        "verdict": "continue",
+        "verify_nudges": state.get("verify_nudges", 0) + 1,
+        "messages": state["messages"] + [
+            {"role": "user", "content": VERIFY_HINT}],
+    }
 
 
 def compact(state: AgentState, config: RunnableConfig) -> dict:

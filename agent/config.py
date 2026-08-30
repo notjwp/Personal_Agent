@@ -89,6 +89,13 @@ COMPACT_AT_CHARS = int(os.environ.get("AGENT_COMPACT_AT", "45000"))
 # budget faster than the problem it solves.
 MAX_COMPACTIONS = int(os.environ.get("AGENT_MAX_COMPACTIONS", "3"))
 
+# Refuse to finish on an edit that was never verified. DEFAULT OFF, as Hermes
+# ships it: our loop already runs to a turn cap, so this may be machinery for
+# a problem we do not have. Bounded at two nudges - past that it is nagging.
+VERIFY_ON_STOP = os.environ.get("AGENT_VERIFY_ON_STOP", "off").strip().lower() not in (
+    "0", "off", "false")
+MAX_VERIFY_NUDGES = 2
+
 # --- planning (FR-101, FR-105, UR-02) --------------------------------------
 
 # DEFAULT OFF because it does not pay, not because it does not work: 1/3 on
