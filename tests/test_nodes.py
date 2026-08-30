@@ -2486,3 +2486,83 @@ def test_the_schema_budget_still_holds_with_web_search():
     from agent import config, registry
 
     assert registry.check_budget() <= config.MAX_SCHEMA_CHARS
+
+
+# ===================================== the model's own text is capped (NFR-104)
+
+
+def test_a_giant_model_reply_is_capped_before_it_is_stored(tmp_workspace, monkeypatch):
+    """One 52,866-char reply became 73% of a real run's context in a single turn,
+    and compaction could not clear it: the removable middle was tiny while the
+    protected tail held the bulk. shrink() bounded tool results correctly all
+    along - nothing bounded the model."""
+    from agent import config
+    from agent.graph import act
+
+    use_fake(monkeypatch, [text_turn("x" * 60_000)])
+    out = act(state(), {"configurable": {}})
+
+    stored = out["messages"][-1]["content"][0]["text"]
+    assert len(stored) < config.MAX_RESULT_CHARS + 500
+    assert "x" * 100 in stored, "the head of the reply must survive"
+
+
+def test_a_normal_reply_is_untouched(tmp_workspace, monkeypatch):
+    """95% of replies are under ~1,028 chars. The cap must be invisible to them."""
+    from agent.graph import act
+
+    use_fake(monkeypatch, [text_turn("Fixed the import in app/main.py.")])
+    out = act(state(), {"configurable": {}})
+
+    assert out["messages"][-1]["content"][0]["text"] == "Fixed the import in app/main.py."
+
+
+def test_tool_use_blocks_pass_through_unchanged(tmp_workspace, monkeypatch):
+    """The cap touches text only. A tool_use block carries the arguments the gate
+    classifies and execute runs - rewriting one would be a behaviour change
+    wearing a truncation's clothes."""
+    from agent.graph import act
+
+    use_fake(monkeypatch, [tool_turn("run_shell", command="pytest -q")])
+    out = act(state(), {"configurable": {}})
+
+    block = out["messages"][-1]["content"][0]
+    assert block["type"] == "tool_use"
+    assert block["input"] == {"command": "pytest -q"}
+    assert block["name"] == "run_shell"
+
+
+def test_the_full_reply_is_recoverable_not_destroyed(tmp_workspace, monkeypatch):
+    """shrink() spills to an artifact and names the path, so a capped reply is
+    truncated in context but not lost."""
+    from agent import config
+    from agent.graph import act
+
+    use_fake(monkeypatch, [text_turn("y" * 60_000)])
+    out = act(state(), {"configurable": {}})
+
+    stored = out["messages"][-1]["content"][0]["text"]
+    assert ".agent/artifacts" in stored
+    spilled = list(config.ARTIFACTS.glob("*.txt"))
+    assert spilled, "the full text was not written anywhere"
+    assert len(spilled[0].read_text(encoding="utf-8")) == 60_000
+
+
+def test_capping_cannot_lose_a_plan_step(tmp_workspace, monkeypatch):
+    """THE REASON THE CAP IS APPLIED AT THE STORAGE BOUNDARY AND NOWHERE ELSE.
+
+    `plan` parses its steps from its OWN local reply.blocks, not from
+    state["messages"], so a capped stored message cannot truncate a plan. If this
+    ever fails, the cap has been moved into the provider or into call_model and a
+    long plan will silently lose its tail.
+    """
+    import agent.graph as g
+
+    use_fake(monkeypatch, [text_turn("\n".join(
+        f"{i}. step number {i} " + "z" * 900 for i in range(1, 7)))])
+
+    out = g.plan(planning(messages=[{"role": "user", "content": "fix it"}]),
+                 {"configurable": {}})
+
+    assert len(out["plan"]) == 6, f"steps were lost: {out['plan']}"
+    assert "step number 6" in out["plan"][-1]

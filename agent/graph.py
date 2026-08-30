@@ -197,8 +197,15 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
             "stop_reason": reply.stop_reason,
         })
 
+    # The model's own prose is capped like a tool result: one 52,866-char reply
+    # became 73% of the context in a turn and compaction could not clear it.
+    # Same cap for the same reason; derivation in eval/CHANGELOG.md.
+    blocks = [dict(b, text=shrink("model_reply", b["text"]))
+              if b.get("type") == "text" and isinstance(b.get("text"), str) else b
+              for b in reply.blocks]
+
     return {
-        "messages": state["messages"] + [{"role": "assistant", "content": reply.blocks}],
+        "messages": state["messages"] + [{"role": "assistant", "content": blocks}],
         "spent_tokens": state["spent_tokens"] + reply.billed_tokens,
         # NFR-304. Accumulated by the nodes that actually spend time, so a thread
         # resumed tomorrow is not instantly over its cap because the calendar moved.
