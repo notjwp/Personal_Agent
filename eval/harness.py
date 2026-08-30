@@ -44,53 +44,34 @@ BLOCKED_RETRIES = 2
 
 # Everything the container needs to reach a model. Forwarded by name, never by
 # value, so a key is never written into a command line, a log or a trace.
-FORWARDED_ENV = (
-    "AGENT_PROVIDER",
-    "ANTHROPIC_API_KEY",
-    "NVIDIA_API_KEY",
-    "OPENAI_API_KEY",
-    # Provider-neutral names first; the NIM_* / vendor-keyed ones are forwarded too
-    # so existing .env files keep working.
-    "AGENT_API_KEY",
-    "OPENAI_BASE_URL",
-    "OPENAI_MODEL",
-    "NIM_BASE_URL",
-    "NIM_MODEL",
-    # Override a case's budget and turn cap for ONE run without editing
-    # tasks.jsonl. Raising one alone answers nothing: lifting the budget to 1M
-    # simply moved the wall to the turn cap.
-    "AGENT_BUDGET",
-    "AGENT_MAX_TURNS",
-    # Phase L's kill switch. Forwarded so a scored suite can be run with MCP off
-    # without editing config.py - and every row records which it was.
-    "AGENT_MCP",
-    # Phase M's. Same reason, and the reason its comparison is controlled: with
-    # this off the agent must be identical to the one without memory.
-    "AGENT_MEMORY",
-    # Phase N's. Same reason again: the comparison is only controlled because the
-    # same binary can be run with skills off.
-    "AGENT_SKILLS",
-    # Cycle 4's. Default off, so a scored run must be able to turn it ON.
-    "AGENT_VERIFY_ON_STOP",
-    # Stage 3 Task 6's. The compaction trigger and its cap, so a threshold
-    # experiment is a harness flag rather than a source edit. A number that can
-    # only be changed by editing config.py cannot be tuned by measurement.
-    "AGENT_COMPACT_AT",
-    "AGENT_MAX_COMPACTIONS",
-    # Stage 4's. Same reason, and the same lesson applied one stage later: the
-    # control run for web search is only a control because the SAME binary can be
-    # run with the tool removed.
-    "AGENT_WEB",
-    # Stage 7's, and it was MISSING - with PLAN_ENABLED defaulting off no scored
-    # run could turn planning ON. Every kill switch must be reachable from here.
-    "AGENT_PLAN",
-    # Which library a run was measured against. Set by spawn() for every scored
-    # run - the benchmark's skills are FIXTURES describing a fictional project,
-    # and they must not be mistaken for this repository's own conventions.
-    "AGENT_SKILLS_DIR",
-    "AGENT_SKILL_AUTHORING",
-    "AGENT_SKILL_EXTRACTION",
+# Credentials and endpoint selection. Forwarded by NAME, never by value, so a
+# key never reaches a command line, a log or a trace.
+_CREDENTIALS = (
+    "ANTHROPIC_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY", "AGENT_API_KEY",
+    "OPENAI_BASE_URL", "OPENAI_MODEL", "NIM_BASE_URL", "NIM_MODEL",
 )
+
+# Per-run overrides that are not read by agent/config.py at all.
+_HARNESS_ONLY = ("AGENT_BUDGET", "AGENT_MAX_TURNS")
+
+# spawn() sets these itself, AFTER the forwarded block, so forwarding them
+# would put the host's value where the container's belongs.
+_SET_BY_SPAWN = ("AGENT_WORKSPACE", "AGENT_HOME", "AGENT_SKILLS_DIR")
+
+# DERIVED, not hand-kept, and that is the whole point. A hand-kept tuple
+# omitted AGENT_PLAN (Stage 7), AGENT_WEB (Stage 4) and AGENT_REQUEST_TIMEOUT
+# (2026-08-30); each time a scored run silently used the default while the
+# driver believed it had set something. An inclusion list fails INVISIBLY. An
+# exclusion list fails visibly - a variable that should not be forwarded shows
+# up in the container, which is a symptom somebody sees.
+def _forwarded() -> tuple:
+    from agent import config as _c
+
+    declared = [v for v in dict.fromkeys(_c.ENV_VARS) if v not in _SET_BY_SPAWN]
+    return _CREDENTIALS + _HARNESS_ONLY + tuple(declared)
+
+
+FORWARDED_ENV = _forwarded()
 
 # --------------------------------------------------------------- egress (H)
 #

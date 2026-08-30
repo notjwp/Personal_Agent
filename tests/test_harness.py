@@ -456,37 +456,48 @@ def test_the_web_kill_switch_removes_the_tool(monkeypatch):
     assert len(builtins()) == len(TOOLS) - 1
 
 
-def test_every_capability_kill_switch_is_reachable_from_the_harness():
-    """THE GENERALISATION OF A DEFECT ALREADY PAID FOR ONCE.
+def test_every_config_variable_is_forwarded_or_deliberately_excluded():
+    """A DEFECT PAID FOR THREE TIMES: AGENT_PLAN (Stage 7), AGENT_WEB (Stage 4),
+    AGENT_REQUEST_TIMEOUT (2026-08-30). Each was read by config.py and absent
+    from a hand-kept FORWARDED_ENV, so a scored run silently used the default
+    while the driver believed it had set something else.
 
-    Stage 7 shipped `PLAN_ENABLED` defaulting to off while AGENT_PLAN was absent
-    from FORWARDED_ENV - so no scored run could turn planning ON, and the
-    controlled comparison the switch existed for could not be run at all. It was
-    found by a failing experiment, not by a test.
-
-    Derived from config.py's source rather than a hand-kept list, so the NEXT
-    switch is caught the day it is added rather than the day someone tries to use
-    it. The exemptions are the variables the harness SETS rather than forwards.
+    FORWARDED_ENV now DERIVES from config.ENV_VARS, so this asserts the
+    derivation rather than a list: anything config reads is either forwarded or
+    named in the exclusion set, and the exclusion set is small enough to read.
     """
+    from agent import config
+    from eval_harness import FORWARDED_ENV, _SET_BY_SPAWN
+
+    declared = set(config.ENV_VARS)
+    assert declared, "config.ENV_VARS is empty - the recording helper is bypassed"
+
+    unreachable = declared - set(FORWARDED_ENV) - set(_SET_BY_SPAWN)
+    assert not unreachable, (
+        f"config.py reads {sorted(unreachable)} but no scored run can set it. "
+        f"Either forward it or name it in _SET_BY_SPAWN.")
+
+
+def test_the_recording_helper_is_not_bypassed():
+    """ENV_VARS is only true if every AGENT_* read goes through _env(). A direct
+    os.environ.get would not be recorded, and the derivation would silently miss
+    it - the same invisible failure, one layer down."""
     import re
     from pathlib import Path
 
-    from eval_harness import FORWARDED_ENV
+    source = (Path(__file__).resolve().parents[1] / "agent" / "config.py"
+              ).read_text(encoding="utf-8")
+    direct = set(re.findall(r'os\.environ\.get\("(AGENT_[A-Z_]+)"', source))
+    assert not direct, (
+        f"{sorted(direct)} bypass _env() and will not be forwarded")
 
-    # Set by spawn() per case-run, or by the container's own invocation - these
-    # are conditions of the run, not switches a suite chooses.
-    SET_BY_THE_HARNESS = {"AGENT_HOME", "AGENT_WORKSPACE", "AGENT_SKILLS_DIR",
-                          "AGENT_PROVIDER", "AGENT_REQUEST_TIMEOUT",
-                          "AGENT_MCP_CALL_TIMEOUT", "AGENT_MCP_STARTUP_TIMEOUT"}
 
-    source = Path(__file__).resolve().parents[1] / "agent" / "config.py"
-    read = set(re.findall(r'os\.environ\.get\("(AGENT_[A-Z_]+)"',
-                          source.read_text(encoding="utf-8")))
-    unreachable = read - SET_BY_THE_HARNESS - set(FORWARDED_ENV)
+def test_variables_spawn_sets_are_not_also_forwarded():
+    """Forwarding one would put the HOST's value where the container's belongs -
+    /workspace and /state differ between them."""
+    from eval_harness import FORWARDED_ENV, _SET_BY_SPAWN
 
-    assert not unreachable, (
-        f"config.py reads {sorted(unreachable)} but the harness cannot forward "
-        f"it, so no scored run can exercise it. Add it to FORWARDED_ENV.")
+    assert not (set(_SET_BY_SPAWN) & set(FORWARDED_ENV))
 
 
 # ===================== Stage 0: a run that vanishes, and how close it came

@@ -6,19 +6,30 @@ is never re-derived elsewhere - scripts/reset.sh reads the same variable.
 import os
 from pathlib import Path
 
+# Every AGENT_* name this module reads, recorded as it is read. eval/harness.py
+# derives what it forwards into a scored container from this - a hand-kept list
+# has silently omitted a variable three times.
+ENV_VARS: list = []
+
+
+def _env(name: str, default: str = "") -> str:
+    ENV_VARS.append(name)
+    return os.environ.get(name, default)
+
+
 # --- locations -------------------------------------------------------------
 
-WORKSPACE = Path(os.environ.get("AGENT_WORKSPACE", "/workspace")).resolve()
+WORKSPACE = Path(_env("AGENT_WORKSPACE", "/workspace")).resolve()
 
 # Artifacts sit INSIDE the workspace so a spilled file is readable without
 # tripping FR-302; state sits OUTSIDE it so reset.sh cannot wipe it.
 ARTIFACTS = WORKSPACE / ".agent" / "artifacts"
-AGENT_HOME = Path(os.environ.get("AGENT_HOME", "/state")).resolve()
+AGENT_HOME = Path(_env("AGENT_HOME", "/state")).resolve()
 STATE_DB = AGENT_HOME / "state.db"
 
 # --- model -----------------------------------------------------------------
 
-PROVIDER = os.environ.get("AGENT_PROVIDER", "nvidia")
+PROVIDER = _env("AGENT_PROVIDER", "nvidia")
 
 MODEL = "claude-opus-5"
 EFFORT = "medium"        # low | medium | high | xhigh | max
@@ -39,7 +50,7 @@ MAX_TOKENS = 16_000      # on Anthropic this caps thinking AND response together
 
 # Turn and token caps do not bound a hung request, and the SDK defaults are
 # 10 min x 3 attempts - half an hour of silence before anything surfaces.
-REQUEST_TIMEOUT = float(os.environ.get("AGENT_REQUEST_TIMEOUT", "120"))
+REQUEST_TIMEOUT = float(_env("AGENT_REQUEST_TIMEOUT", "120"))
 MAX_ATTEMPTS = 3
 
 
@@ -83,16 +94,16 @@ MAX_SECONDS = 900
 # Fires on CONTEXT SIZE, not cumulative spend: spent_tokens only grows, so a
 # spend-based trigger would fire every turn forever once crossed. 45,000 is
 # where the old trigger effectively fired; derivation in eval/CHANGELOG.md.
-COMPACT_AT_CHARS = int(os.environ.get("AGENT_COMPACT_AT", "45000"))
+COMPACT_AT_CHARS = int(_env("AGENT_COMPACT_AT", "45000"))
 
 # At the cap the run ends `stuck` rather than looping: a compaction loop burns
 # budget faster than the problem it solves.
-MAX_COMPACTIONS = int(os.environ.get("AGENT_MAX_COMPACTIONS", "3"))
+MAX_COMPACTIONS = int(_env("AGENT_MAX_COMPACTIONS", "3"))
 
 # Refuse to finish on an edit that was never verified. DEFAULT OFF, as Hermes
 # ships it: our loop already runs to a turn cap, so this may be machinery for
 # a problem we do not have. Bounded at two nudges - past that it is nagging.
-VERIFY_ON_STOP = os.environ.get("AGENT_VERIFY_ON_STOP", "off").strip().lower() not in (
+VERIFY_ON_STOP = _env("AGENT_VERIFY_ON_STOP", "off").strip().lower() not in (
     "0", "off", "false")
 MAX_VERIFY_NUDGES = 2
 
@@ -101,7 +112,7 @@ MAX_VERIFY_NUDGES = 2
 # DEFAULT OFF because it does not pay, not because it does not work: 1/3 on
 # add-endpoint, stuck at the cap 3/3, 82,435 median tokens against NFR-402's
 # 60,000. See eval/CHANGELOG.md.
-PLAN_ENABLED = os.environ.get("AGENT_PLAN", "off").strip().lower() not in (
+PLAN_ENABLED = _env("AGENT_PLAN", "off").strip().lower() not in (
     "0", "off", "false")
 
 # Capped SEPARATELY and not charged against MAX_TURNS, which is what makes the
@@ -138,16 +149,16 @@ MCP_SERVERS = {
     },
 }
 
-MCP_ENABLED = os.environ.get("AGENT_MCP", "on").strip().lower() not in ("0", "off", "false")
+MCP_ENABLED = _env("AGENT_MCP", "on").strip().lower() not in ("0", "off", "false")
 
 # A hung MCP server is the same failure as an unbounded shell command, which
 # once held a scored suite for 25 minutes.
-MCP_STARTUP_TIMEOUT = float(os.environ.get("AGENT_MCP_STARTUP_TIMEOUT", "30"))
-MCP_CALL_TIMEOUT = float(os.environ.get("AGENT_MCP_CALL_TIMEOUT", "60"))
+MCP_STARTUP_TIMEOUT = float(_env("AGENT_MCP_STARTUP_TIMEOUT", "30"))
+MCP_CALL_TIMEOUT = float(_env("AGENT_MCP_CALL_TIMEOUT", "60"))
 
 # Default ON, unlike planning: this closes a [M] requirement. The switch exists
 # so the control run is the same binary with one tool removed.
-WEB_ENABLED = os.environ.get("AGENT_WEB", "on").strip().lower() not in (
+WEB_ENABLED = _env("AGENT_WEB", "on").strip().lower() not in (
     "0", "off", "false")
 
 # --- memory (Phase M) ------------------------------------------------------
@@ -158,7 +169,7 @@ MEMORY_DB = AGENT_HOME / "memory.db"
 TASKS_DB = AGENT_HOME / "tasks.db"
 PROFILE = AGENT_HOME / "AGENT.md"           # durable user profile (FR-406)
 
-MEMORY_ENABLED = os.environ.get("AGENT_MEMORY", "on").strip().lower() not in (
+MEMORY_ENABLED = _env("AGENT_MEMORY", "on").strip().lower() not in (
     "0", "off", "false")
 
 # Injected into the system prompt, so charged per turn like the schemas.
@@ -172,12 +183,12 @@ MEMORY_EPISODES = 3
 # (read-only) then the agent's own. AGENT_SKILLS_DIR replaces the first, and the
 # harness always sets it - the benchmark's library describes a FICTIONAL project.
 SKILLS_DIRS = (
-    Path(os.environ["AGENT_SKILLS_DIR"]).resolve() if os.environ.get("AGENT_SKILLS_DIR")
+    Path(os.environ["AGENT_SKILLS_DIR"]).resolve() if _env("AGENT_SKILLS_DIR")
     else Path(__file__).resolve().parent.parent / "skills",
     AGENT_HOME / "skills",
 )
 
-SKILLS_ENABLED = os.environ.get("AGENT_SKILLS", "on").strip().lower() not in (
+SKILLS_ENABLED = _env("AGENT_SKILLS", "on").strip().lower() not in (
     "0", "off", "false")
 
 # The always-loaded index, charged every request. Overflow is FATAL rather than
@@ -192,7 +203,7 @@ SKILL_BODY_CHARS = 6_000
 
 # Separate from SKILLS_ENABLED so loading-on/authoring-off is measurable.
 # DEFAULT OFF: `learn` was called ZERO times in 15 valid sessions.
-SKILL_AUTHORING = os.environ.get("AGENT_SKILL_AUTHORING", "off").strip().lower() not in (
+SKILL_AUTHORING = _env("AGENT_SKILL_AUTHORING", "off").strip().lower() not in (
     "0", "off", "false")
 
 # 12 authored skills would already overflow SKILLS_INDEX_CHARS, so this bound
@@ -203,7 +214,7 @@ MAX_AUTHORED_SKILLS = 8
 
 # A rule instead of asking the model, which declined 15 times out of 15.
 # Switchable independently of authoring or neither is attributable.
-SKILL_EXTRACTION = os.environ.get("AGENT_SKILL_EXTRACTION", "off").strip().lower() not in (
+SKILL_EXTRACTION = _env("AGENT_SKILL_EXTRACTION", "off").strip().lower() not in (
     "0", "off", "false")
 
 # The floor rejects a file carrying no procedure; the ceiling refuses a whole
