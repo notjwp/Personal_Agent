@@ -10,6 +10,8 @@ more files, because the build spec's test allowlist names only three and this is
 already one stated deviation.
 """
 import json
+import pathlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -314,12 +316,34 @@ def test_run_shell_timeout_kills_the_whole_process_tree(tmp_workspace):
     The command is COMPOUND on purpose. With a single command `sh -c "python ..."`
     the shell execs into python, so killing the child kills everything; a forked
     grandchild is the harder case and the one worth guarding.
+    UPDATED 2026-08-31: it used to assert TimeoutExpired PROPAGATES. That is no
+    longer the contract - a timeout is a result the agent can act on, carrying
+    whatever the command printed before it hung. The property this test was
+    written for, that the call is bounded, is unchanged and still asserted.
     """
     started = time.monotonic()
-    with pytest.raises(subprocess.TimeoutExpired):
-        run_shell("cd / && python -c 'import time; time.sleep(60)'", timeout=2)
+    out = run_shell("cd / && python -c 'import time; time.sleep(60)'", timeout=2)
     elapsed = time.monotonic() - started
+
     assert elapsed < 20, f"timeout did not bound the call: took {elapsed:.0f}s"
+    assert "TIMED OUT" in out
+
+    # And the forked grandchild is actually dead, which is what the compound
+    # command above exists to create. Measured before the fix: two survived.
+    if pathlib.Path("/proc").is_dir():
+        time.sleep(0.4)
+        alive = 0
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                raw = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+            except OSError:
+                continue
+            if "time.sleep(60)" in raw.replace(bytes([0]), b" ").decode(
+                    "utf-8", "replace"):
+                alive += 1
+        assert alive == 0, f"{alive} orphaned grandchildren survived"
 
 
 def test_run_shell_runs_in_the_workspace(tmp_workspace):
@@ -2980,3 +3004,40 @@ def test_pdf_is_deliberately_not_treated_as_opaque(tmp_workspace):
     from agent.binary_extensions import has_opaque_document_extension
 
     assert not has_opaque_document_extension('paper.pdf')
+
+# ============================== run_shell: timeouts keep output and kill children
+
+
+def test_a_timeout_keeps_what_the_command_printed(tmp_workspace):
+    """THE POINT. The old code let TimeoutExpired propagate and the partial output
+    died with it, so a pytest run that hung after reporting 40 failures reported
+    none of them - on real repositories that is the whole result."""
+    out = run_shell('echo IMPORTANT-PROGRESS; sleep 30', timeout=1)
+
+    assert 'TIMED OUT' in out
+    assert 'IMPORTANT-PROGRESS' in out
+
+
+def test_a_timeout_says_the_output_may_be_incomplete(tmp_workspace):
+    """A partial result presented as a whole one is worse than no result."""
+    out = run_shell('echo half; sleep 30', timeout=1)
+    assert 'incomplete' in out
+
+
+def test_a_timeout_does_not_raise(tmp_workspace):
+    """It is a RESULT the agent can act on, not an exception that ends the turn."""
+    assert isinstance(run_shell('sleep 30', timeout=1), str)
+
+
+def test_a_normal_command_is_unchanged(tmp_workspace):
+    out = run_shell('echo hi; exit 3')
+
+    assert 'exit code: 3' in out
+    assert 'hi' in out
+    assert 'TIMED OUT' not in out
+
+
+def test_stderr_is_still_separated(tmp_workspace):
+    out = run_shell('echo to-out; echo to-err 1>&2')
+
+    assert out.index('to-out') < out.index('--- stderr ---') < out.index('to-err')

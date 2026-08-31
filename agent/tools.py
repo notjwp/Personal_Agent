@@ -17,6 +17,7 @@ Adding a tool touches this file only (NFR-601).
 import difflib
 import os
 import re
+import signal
 import subprocess
 import time
 import sys
@@ -234,15 +235,43 @@ def run_shell(command: str, timeout: int = 120) -> str:
     """
     # Models emit schema-invalid arguments - this one arrived as the string "120s".
     # Coerce at the boundary; a declared type is a hint, not enforcement.
-    done = subprocess.run(
-        command, shell=True, cwd=config.WORKSPACE,
-        capture_output=True, text=True, timeout=_int(timeout, 120),
+    seconds = _int(timeout, 120)
+    # start_new_session puts the command in its own process GROUP. Without it a
+    # timeout kills /bin/sh and its children keep running - measured: two orphaned
+    # `sleep 60` survived, holding the workspace for the rest of the run. This is
+    # the same orphan failure the harness already records for `timeout`.
+    process = subprocess.Popen(
+        command, shell=True, cwd=config.WORKSPACE, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
     )
+    try:
+        out, err = process.communicate(timeout=seconds)
+        code = process.returncode
+    except subprocess.TimeoutExpired:
+        _kill_group(process)
+        # WHAT IT PRINTED BEFORE HANGING IS THE POINT. The old code let
+        # TimeoutExpired propagate and the partial output died with it, so a
+        # pytest run that hung after reporting 40 failures reported none of them.
+        out, err = process.communicate()
+        return (
+            f"TIMED OUT after {seconds}s and was killed. Output up to that point "
+            f"is below - it may be incomplete.\n"
+            f"--- stdout ---\n{out}\n"
+            f"--- stderr ---\n{err}"
+        )
     return (
-        f"exit code: {done.returncode}\n"
-        f"--- stdout ---\n{done.stdout}\n"
-        f"--- stderr ---\n{done.stderr}"
+        f"exit code: {code}\n"
+        f"--- stdout ---\n{out}\n"
+        f"--- stderr ---\n{err}"
     )
+
+
+def _kill_group(process) -> None:
+    """Kill the command and everything it started. Best effort, never raises."""
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        process.kill()                    # no process groups here; kill what we can
 
 
 # FR-203 wants stdout, the traceback if it raised, AND the final expression's

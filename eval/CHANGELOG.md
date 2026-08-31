@@ -537,6 +537,67 @@ that the second was missing.
 
 ---
 
+## Three tool bugs found by reading our own code (2026-08-31)
+
+583 -> 595 tests. No quota. All three were present the whole time and none had
+ever shown up in a trace, which is the point below.
+
+### The bugs
+
+| | measured |
+|---|---|
+| `read_file` on a PNG | **2,496 characters of mojibake** into the context window. No binary guard existed at all |
+| `write_file` over a `.docx` | destroyed it irrecoverably and **reported success** - a .docx is a zip |
+| `run_shell` on timeout | **discarded everything the command printed**, and left **2 orphaned children** running |
+
+The third is the worst for a coding agent: a `pytest` run that hangs after
+reporting 40 failures reported none of them, because `TimeoutExpired` propagated
+and the partial output died with it. On a real repository that IS the result.
+
+The orphan half is a failure this project already had written down for the
+harness - *`timeout` kills the client but leaves the container running, and the
+orphan corrupts the shared workspace mid-case* - sitting unnoticed in our own
+`run_shell`. `subprocess.run(shell=True)` kills `/bin/sh`, never its tree.
+
+### What was taken from Hermes
+
+`tools/binary_extensions.py` is **VENDORED VERBATIM** - the first file in this
+project that is. The value IS the list, and a hand-written set of 80-odd
+extensions would be shorter and wrong. Its own comment named the `.docx` hazard,
+which we would not have found alone. NOTICE said *nothing is vendored*; corrected.
+
+From `tools/code_execution_tool.py` only the DESIGN: kill the process group, not
+the process. Their version uses `psutil` to walk the tree, which `no-index` puts
+out of reach; `start_new_session=True` plus `os.killpg` is stdlib and does the
+same job.
+
+### The method, corrected
+
+Earlier the same day I ranked 7 of 142 liftable Hermes modules by keyword, tested
+each against our recorded traces, found **0 useful**, and reported that as a
+verdict on lifting.
+
+**The test was the error.** A capability we do not have cannot appear in our
+traces - `read_file` never logged a binary read *because it never refused one*.
+"Does our data show this problem" is a bar almost nothing passes by construction.
+
+Reading OUR OWN CODE for gaps found all three in about ten minutes. That is the
+filter from now on: find the gap first, then look for their code that fills it.
+
+### Verified in both directions
+
+| mutation | result |
+|---|---|
+| discard partial output on timeout | 1 failed |
+| kill the shell instead of the group | 1 failed |
+
+An existing test asserted `TimeoutExpired` PROPAGATES, which is the contract this
+changes. It was updated rather than deleted: the property it was written for -
+that the call is bounded (FR-202) - is unchanged and still asserted, and it now
+also checks the forked grandchild its compound command exists to create.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),
