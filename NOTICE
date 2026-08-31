@@ -5,9 +5,16 @@ This product includes software derived from Hermes Agent
 (https://github.com/NousResearch/hermes-agent), Copyright (c) 2025 Nous Research,
 licensed under the MIT License.
 
-Nothing is vendored. What was taken is two small designs, each re-implemented
-against this project's own shapes, and each borrow site names its original in a
-comment:
+ONE FILE IS VENDORED VERBATIM:
+
+  agent/binary_extensions.py   from tools/binary_extensions.py, unchanged apart
+                               from the module docstring. Taken as-is because the
+                               value IS the list - a hand-written set of binary
+                               and container-document extensions would be shorter
+                               and wrong.
+
+Everything else taken is a DESIGN, re-implemented against this project's own
+shapes, with each borrow site naming its original in a comment:
 
   agent/worker.py    the task table's shape and its transitions, from
                      cron/executions.py:139-200. Two ideas: a status transition

@@ -2921,3 +2921,62 @@ def test_auth_failure_outranks_the_retryable_table():
 
     with pytest.raises(ProviderMisconfigured):
         _reraise_classified(AuthenticationError("no key"))
+
+# ================================ binary and container-document guards (Hermes)
+
+
+PNG_HEADER = bytes([0x89, 0x50, 0x4E, 0x47])
+ZIP_HEADER = bytes([0x50, 0x4B, 0x03, 0x04])
+
+
+def test_read_file_refuses_a_binary_file(tmp_workspace):
+    """Measured before the guard: a PNG header plus 2 KB of bytes returned 2,496
+    characters of mojibake into the context window."""
+    (tmp_workspace / 'logo.png').write_bytes(PNG_HEADER + bytes(range(256)) * 8)
+
+    out = read_file('logo.png')
+    assert 'binary file' in out
+    assert len(out) < 200, 'the guard must not return the contents'
+
+
+def test_read_file_still_reads_text(tmp_workspace):
+    (tmp_workspace / 'notes.txt').write_text('hello', encoding='utf-8')
+    assert 'hello' in read_file('notes.txt')
+
+
+def test_a_binary_extension_is_matched_case_insensitively(tmp_workspace):
+    (tmp_workspace / 'LOGO.PNG').write_bytes(PNG_HEADER)
+    assert 'binary file' in read_file('LOGO.PNG')
+
+
+def test_an_extensionless_file_is_still_readable(tmp_workspace):
+    """The guard is a string check on the extension; a file without one is text
+    until proven otherwise."""
+    (tmp_workspace / 'Makefile').write_text('all:' + chr(10) + chr(9) + 'echo hi',
+                                            encoding='utf-8')
+    assert 'echo hi' in read_file('Makefile')
+
+
+def test_write_file_refuses_to_overwrite_a_container_document(tmp_workspace):
+    """A .docx is a zip. Plain text written over one destroys it irrecoverably and
+    the write SUCCEEDS, so the agent never learns it happened."""
+    doc = tmp_workspace / 'report.docx'
+    doc.write_bytes(ZIP_HEADER + b'zip-content')
+
+    out = write_file('report.docx', 'plain text')
+    assert 'refused' in out
+    assert doc.read_bytes().startswith(ZIP_HEADER), 'the original must be intact'
+
+
+def test_write_file_may_still_CREATE_a_docx_path(tmp_workspace):
+    """Only an overwrite is dangerous. Creating a new file with that name is the
+    model's business."""
+    assert 'wrote' in write_file('new.docx', 'plain text')
+
+
+def test_pdf_is_deliberately_not_treated_as_opaque(tmp_workspace):
+    """Their comment says why: raw PDF syntax is text-authorable, so creating one
+    is legitimate."""
+    from agent.binary_extensions import has_opaque_document_extension
+
+    assert not has_opaque_document_extension('paper.pdf')

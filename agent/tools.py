@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 
 from agent import config
+from agent.binary_extensions import (has_binary_extension,
+                                     has_opaque_document_extension)
 from agent.registry import tool
 
 
@@ -83,6 +85,11 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
         # FR-201's "list directories": read_file on a directory returns the listing
         # rather than an error, so the agent needs no second tool to look around.
         return f"{path} is a directory.\n{_nearby(target / '_')}"
+    # A binary file read as text is 2,496 characters of mojibake in the context
+    # window and no information. Measured on an 8-byte PNG header.
+    if has_binary_extension(path):
+        return (f"{path} is a binary file and was not read. Use run_shell if you "
+                f"need its size or type.")
     if not target.exists():
         # A wrong path is a guess, so the error names what IS in the nearest real
         # directory - a bare "not found" gets the same wrong guess again.
@@ -122,6 +129,14 @@ def write_file(path: str, content: str) -> str:
     content: The complete new contents of the file.
     """
     target = config.WORKSPACE / path
+    # OVERWRITING one, not creating one. A .docx is a zip; plain text written over
+    # an existing one destroys it irrecoverably, and the agent cannot tell because
+    # the write succeeds. Creating a new file with that name is the model's
+    # business, so only an overwrite is refused.
+    if has_opaque_document_extension(path) and target.exists():
+        return (f"refused: {path} is a container document (zip or OLE), and writing "
+                f"plain text over it would destroy it. Edit the source it was "
+                f"generated from, or write to a new path.")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"wrote {path} ({len(content)} chars, {content.count(chr(10)) + 1} lines)"
