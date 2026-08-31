@@ -651,6 +651,13 @@ def finish(state: AgentState, config: RunnableConfig) -> dict:
             commands=[c["input"]["command"] for c, ok in outcomes
                       if ok and c["name"] == "run_shell"
                       and isinstance(c["input"].get("command"), str)])
+        memory.write_now(
+            goal=_goal(state["messages"]),
+            verdict=state["verdict"],
+            plan=state.get("plan") or [],
+            cursor=state.get("cursor", 0),
+            files=sorted({c["input"]["path"] for c, ok in outcomes
+                          if ok and isinstance(c["input"].get("path"), str)}))
 
     # Phase O-redux: knowledge is retained WITHOUT the agent electing to record
     # it. Deterministic injection went 0/18 to 15/18; the `learn` tool went 0/15.

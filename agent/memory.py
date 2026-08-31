@@ -158,6 +158,12 @@ QUERY_TERMS = 2
 def search(query: str, limit: int | None = None) -> list[dict]:
     """Past episodes matching `query`, most relevant first. Keyword only.
 
+    Stale episodes are DOWN-RANKED, not dropped: past MEMORY_STALE_DAYS a row
+    keeps competing at MEMORY_STALE_DECAY of its score. There is no reinforcement
+    shield, unlike the design this follows - we record when an episode was
+    WRITTEN and never when it was last USED, so there is no signal to shield on.
+    Adding one means a new column and a write on every retrieval.
+
     A dense lane over bge-small embeddings was built, measured and REVERTED. On
     the six recall pairs it scored 5/6 fused and 3/6 alone, against 5/6 for this
     function on its own - the same score with the same single miss, at every
@@ -177,9 +183,17 @@ def search(query: str, limit: int | None = None) -> list[dict]:
             # in some other episode's answer or command list and outrank the
             # episode whose GOAL is the thing being recalled.
             "SELECT e.* FROM episodes_fts f JOIN episodes e ON e.id = f.rowid"
-            " WHERE f.goal MATCH ? ORDER BY bm25(episodes_fts), e.at DESC"
+            " WHERE f.goal MATCH ?"
+            # Staleness, applied to the SCORE rather than by filtering. bm25 is
+            # negative and more negative is better, so multiplying a stale row by
+            # a fraction moves it toward zero and down the list. A filter would
+            # hide the only episode that answers a question nobody asked recently.
+            " ORDER BY bm25(episodes_fts) *"
+            "   (CASE WHEN ? - e.at > ? THEN ? ELSE 1.0 END), e.at DESC"
             " LIMIT ?",
-            (terms, limit if limit is not None else config.MEMORY_EPISODES)).fetchall()
+            (terms, time.time(), config.MEMORY_STALE_DAYS * 86400,
+             config.MEMORY_STALE_DECAY,
+             limit if limit is not None else config.MEMORY_EPISODES)).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.OperationalError:
         # A malformed MATCH must never take down the run. No memory is a worse
@@ -193,6 +207,45 @@ def profile() -> str:
     if not config.PROFILE.exists():
         return ""
     return config.PROFILE.read_text(encoding="utf-8", errors="replace").strip()
+
+
+def now() -> str:
+    """The working scratchpad, or empty when nothing has been recorded."""
+    if not config.NOW.exists():
+        return ""
+    return config.NOW.read_text(encoding="utf-8", errors="replace").strip()
+
+
+def write_now(goal: str, verdict: str | None, plan: list[str], cursor: int,
+              files: list[str]) -> str:
+    """Record where this session got to. Overwrites; returns what was written.
+
+    WRITTEN BY A RULE, never requested from the model. Everything here is already
+    in state, so this needs no decision and no model call - which is the whole
+    reason it will actually happen. The counter-example is in this repo: `learn`
+    asked the agent to record something and was called 0 times in 15 sessions,
+    while deterministic episode injection went 0/18 to 15/18.
+
+    The unfinished half is the point. A run that ends `stuck` at turn 30 currently
+    tells the next session nothing about how far it got, so a resumed or scheduled
+    task re-derives it.
+    """
+    lines = [f"Last session was asked: {' '.join(str(goal).split())[:300]}",
+             f"It ended: {verdict or 'no verdict'}"]
+    if plan:
+        step = plan[cursor] if 0 <= cursor < len(plan) else plan[-1]
+        lines.append(f"Reached step {min(cursor + 1, len(plan))} of {len(plan)}:"
+                     f" {step}")
+        remaining = plan[cursor + 1:]
+        if remaining and verdict != "done":
+            lines.append("Still to do: " + "; ".join(remaining[:5]))
+    if files:
+        lines.append("Files touched: " + ", ".join(sorted(files)[:10]))
+
+    body = "# What I was last doing" + chr(10) * 2 + chr(10).join(lines) + chr(10)
+    config.NOW.parent.mkdir(parents=True, exist_ok=True)
+    config.NOW.write_text(body, encoding="utf-8", newline=chr(10))
+    return body
 
 
 def remember(note: str) -> str:
@@ -229,6 +282,11 @@ def context_for(goal: str) -> str:
     who = profile()
     if who:
         parts.append(who)
+    # Ahead of the episodes: what the last session was doing outranks what some
+    # earlier session concluded, and the cap below truncates the TAIL.
+    current = now()
+    if current:
+        parts.append(current)
     for row in search(goal):
         commands = json.loads(row["commands"] or "[]")
         line = f'- earlier you were asked: "{row["goal"]}"'

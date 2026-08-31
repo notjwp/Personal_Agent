@@ -214,3 +214,155 @@ def test_a_run_that_never_spoke_yields_an_empty_answer():
     from agent.graph import _final_text
 
     assert _final_text([{"role": "user", "content": "hi"}]) == ""
+
+# ================================================ Phase 3.1: staleness decay
+
+
+def _aged(thread_id, goal, days_old, answer=""):
+    """Write an episode and backdate it. write_episode() stamps time.time(), so
+    the age has to be set afterwards."""
+    import sqlite3
+    import time
+
+    from agent import config, memory
+
+    rowid = memory.write_episode(thread_id, goal, "done", answer, [], [])
+    with sqlite3.connect(config.MEMORY_DB) as conn:
+        conn.execute("UPDATE episodes SET at=? WHERE id=?",
+                     (time.time() - days_old * 86400, rowid))
+    return rowid
+
+
+def test_a_stale_episode_ranks_below_a_fresh_one(tmp_workspace):
+    """The whole point. Two episodes that match equally well must not tie - the
+    one from six months ago is the worse answer."""
+    from agent import memory
+
+    old = _aged("t-old", "the quartzite deploy key procedure", days_old=200)
+    new = _aged("t-new", "the quartzite deploy key procedure", days_old=0)
+
+    got = [r["id"] for r in memory.search("quartzite deploy")]
+    assert got.index(new) < got.index(old)
+
+
+def test_a_stale_episode_is_still_RETURNED(tmp_workspace):
+    """Down-ranked, never dropped. Filtering would hide the only episode that
+    answers a question nobody has asked in months, which is exactly when memory
+    is worth having."""
+    from agent import memory
+
+    _aged("t-old", "the quartzite deploy key procedure", days_old=500)
+    assert memory.search("quartzite deploy"), "an old episode is not a deleted one"
+
+
+def test_nothing_inside_the_window_is_penalised(tmp_workspace, monkeypatch):
+    from agent import config, memory
+
+    monkeypatch.setattr(config, "MEMORY_STALE_DAYS", 30.0)
+    first = _aged("t-a", "quartzite deploy key alpha", days_old=1)
+    second = _aged("t-b", "quartzite deploy key beta", days_old=29)
+
+    got = [r["id"] for r in memory.search("quartzite deploy")]
+    assert set(got) == {first, second}, "both are inside the window and both rank"
+
+
+def test_the_decay_can_be_turned_off(tmp_workspace, monkeypatch):
+    """A multiplier of 1.0 must restore the previous ordering exactly, which is
+    what makes this revertable without touching the query."""
+    from agent import config, memory
+
+    monkeypatch.setattr(config, "MEMORY_STALE_DECAY", 1.0)
+    old = _aged("t-old", "quartzite deploy key procedure", days_old=900)
+    _aged("t-new", "quartzite deploy key procedure", days_old=0)
+
+    got = [r["id"] for r in memory.search("quartzite deploy")]
+    assert old in got
+
+
+def test_the_durable_profile_never_decays(tmp_workspace):
+    """AGENT.md does not go through search() at all, which is what makes it the
+    never-decay tier the design this follows spends a config block describing."""
+    from agent import memory
+
+    memory.remember("The user deploys with make ship-quartz.")
+    _aged("t-old", "something unrelated", days_old=9999)
+
+    assert "make ship-quartz" in memory.context_for("how do I deploy")
+
+# ============================================== Phase 3.2: NOW.md, the scratchpad
+
+
+def test_the_scratchpad_records_where_the_session_got_to(tmp_workspace):
+    from agent import memory
+
+    memory.write_now(goal="Fix the failing tests in tests/",
+                     verdict="stuck", plan=["read the failure", "edit parser.py",
+                                            "run the suite"],
+                     cursor=1, files=["parser.py"])
+    body = memory.now()
+
+    assert "Fix the failing tests" in body
+    assert "It ended: stuck" in body
+    assert "step 2 of 3" in body
+    assert "edit parser.py" in body
+    assert "parser.py" in body
+
+
+def test_the_unfinished_half_is_the_point(tmp_workspace):
+    """A run that ends stuck tells the next session nothing about how far it got,
+    so a resumed or scheduled task re-derives it."""
+    from agent import memory
+
+    memory.write_now("goal", "stuck", ["a", "b", "c"], cursor=0, files=[])
+    assert "Still to do: b; c" in memory.now()
+
+
+def test_a_finished_run_lists_nothing_outstanding(tmp_workspace):
+    from agent import memory
+
+    memory.write_now("goal", "done", ["a", "b", "c"], cursor=0, files=[])
+    assert "Still to do" not in memory.now()
+
+
+def test_it_is_OVERWRITTEN_not_appended(tmp_workspace):
+    """The difference from AGENT.md, and the reason it is a separate file: this
+    describes what is true NOW. Appending would make a finished project's note
+    into a standing rule."""
+    from agent import memory
+
+    memory.write_now("the first goal", "done", [], 0, [])
+    memory.write_now("the second goal", "done", [], 0, [])
+    body = memory.now()
+
+    assert "the second goal" in body
+    assert "the first goal" not in body
+
+
+def test_the_scratchpad_reaches_the_prompt(tmp_workspace):
+    from agent import memory
+
+    memory.write_now("Fix the parser", "stuck", ["read", "edit"], 0, [])
+    assert "Fix the parser" in memory.context_for("what was I doing")
+
+
+def test_no_scratchpad_injects_nothing(tmp_workspace):
+    from agent import memory
+
+    assert memory.now() == ""
+    assert memory.context_for("anything") == ""
+
+
+def test_finish_writes_it_WITHOUT_the_agent_electing_to(tmp_workspace):
+    """THE WHOLE DESIGN. `learn` asked the agent to record something and was
+    called 0 times in 15 sessions; deterministic injection went 0/18 to 15/18.
+    Nothing here is a decision the model can decline."""
+    from agent import memory
+    from agent.graph import finish
+
+    state = {"messages": [{"role": "user", "content": "Make the suite pass"},
+                          {"role": "assistant", "content": "done"}],
+             "verdict": "done", "turns": 3, "spent_tokens": 100,
+             "plan": ["look", "fix"], "cursor": 1}
+    finish(state, {"configurable": {"thread_id": "t1"}})
+
+    assert "Make the suite pass" in memory.now()

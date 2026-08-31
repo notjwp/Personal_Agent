@@ -353,6 +353,76 @@ run, because the endpoint will not hold still long enough to start it.
 
 ---
 
+## Phase 3 - memory staleness and NOW.md (2026-08-31)
+
+Offline, no quota. 559 -> 571 tests. Both taken from Vellum as DESIGNS; neither
+ports a line of their code.
+
+### 3.1 Stale episodes are down-ranked, not dropped
+
+Ours never aged. Vellum keeps a freshness window per item kind - 30 days for an
+event, 90 for a constraint, and NEVER for identity or preference - and down-ranks
+past it rather than deleting.
+
+This project already has exactly two kinds, so one window is the honest version:
+`AGENT.md` does not go through `search()` at all and is therefore the never-decay
+tier; episodes are events. `MEMORY_STALE_DAYS` 30, `MEMORY_STALE_DECAY` 0.5.
+
+Applied to the SCORE, not by filtering. bm25 is negative and more negative is
+better, so multiplying a stale row by a fraction moves it toward zero and down the
+list - verified empirically before relying on it, because the sign is the whole
+mechanism. A filter would hide the only episode answering a question nobody has
+asked in months, which is precisely when memory earns its keep.
+
+**No reinforcement shield**, unlike theirs. We record when an episode was WRITTEN
+and never when it was last USED, so there is no signal to shield on. Adding one
+means a new column and a write on every retrieval.
+
+Verified in both directions:
+
+| mutation | result |
+|---|---|
+| filter stale rows out instead of down-ranking | 3 failed |
+| invert the condition - penalise FRESH rows | 1 failed, the right one |
+
+**Recall is unchanged at 5/6**, same single miss. Stated carefully: every episode
+in that corpus is days old, so the decay never fires there. The measurement shows
+no regression; it does not show the decay helps. The unit tests are what prove the
+mechanism, and nothing yet proves the 30-day window is the right one.
+
+### 3.2 NOW.md - written by a rule, never requested
+
+A working scratchpad beside the durable profile, and deliberately unlike it:
+`AGENT.md` is appended to and never decays, `NOW.md` is OVERWRITTEN every session
+because it describes what is true now. Conflating them is how a finished project's
+note becomes a standing rule.
+
+**The design decision that matters is who writes it.** Vellum lets the model keep
+its own scratchpad. This repo has already paid for that: `learn` asked the agent to
+record something and was called 0 times in 15 sessions, while deterministic episode
+injection went 0/18 to 15/18. So `finish` writes it from state that already exists
+- goal, verdict, plan, cursor, files - and no model call or decision is involved.
+
+The unfinished half is the point. A run ending `stuck` at turn 30 previously told
+the next session nothing about how far it got, so a resumed or scheduled task
+re-derived it:
+
+```
+# What I was last doing
+
+Last session was asked: Fix the off-by-one in moving_average
+It ended: stuck
+Reached step 2 of 3: fix the slice
+Still to do: run the suite
+Files touched: stats.py
+```
+
+**Unmeasured against the pass rate.** Neither change touches `real-humanize`, and
+neither has been through a scored run. They are offline work with offline tests,
+and are described as that rather than as improvements.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

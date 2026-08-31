@@ -184,7 +184,12 @@ WEB_ENABLED = _env("AGENT_WEB", "on").strip().lower() not in (
 # runs, and a queue or a memory that vanished with it would be neither.
 MEMORY_DB = AGENT_HOME / "memory.db"
 TASKS_DB = AGENT_HOME / "tasks.db"
-PROFILE = AGENT_HOME / "AGENT.md"           # durable user profile (FR-406)
+PROFILE = AGENT_HOME / "AGENT.md"   # durable user profile (FR-406)
+# The working scratchpad, beside the durable profile and deliberately unlike it:
+# AGENT.md is appended to and never decays, NOW.md is OVERWRITTEN every session
+# because it describes what is true now. Conflating them is how a finished
+# project's note becomes a standing rule.
+NOW = AGENT_HOME / "NOW.md"
 
 MEMORY_ENABLED = _env("AGENT_MEMORY", "on").strip().lower() not in (
     "0", "off", "false")
@@ -193,6 +198,14 @@ MEMORY_ENABLED = _env("AGENT_MEMORY", "on").strip().lower() not in (
 # `memory_chars` is on every row so a recall win bought with tokens shows up.
 MEMORY_INJECT_CHARS = 1_500
 MEMORY_EPISODES = 3
+
+# Episodes older than this are down-ranked, never deleted (Phase 3.1). Taken
+# from the design Vellum applies per item kind - 30 days for an event, 90 for a
+# constraint, and NEVER for identity or preference. Ours has exactly two kinds
+# already: AGENT.md, which does not go through search() and so never decays, and
+# episodes, which are events. One window is therefore the honest first version.
+MEMORY_STALE_DAYS = float(_env("AGENT_MEMORY_STALE_DAYS", "30"))
+MEMORY_STALE_DECAY = float(_env("AGENT_MEMORY_STALE_DECAY", "0.5"))
 
 # --- skills (Phase N) ------------------------------------------------------
 

@@ -39,6 +39,7 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MEMORY_DB", home / "memory.db")
     monkeypatch.setattr(config, "TASKS_DB", home / "tasks.db")
     monkeypatch.setattr(config, "PROFILE", home / "AGENT.md")
+    monkeypatch.setattr(config, "NOW", home / "NOW.md")
 
 
 @pytest.fixture
@@ -65,5 +66,6 @@ def fresh_app(tmp_workspace, monkeypatch):
     # pass or fail depending on what happened in an unrelated session.
     monkeypatch.setattr(config, "MEMORY_DB", tmp_workspace / ".agent" / "memory.db")
     monkeypatch.setattr(config, "PROFILE", tmp_workspace / ".agent" / "AGENT.md")
+    monkeypatch.setattr(config, "NOW", tmp_workspace / ".agent" / "NOW.md")
     monkeypatch.setattr(graph, "_APP", None)
     return graph.get_app()
