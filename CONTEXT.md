@@ -542,6 +542,31 @@ exists.
     every scored row states the image it ran on. It is NOT available at run
     time, and that is a property being protected rather than a gap.
 
+  FR-408 vs its own gate                   ADDED 2026-08-31
+    FR-408 gates semantic retrieval on a measured shortfall in keyword recall.
+    Measured 2026-08-31, offline, against the six recall/profile cases - the
+    only ground truth in the project where a stored episode and the query that
+    should retrieve it are worded differently.
+      In the system AS IT RUNS there is no shortfall to gate on. Every eval
+      home holds at most three episodes, the recall+profile split scores 6/6,
+      and two of those six carry no AGENT.md at all, so they passed through
+      episode search rather than the profile.
+      A shortfall appears only in a corpus that has never existed: 36 distinct
+      goals pooled from every home. There recall@3 is 2/6 - and the cause is
+      the QUERY, not the index. _terms() ORs every word over two characters, so
+      write, file, workspace and called outvote Quartzite. Keeping only the
+      five rarest terms by corpus document frequency scores 5/6 at rank 1, on a
+      plateau spanning k in {3,5,6,8} at every threshold. Porter stemming was
+      tried and is flat-to-worse; it is not the fix.
+    The one residual miss is a true vocabulary gap: two seconds against
+    duration in centiseconds shares exactly one term, and that term is write.
+    Resolution: FR-408 stays UNBUILT and is closed as NOT JUSTIFIED. Its gate
+    asked for a shortfall in keyword retrieval; what was found is a shortfall
+    in query construction, worth 3 of the 4 failures and free to fix. One case
+    in six is not an embedding model, an image dependency and a share of
+    MAX_SCHEMA_CHARS. It reopens if a real corpus reproduces the shortfall
+    after the query fix, which is the condition to re-measure - not to assume.
+
   NFR-802 vs FR-302 and NFR-201            ADDED 2026-08-23
     "All agent artifacts under ONE inspectable directory" cannot be satisfied
     without breaking one of the other two, and the collision is structural

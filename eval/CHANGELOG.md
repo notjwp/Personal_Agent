@@ -5,6 +5,92 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Stage C - FR-408 measured and closed as not justified (2026-08-31)
+
+**No quota spent. No model called. Nothing built.**
+
+FR-408 is the one requirement carrying its own stop condition: semantic retrieval,
+gated on *a measured shortfall in keyword recall*. This is that measurement.
+
+### The ground truth, and why it is the only honest one available
+
+The six `recall-*` and `profile-*` cases each ran two sessions in one home: a TEACH
+session that states a fact, then a RECALL session worded differently that needs it.
+That gives six real query -> target pairs where the query does not contain its own
+answer. `profile-units` shares exactly one word with its target, and that word is
+`write`.
+
+| | teach episode | recall query |
+|---|---|---|
+| `recall-oncall` | Escalations for Ashgrove go to Priya Raghunathan on extension 4471 | Write the extension for Ashgrove escalations into answer.txt |
+| `profile-units` | record every duration in centiseconds and label it cs | Write timing.txt recording that the build took two seconds |
+
+### The first reading was contaminated, and saying so is the point
+
+Pooling all 237 recorded episodes gave **recall@3 = 0/6**. That number is worthless:
+the corpus contained the query goal itself, so the top three slots were filled by
+previous eval runs of the identical question. A retrieval benchmark whose corpus
+contains the query is measuring `==`.
+
+Excluding the query's own goal - the real recall scenario, a session not run before -
+over 36 distinct goals:
+
+| query construction | recall@3 | recall@1 |
+|---|---|---|
+| `_terms()` as shipped: OR every word > 2 chars | **2/6** | 0/6 |
+| drop terms appearing in >25% of episodes | 3/6 | 1/6 |
+| **keep the 5 rarest terms by document frequency** | **5/6** | **5/6** |
+| porter tokenizer, all terms | 1/6 | 0/6 |
+| porter tokenizer, 5 rarest | 5/6 | 3/6 |
+
+Both knobs swept: 5/6 holds for k in {3,5,6,8} at every document-frequency threshold
+from 0.15 to 1.0. A plateau that wide is not two hyperparameters fitted to six cases.
+Porter stemming looked like the obvious fix for `recording` against `record` and is
+flat-to-worse - it breaks `profile-marker`, which was passing. Not kept.
+
+Control, run in the other direction: two unrelated queries (Refactor the CSS grid,
+Summarise the quarterly revenue spreadsheet) retrieve **0** of the six targets. A hit
+above is a hit, not everything being returned.
+
+### What this actually says
+
+**The shortfall is in the query, not the index.** Three of the four baseline failures
+are `_terms()` OR-ing `write`, `file`, `workspace` and `called` alongside `Quartzite`,
+and bm25 over a small corpus rewards the document matching eight common terms over the
+one matching three rare ones. That is a stopword bug wearing a capability gap's
+costume.
+
+**And the shortfall is synthetic.** Stated plainly because it is the weakest part of
+this result: the 36-goal corpus has never existed in any run. Every eval home is fresh
+and holds at most three episodes, the recall+profile split scores 6/6, and
+`recall-deploykey` and `recall-oncall` have no `AGENT.md`, so they passed on episode
+search alone. **No shortfall was measured in the system as it runs.** What was measured
+is the corpus sustained real use would produce.
+
+(The one home holding 134 episodes is `_t`, the shared test home - an artefact of tests
+writing to a real database before `cd7db19` made state isolation autouse. Not a user
+corpus either.)
+
+### Verdict
+
+**FR-408 is closed as NOT JUSTIFIED, and stays unbuilt.** Recorded in CONTEXT.md 8.2.
+One case in six - a genuine vocabulary gap, two seconds against duration in
+centiseconds - does not buy an embedding model, an image dependency that no-index
+forces to build time, and a share of `MAX_SCHEMA_CHARS` charged every turn.
+
+It reopens on a condition rather than a hunch: a real corpus that still shows the
+shortfall *after* the query fix.
+
+### The loose end, and it is not being smuggled in
+
+The 2/6 -> 5/6 query fix is measured, free, and **not applied**. It cannot move any
+eval number, because the eval's homes are too small to contain the bug - so by this
+project's own rule (*revert anything that does not move the number*) it has not earned
+a commit. It is logged here so the measurement is not lost, and it is a one-function
+change to `_terms()` whenever a corpus exists that would show it.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),
