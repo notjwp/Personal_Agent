@@ -616,3 +616,128 @@ def test_the_worker_loop_polls_schedules(tmp_workspace, monkeypatch):
     worker.run_worker(app=None, once=True)
 
     assert calls["n"] == 1, "a poll that skips fire() never triggers a schedule"
+
+# ================================================ Phase 4: proactive review
+
+
+def test_nothing_outstanding_means_SILENCE(tmp_workspace):
+    """The half that makes this usable. A check that always speaks is an
+    interruption, and the first thing anyone does with one is turn it off."""
+    from agent import worker
+
+    assert worker.attention() == []
+    assert worker.review() is None
+    assert worker.tasks() == [], "and it must not enqueue an empty review"
+
+
+def test_a_refused_call_is_what_UR_16_asks_to_review(tmp_workspace):
+    """awaiting-approval is the one status that cannot resolve itself: the agent
+    refused something while nobody was watching."""
+    from agent import worker
+
+    task_id = worker.submit("delete the old backups")
+    worker.claim()
+    worker.conclude(task_id, status="awaiting-approval",
+                    detail="refused while unattended: run_shell")
+
+    items = worker.attention()
+    assert len(items) == 1
+    assert task_id in items[0] and "refused while unattended" in items[0]
+
+
+def test_a_failed_task_is_surfaced(tmp_workspace):
+    from agent import worker
+
+    task_id = worker.submit("do the thing")
+    worker.claim()
+    worker.conclude(task_id, status="failed", detail="RuntimeError: boom")
+
+    assert any(task_id in item for item in worker.attention())
+
+
+def test_a_finished_task_is_NOT_surfaced(tmp_workspace):
+    """The other direction: a review that reports completed work is noise."""
+    from agent import worker
+
+    task_id = worker.submit("do the thing")
+    worker.claim()
+    worker.conclude(task_id, status="done")
+
+    assert worker.attention() == []
+
+
+def test_unfinished_work_from_the_scratchpad_is_surfaced(tmp_workspace):
+    from agent import memory, worker
+
+    memory.write_now("fix the parser", "stuck", ["read", "edit", "verify"],
+                     cursor=0, files=[])
+    items = worker.attention()
+
+    assert any("unfinished from the last session" in item for item in items)
+    assert any("edit" in item for item in items)
+
+
+def test_a_finished_scratchpad_is_not_outstanding(tmp_workspace):
+    from agent import memory, worker
+
+    memory.write_now("fix the parser", "done", ["read", "edit"], cursor=0, files=[])
+    assert worker.attention() == []
+
+
+def test_the_review_goal_carries_what_it_found(tmp_workspace):
+    from agent import worker
+
+    task_id = worker.submit("delete the old backups")
+    worker.claim()
+    worker.conclude(task_id, status="awaiting-approval", detail="refused")
+
+    review_id = worker.review()
+    goal = worker.get(review_id)["goal"]
+    assert task_id in goal
+    assert "report only" in goal, "a review must not change anything"
+
+
+def test_the_sentinel_is_resolved_AT_FIRE_TIME(tmp_workspace):
+    """THE REASON THE SENTINEL EXISTS. A review's content is whatever is
+    outstanding now; a schedule storing fixed text would report the state at
+    scheduling time forever."""
+    import time
+
+    from agent import worker
+
+    worker.schedule("* * * * *", worker.REVIEW)
+
+    # Nothing outstanding yet: firing must enqueue NOTHING.
+    assert worker.fire(now=time.time() + 3600) == []
+
+    # Now something is, and the NEXT firing picks it up without rescheduling.
+    task_id = worker.submit("delete the old backups")
+    worker.claim()
+    worker.conclude(task_id, status="awaiting-approval", detail="refused")
+    fired = worker.fire(now=time.time() + 7200)
+
+    assert len(fired) == 1
+    assert task_id in worker.get(fired[0])["goal"]
+
+
+def test_a_review_that_finds_nothing_does_not_enqueue_an_empty_task(tmp_workspace):
+    import time
+
+    from agent import worker
+
+    worker.schedule("* * * * *", worker.REVIEW)
+    worker.fire(now=time.time() + 3600)
+
+    assert worker.tasks() == [], "a schedule with nothing to say says nothing"
+
+
+def test_an_ordinary_schedule_is_unaffected_by_the_sentinel(tmp_workspace):
+    import time
+
+    from agent import worker
+
+    worker.schedule("* * * * *", "the ordinary goal")
+    fired = worker.fire(now=time.time() + 3600)
+
+    assert len(fired) == 1
+    assert worker.get(fired[0])["goal"] == "the ordinary goal"

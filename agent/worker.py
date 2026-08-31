@@ -225,6 +225,67 @@ def recover() -> int:
     return changed
 
 
+# --------------------------------------------------- proactivity (UR-14, UR-16)
+
+# A schedule whose goal is this sentinel is resolved AT FIRE TIME rather than
+# stored. A review's content is whatever is outstanding right now, so a schedule
+# holding fixed text could not express it - and generating it at schedule time
+# would report last week's state forever.
+REVIEW = "@review"
+
+
+def attention() -> list[str]:
+    """What is outstanding, in plain sentences. Deterministic: no model call.
+
+    Three sources, all state that already exists:
+
+      awaiting-approval  what the agent REFUSED while nobody was watching. UR-16
+                         asks to review exactly this, and it is the one status
+                         that cannot resolve itself.
+      failed             a run that ended badly and has not been looked at.
+      NOW.md             the step a session was on when it stopped.
+    """
+    from agent import memory
+
+    items: list[str] = []
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, goal, status, detail FROM tasks"
+            " WHERE status IN ('awaiting-approval','failed')"
+            " ORDER BY submitted_at DESC LIMIT 10").fetchall()
+    for row in rows:
+        line = f"task {row['id']} ({row['status']}): {row['goal'][:120]}"
+        if row["detail"]:
+            line += f" - {row['detail'][:120]}"
+        items.append(line)
+
+    scratch = memory.now()
+    if "Still to do:" in scratch:
+        items.append("unfinished from the last session: "
+                     + scratch.split("Still to do:", 1)[1].strip().splitlines()[0])
+    return items
+
+
+def review() -> str | None:
+    """Queue a review of what is outstanding, or return None when nothing is.
+
+    SILENCE WHEN THERE IS NOTHING TO SAY is the half that makes this usable. An
+    hourly check that always speaks is an hourly interruption, and the first thing
+    anyone does with one is turn it off.
+
+    It does not interrupt work either, and that falls out of what is already
+    there rather than needing a rule: MAX_WORKERS caps concurrent tasks, so a
+    queued review waits its turn behind whatever is running (FR-607).
+    """
+    items = attention()
+    if not items:
+        return None
+    return submit(
+        "Review what is outstanding and tell me what needs my attention. "
+        "Do not change anything - report only." + chr(10) * 2
+        + chr(10).join(f"- {item}" for item in items))
+
+
 # ------------------------------------------------------------------ FR-605
 
 FIELDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))
@@ -334,11 +395,15 @@ def fire(now: float | None = None) -> list[str]:
                 (following, row["id"], row["next_run"])).rowcount == 1
         if not claimed:
             continue                     # another worker took this slot
-        task_id = submit(row["goal"])
+        # The sentinel is resolved HERE, against current state. review() returns
+        # None when nothing is outstanding, and a schedule that finds nothing to
+        # say must enqueue nothing rather than an empty task.
+        task_id = review() if row["goal"] == REVIEW else submit(row["goal"])
         with _connect() as conn:
             conn.execute("UPDATE schedules SET last_fired=?, last_task=? WHERE id=?",
                          (now, task_id, row["id"]))
-        fired.append(task_id)
+        if task_id:
+            fired.append(task_id)
     return fired
 
 

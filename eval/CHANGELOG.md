@@ -423,6 +423,67 @@ and are described as that rather than as improvements.
 
 ---
 
+## Phase 4 - proactivity: notice what is outstanding and speak first (2026-08-31)
+
+Offline, no quota. 571 -> 581 tests.
+
+FR-605 shipped the cron half this morning. Vellum's heartbeat is the other half:
+re-read your notes, look for anything unfinished, and speak without being asked.
+
+`attention()` is deterministic - no model call - and reads three sources that
+already exist:
+
+| source | why |
+|---|---|
+| `awaiting-approval` tasks | what the agent REFUSED while nobody watched. UR-16 asks to review exactly this, and it is the one status that cannot resolve itself |
+| `failed` tasks | a run that ended badly and has not been looked at |
+| `NOW.md` | the step a session was on when it stopped (Phase 3.2) |
+
+### Silence is the half that makes it usable
+
+`review()` returns None when nothing is outstanding, and a schedule that finds
+nothing enqueues nothing. A check that always speaks is an interruption, and the
+first thing anyone does with one is turn it off.
+
+Vellum's rule that notifications must not interrupt an active conversation falls
+out of what is already here rather than needing code: `MAX_WORKERS` caps concurrent
+tasks at one, so a queued review waits behind whatever is running (FR-607).
+
+### One deviation from the plan, and the reason
+
+The plan said *add a built-in schedule that enqueues a review goal*. That is wrong:
+a review's content is whatever is outstanding NOW, so a schedule storing fixed text
+would report the state at scheduling time forever.
+
+Instead a schedule whose goal is the sentinel `@review` is RESOLVED AT FIRE TIME.
+One `if` in `fire()`, no new mechanism, and it still enqueues through `submit()` -
+so the worker stays the only thing that runs a task. Scheduling it needs nothing
+new either: `--schedule "0 9 * * *" "@review"`.
+
+### Verified in both directions
+
+| mutation | result |
+|---|---|
+| speak even when nothing is outstanding | 3 failed |
+| store the sentinel instead of resolving it | 2 failed |
+| surface finished tasks too | 1 failed, the right one |
+
+Live:
+
+```
+$ python -m agent --review
+nothing needs attention
+
+$ python -m agent --review          # after a refusal
+  task 7a5cced6 (awaiting-approval): delete the old backups - refused while unattended: run_shell
+queued 6f5ef1a8 to review it
+```
+
+**Unmeasured against the pass rate**, like Phase 3. It is offline work with offline
+tests and is described as that rather than as an improvement.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

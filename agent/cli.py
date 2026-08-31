@@ -276,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="queue a task and print its id, without running it")
     parser.add_argument("--worker", action="store_true",
                         help="drain the task queue; runs until interrupted")
+    parser.add_argument("--review", action="store_true",
+                        help="show what needs attention, and queue a review of it")
     parser.add_argument("--schedule", nargs=2, metavar=("CRON", "GOAL"),
                         help="run GOAL on a cron schedule, e.g. '0 9 * * 1'")
     parser.add_argument("--schedules", action="store_true",
@@ -354,6 +356,19 @@ def _dispatch(args, app, parser) -> int:
 
     if args.tasks:
         return list_tasks()
+
+    if args.review:
+        items = worker.attention()
+        if not items:
+            print("nothing needs attention")
+            return 0
+        for item in items:
+            print(f"  {item}")
+        task_id = worker.review()
+        print(f"queued {task_id} to review it")
+        print("run it with:   python -m agent --worker")
+        print('every morning:  python -m agent --schedule "0 9 * * *" "@review"')
+        return 0
 
     if args.schedule:
         expr, goal = args.schedule
