@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, web search, measurement rig. **500 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, web search, measurement rig. **503 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -98,6 +98,12 @@ Ordered by how often they have caught something.
   scored run per day; after that the tier rejects ~2 of 3 requests.
 
 **Rig and environment**
+
+- **`git revert --no-commit` leaves the revert STAGED, and `git checkout` carries it.**
+  A docs commit that said "no code in this commit" silently reverted two cycles and
+  invalidated the experiment comparing them - both arms were controls. The tell was a
+  test count dropping 500 to 490, explained away instead of checked. Verify the arms
+  DIFFER before running a controlled comparison.
 
 - **One search endpoint is a rate limit wearing a capability's costume.** `html.duckduckgo.com`
   returns results once, then blocks, and every retry re-arms a ~30s cooldown - so an in-tool
@@ -192,7 +198,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 500 tests, no API key, no network
+pytest                            # 503 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

@@ -4286,7 +4286,31 @@ That is the finding the day actually produced. Everything else was apparatus.
 
 ---
 
-## Cycles I and J re-measured on the fixed loop — NEGATIVE SIGNAL, PARKED
+## Cycles I and J re-measured on the fixed loop — RETRACTED, the experiment was invalid
+
+> **RETRACTED 2026-08-31.** Everything below this line was written in good
+> faith and the comparison it rests on does not exist. `be4c772` - a commit
+> whose message says "No code in this commit" - had already reverted Cycles I
+> and J from `main` by accident, carrying staged reverts across a
+> `git checkout`. So the "treatment" arm did not contain the cycles either.
+> **Both arms were controls.** The 2-of-2 versus 0-of-3 write split is a
+> comparison of a tree against itself plus noise, and means nothing.
+>
+> The tell was there and was missed: the suite reported 490 tests where it had
+> reported 500, and that was attributed to being on the wrong branch rather
+> than checked.
+>
+> **Cycles I and J are therefore UNMEASURED, not negative.** No claim about
+> them - helpful, harmful or inert - is supported by anything. The bar for
+> citing either is unchanged and now unmet: n=3 on both arms, with the arms
+> verified to differ before the runs start.
+>
+> The code was restored in `1e04dc3`. What survives from below is the CAP
+> LADDER section, which was measured independently of this comparison.
+
+<details><summary>The retracted entry, kept because deleting a wrong result hides that it was made</summary>
+
+### (retracted) Cycles I and J re-measured on the fixed loop — NEGATIVE SIGNAL, PARKED
 
 Cycles I (`edit_file` returns a diff) and J (warn before killing, hash the result)
 were first scored through the truncation defect of Cycle L, so their `0/3, zero
@@ -4331,6 +4355,8 @@ KEPT but UNATTRIBUTED, and neither should be described as having helped.
 The control tree is preserved on branch `control-c2c3`.
 
 ---
+
+</details>
 
 ## The cap ladder, recorded because each fix created the next
 
