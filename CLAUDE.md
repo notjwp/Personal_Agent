@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, web search, measurement rig. **605 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, web search, measurement rig. **622 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -71,6 +71,10 @@ Ordered by how often they have caught something.
   tool boundary.
 - **A tool the model cannot see is a function, not a capability.** `run_python` and its tests were
   green with no `TOOLS` entry. Check the live toolset, not the suite.
+- **A prompt that lists SOME of the tools is a prompt that hides the rest.** SOUL.md
+  named 4 of 7; across 624 runs those 4 took 95.5% of all calls, and 67% of
+  `run_shell` was doing `search_files`'s job - 1,266 `find`, 755 `grep`, 708 `ls`.
+  `search_files` was used 70 times in 8,820 calls. List every tool or list none.
 - **Descriptions are load-bearing.** `edit_file`'s wording took real repositories 0/9 → 4/7. Never
   derive them from parameter names.
 - **Check which limit binds before spending quota on the other.** Raising `BUDGET_TOKENS` (per run)
@@ -138,6 +142,12 @@ Ordered by how often they have caught something.
   necessary and never sufficient. A model probe passed 3/3 and the endpoint 503'd on
   the very next request; the driver then ground through every case-run producing
   blocked rows. Gate the start AND abort the run.
+- **`CREATE TABLE IF NOT EXISTS` is a migration that silently does nothing.** It is
+  right for a fresh database and wrong for one on disk. Measured: `episodes_fts`
+  gained `tokenize='porter'` and every earlier database kept the default while the
+  code assumed porter, with no error. `agent/migrations.py` and `PRAGMA
+  user_version` now carry it - and note `with conn:` does NOT wrap DDL, so a
+  migration needs an explicit BEGIN or a half-applied one can never retry.
 - **A blocked connection is not proof of a boundary.** "Could not resolve host" is DNS failing;
   re-test by raw IP.
 - **"Running" is not "usable".** A proxy reported `Running: true` for two hours while failing every
@@ -225,7 +235,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 605 tests, no API key, no network
+pytest                            # 622 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

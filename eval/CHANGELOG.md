@@ -696,6 +696,197 @@ never refused one.
 
 ---
 
+## Phase A - schema migrations (2026-08-31)
+
+605 -> 613 tests. No quota. Two new files: `agent/migrations.py`,
+`tests/test_migrations.py`, both recorded in CONTEXT.md 12 as deviations.
+
+### The drift was live, not hypothetical
+
+Every store used `CREATE TABLE IF NOT EXISTS`, which is right for a fresh database
+and silently wrong for one already on disk - it skips the statement entirely.
+
+Measured against a real database from `.agent/homes`:
+
+```
+code says:  fts5(..., tokenize='porter')        added 2026-08-31
+disk has:   fts5(...)                           default tokenizer
+```
+
+Two agents on the same commit, different retrieval behaviour, and **no error
+anywhere**. The upgrade path is now measured end to end on that same database:
+v0 -> v2, porter present, the episode preserved, search still returning, and a
+second open a no-op.
+
+### The bug the tests found in the migration runner itself
+
+`with conn:` does NOT wrap DDL. Python's sqlite3 auto-begins a transaction only
+for INSERT/UPDATE/DELETE/REPLACE, so `CREATE TABLE` executes outside any
+transaction and commits immediately.
+
+The consequence is worse than a partial migration. A migration creating two tables
+and failing on the second leaves the first behind; `user_version` correctly does
+not advance; and every retry then fails **forever** on *table already exists*. A
+store that can never finish migrating.
+
+Fixed with explicit `BEGIN` / `COMMIT` / `ROLLBACK` around each migration, with
+`isolation_level` saved and restored so the caller's connection is unchanged.
+
+### The rule that makes this safe
+
+A migration is identified by its POSITION in the list. Never re-ordered, never
+edited once released, never conditional on what a table currently looks like -
+inspecting the current shape is how two databases at the same version come to
+differ. Appending is the only legal edit, and one test asserts the version IS the
+list length so an insertion in the middle is caught.
+
+### Both directions
+
+| mutation | result |
+|---|---|
+| back to `with conn` so DDL escapes the transaction | 1 failed |
+| drop the porter rebuild, making v2 a no-op | 1 failed |
+
+613 tests, green together and file-by-file.
+
+---
+
+## The prompt listed 4 tools; the agent has 7 (2026-08-31) - UNMEASURED
+
+Prompted by "results are failing, check hermes_copy and fix it". The unit suite was
+green at 613; what is failing is the agent - real repositories 4/10, `real-humanize`
+1 pass in 58, reads 9-16 times and never edits.
+
+### What Hermes has that we did not
+
+`agent/coding_context.py` carries a **coding posture**: a profile declaring which
+toolset to collapse to and which operating brief to inject. Two lines of that brief
+name our failure mode exactly:
+
+> Make changes through the tools, not the chat. Edit with `patch`/`write_file`. Do
+> NOT print code blocks to the user as a substitute for editing.
+
+> If the same region fails twice, rewrite the enclosing function or file with
+> `write_file` instead of attempting a third patch.
+
+We had neither. Our prompt said *read before you edit* and never said *edit*.
+
+### The measured finding, from 624 recorded runs
+
+The `## Tools` section listed **four** tools. The agent has seven built-in plus MCP.
+
+```
+listed in the prompt (4)   8,428 calls   95.5%
+not listed           (6)     392 calls    4.5%
+search_files                   70 calls    0.8%
+run_shell                   4,209 calls   47.7%
+```
+
+And what `run_shell` was actually doing, across 4,209 calls:
+
+| | | |
+|---|---|---|
+| `find` | 1,266 | 30.1% |
+| `pytest` | 1,083 | 25.7% |
+| `grep`/`rg` | 755 | 17.9% |
+| `ls` | 708 | 16.8% |
+| `cat`/`head`/`tail` | 90 | 2.1% |
+
+**2,819 of 4,209 - 67% - were doing a job a purpose-built tool already does**, and
+about 32% of every tool call this project has ever made. `search_files` exists
+precisely because a raw grep is unbounded, and its own docstring says *use this
+instead of run_shell with grep, find or ls*. It was used 70 times.
+
+That connects to two open numbers: the budget exhaustion (421,265 tokens at turn 20
+of 30) and "reads a lot, never edits" - the agent was exploring through shell, with
+unbounded output, and running out of room before it acted.
+
+### The change
+
+`prompts/SOUL.md`, 33 lines -> 55. Every real tool named and no tool named that does
+not exist - `fetch` was dropped because it is MCP-provided and not always present,
+and the suite runs without the `mcp` package at all. Plus, from their brief:
+
+- `run_shell` is **for running things**: tests, builds, git. Not for looking around.
+- **Change the code, do not describe the change.** Writing out what the fix would be
+  is not fixing it.
+- After **two** failures on the same region, stop patching and rewrite the function
+  with `write_file`.
+
+### UNMEASURED, and that is the honest label
+
+A prompt change is measured like a code change and this one has not been. The
+endpoint has been returning 503 at roughly 1-in-3 all day and the dev guard has
+never run.
+
+What IS measured is that the prompt was wrong: it presented a four-tool list to an
+agent with seven, and usage follows the list at 95.5%. Whether fixing it moves the
+pass rate is a separate question, and the answer is not yet known.
+
+---
+
+## NFR-203 was only half implemented (2026-08-31)
+
+613 -> 622 tests. No quota. Gap found by reading our own code, filled with
+Hermes's data and NOT their code - the distinction is the whole entry.
+
+### The gap
+
+`redact()` replaced values found in `os.environ`. Measured, everything else went
+to the model verbatim:
+
+```
+OPENAI_API_KEY=sk-proj-REALSECRET1234567890abcdefXYZ
+AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+GITHUB = "ghp_16CharsMinimumTokenValueHere00"
+postgres://admin:s3cr3tpw@db.internal:5432/app
+```
+
+A repository's `.env` is exactly the kind of file a coding agent reads.
+
+### Their pattern list lifts; their redactor does NOT
+
+`agent/redact.py` is 1,427 lines and its own tests pass 97/97 here. Applied to
+our tree it altered **29 lines of 14,243**:
+
+```
+spent_tokens: int               ->  spent_tokens: ***
+budget_tokens: int | None       ->  budget_tokens: *** | None
+max_tokens=settings.MAX_TOKENS  ->  max_tokens=settin...ENS
+```
+
+Type annotations and identifiers destroyed. It matches `NAME=value` wherever NAME
+merely CONTAINS key/token/secret - correct for terminal output and chat, which is
+where Hermes applies it, and catastrophic on source code, which is what this agent
+reads all day. **I was about to put it somewhere they deliberately do not.**
+
+What was taken is the curated part: 40 issuer prefixes, the PEM block, the JWT
+shape, and the DSN password position. All four are unambiguous.
+
+### The boundary that took it from 14 false positives to 1
+
+`sk_[A-Za-z0-9_]{10,}` (ElevenLabs) matched INSIDE ordinary identifiers -
+`ri`**`sk_classified`**, `ta`**`sk_to_running`** - and redacted 14 lines of this
+project's own source. A negative lookbehind fixed it: a prefix only counts at a
+token boundary. Now **1 false positive in 14,334 lines**, and that one is this
+module's own docstring, which contains a DSN example on purpose.
+
+The same guard then caught a bad TEST: a fixture built `xxxxsk-proj-SECRET`, where
+the key is glued to preceding letters and is correctly not a secret.
+
+### Both directions
+
+| mutation | result |
+|---|---|
+| drop the token boundary | 2 failed |
+| unwire it from `redact()` | 6 failed |
+| redact the whole DSN rather than the password | 1 failed |
+
+Only the password goes from a connection string - an agent debugging one needs to
+see where it points.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

@@ -86,8 +86,64 @@ def test_a1_the_compaction_cap_stops_a_loop():
     assert reflect(big)["verdict"] == "stuck"
 
 
-def test_b_turn_cap_is_stuck():
-    assert reflect(state(turns=12))["verdict"] == "stuck"
+def test_b_turn_cap_asks_for_a_summary_first():
+    """Reaching the cap no longer ends the run silently. Hermes injects the same
+    request; a capped run otherwise records nothing about what it learned."""
+    out = reflect(state(turns=12))
+
+    assert out["verdict"] == "continue"
+    assert out["summarised"] is True
+    assert "Do not call any more tools" in out["messages"][-1]["content"]
+
+
+def test_b_turn_cap_is_stuck_once_the_summary_was_asked_for():
+    """Bounded at ONE extra turn. Without the flag the cap would re-ask forever."""
+    assert reflect(state(turns=12, summarised=True))["verdict"] == "stuck"
+
+
+def test_the_summary_reply_ends_the_run_as_stuck_not_done():
+    """A summary does not change the workspace, and the check command reads the
+    workspace. Ending `done` here would be the truncated-reply defect again.
+
+    BELOW the cap on purpose. At turns >= max_turns branch (b) answers first, so a
+    test at the cap never reaches this branch - the first version of this test made
+    exactly that mistake and passed while the branch returned `done`. Refunding a
+    truncated turn is what puts a summarised run back under the cap.
+    """
+    out = reflect(state(turns=5, summarised=True,
+                        messages=[assistant_call(), tool_result(),
+                                  assistant_text("I could not fix it.")]))
+
+    assert out["verdict"] == "stuck"
+
+
+def test_a_truncated_turn_is_refunded():
+    """The reply was cut off mid-sentence, so the turn bought no completed
+    thought. Charging for it spends the cap on the output limit rather than on
+    work - 21 recorded runs ended on stop_reason=length."""
+    out = reflect(state(turns=7, truncated=True,
+                        messages=[assistant_call(), tool_result(),
+                                  assistant_text("I was saying tha")]))
+
+    assert out["verdict"] == "continue"
+    assert out["turns"] == 6, "the truncated turn must not be charged"
+
+
+def test_the_refund_never_goes_below_zero():
+    out = reflect(state(turns=0, truncated=True,
+                        messages=[assistant_call(), tool_result(),
+                                  assistant_text("cut off")]))
+
+    assert out["turns"] == 0
+
+
+def test_a_normal_turn_is_NOT_refunded():
+    """Only a truncated reply is free. Refunding an ordinary turn would make the
+    cap unreachable."""
+    out = reflect(state(turns=7,
+                        messages=[assistant_call(), tool_result()]))
+
+    assert out.get("turns") is None, "reflect must not touch turns on a normal turn"
 
 
 def test_c_three_identical_signatures_is_stuck():
@@ -157,8 +213,14 @@ def test_compaction_beats_the_turn_cap():
 
 
 def test_turn_cap_beats_thrash():
+    """(b) is still reached before (c). It now asks for a summary rather than
+    saying stuck outright, and the ORDERING is what this guards."""
     s = state(turns=12, messages=[assistant_call(), tool_result()] * 3)
-    assert reflect(s)["verdict"] == "stuck"   # (b) reached before (c); both say stuck
+    assert reflect(s)["verdict"] == "continue"
+
+    s = state(turns=12, summarised=True,
+              messages=[assistant_call(), tool_result()] * 3)
+    assert reflect(s)["verdict"] == "stuck"
 
 
 def test_thrash_beats_failures():
@@ -183,7 +245,7 @@ def test_every_verdict_is_reachable(verdict):
     cases = {
         "compact": state(messages=over_threshold()),
         "budget": state(spent_tokens=200_000),
-        "stuck": state(turns=12),
+        "stuck": state(turns=12, summarised=True),
         "done": state(messages=[assistant_call(), tool_result(), assistant_text("Done.")]),
         "continue": state(messages=[assistant_call(), tool_result()]),
     }
@@ -374,12 +436,24 @@ def _edited(**over):
     return state(**base)
 
 
-def test_off_by_default_the_run_finishes(monkeypatch):
-    """Our loop already runs to a turn cap, so this may be machinery for a problem
-    we do not have. It ships off until measured."""
+def test_ON_by_default_an_unverified_edit_does_not_finish(monkeypatch):
+    """Cycle K shipped this OFF - "build it only once traces show it is needed".
+
+    The traces show it. Of 637 scored rows, 98 declared `done` and failed; 31 of
+    those never ran the tests at all and 15 edited AFTER their last test run.
+    47% ended on a change nothing had checked.
+    """
     from agent import config
 
-    assert config.VERIFY_ON_STOP is False
+    assert config.VERIFY_ON_STOP is True
+    assert reflect(_edited())["verdict"] == "continue"
+
+
+def test_turning_it_off_restores_the_old_ending(monkeypatch):
+    """Revertable without touching the loop, which is what makes it measurable."""
+    from agent import config
+
+    monkeypatch.setattr(config, "VERIFY_ON_STOP", False)
     assert reflect(_edited())["verdict"] == "done"
 
 

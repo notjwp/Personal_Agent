@@ -107,10 +107,15 @@ COMPACT_AT_CHARS = int(_env("AGENT_COMPACT_AT", "45000"))
 # budget faster than the problem it solves.
 MAX_COMPACTIONS = int(_env("AGENT_MAX_COMPACTIONS", "3"))
 
-# Refuse to finish on an edit that was never verified. DEFAULT OFF, as Hermes
-# ships it: our loop already runs to a turn cap, so this may be machinery for
-# a problem we do not have. Bounded at two nudges - past that it is nagging.
-VERIFY_ON_STOP = _env("AGENT_VERIFY_ON_STOP", "off").strip().lower() not in (
+# Refuse to finish on an edit that was never verified. Bounded at two nudges,
+# past which it is nagging.
+#
+# DEFAULT ON since 2026-08-31, reversing Cycle K's "build it only once traces
+# show it is needed". The traces now show it, from 637 scored rows: of 98 runs
+# that declared `done` and failed, 31 never ran the tests at all and 15 edited
+# AFTER their last test run - 47% ended on an unverified change. Hermes ships
+# theirs off; we have the measurement they presumably did not.
+VERIFY_ON_STOP = _env("AGENT_VERIFY_ON_STOP", "on").strip().lower() not in (
     "0", "off", "false")
 MAX_VERIFY_NUDGES = 2
 

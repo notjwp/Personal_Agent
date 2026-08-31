@@ -394,12 +394,19 @@ def run(app, thread="offline", **over):
 
 
 def test_full_loop_offline(fresh_app, tmp_workspace, monkeypatch):
-    """read -> write -> shell -> text-only -> done, with no network and no key."""
+    """read -> write -> test -> text-only -> done, with no network and no key.
+
+    The shell turn runs PYTEST, not `echo ok`. With VERIFY_ON_STOP on since
+    2026-08-31 the old script no longer finishes, and correctly so: it wrote a
+    file and then ran something unrelated, which is the 47% failure mode - of 98
+    runs that declared done and failed, 46 ended on an unverified change. The
+    script was modelling the bug.
+    """
     (tmp_workspace / "broken.py").write_text("x = \n")
     seen = use_fake(monkeypatch, [
         tool_turn("read_file", path="broken.py"),
         tool_turn("write_file", cid="t2", path="broken.py", content="x = 1\n"),
-        tool_turn("run_shell", cid="t3", command="echo ok"),
+        tool_turn("run_shell", cid="t3", command="pytest -q"),
         text_turn("Fixed. Tests pass."),
     ])
 
@@ -464,7 +471,10 @@ def test_turn_cap_terminates(fresh_app, tmp_workspace, monkeypatch):
     ])
     final = run(fresh_app, "loop-6", max_turns=3)
     assert final["verdict"] == "stuck"
-    assert final["turns"] == 3
+    # ONE over the cap, and no more. The wrap-up request buys a turn; this fake
+    # ignores it and calls a tool anyway, which is the worst case and is still
+    # bounded - `summarised` makes the cap unable to ask twice.
+    assert final["turns"] == 4
 
 
 def test_budget_exhaustion_terminates(fresh_app, tmp_workspace, monkeypatch):

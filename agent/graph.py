@@ -72,6 +72,7 @@ class AgentState(TypedDict):
     edited_unverified: bool   # a write happened with no test since
     verify_nudges: int        # bounded by MAX_VERIFY_NUDGES
     truncated: bool           # last reply hit the output cap (stop_reason=length)
+    summarised: bool          # the turn cap has already asked for a wrap-up
 
 
 def new_state(goal: str, max_turns: int | None = None,
@@ -401,6 +402,22 @@ def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
         return {"verdict": "continue"}
 
     if state["turns"] >= state["max_turns"]:
+        # One last turn to say what it found, then stop. Hermes injects the same
+        # request rather than ending silently.
+        #
+        # THE VERDICT STAYS `stuck`, and that is deliberate. A summary does not
+        # change the workspace and the check command reads the workspace, so this
+        # cannot turn a failure into a pass - letting it end `done` would be the
+        # truncated-reply defect again. What it buys is a run that reports what it
+        # learned: `answer` feeds write_episode and NOW.md, and a capped run
+        # currently records nothing.
+        if not state.get("summarised"):
+            return {
+                "verdict": "continue",
+                "summarised": True,
+                "messages": state["messages"] + [
+                    {"role": "user", "content": CAP_SUMMARY_REQUEST}],
+            }
         return {"verdict": "stuck"}                                     # (b)
     if _last_three_signatures_identical(state["messages"]):
         return {"verdict": "stuck"}                                     # (c)
@@ -408,6 +425,12 @@ def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
     # fired once in 712 rows, and `failures` still distinguishes the cause.
     if state["failures"] >= 3:
         return {"verdict": "stuck"}                                     # (d)
+    # The wrap-up reply arrives AFTER the cap, so (b) above would end the run
+    # before it is recorded. Ending here keeps the verdict `stuck` while letting
+    # `finish` write the summary the model just produced.
+    if state.get("summarised") and state["messages"][-1]["role"] == "assistant":
+        return {"verdict": "stuck"}
+
     if state["messages"][-1]["role"] == "assistant":                    # (e)
         # §9 step 2(b): `done` is gated on whether any tool call was ever made, not on
         # a cursor - a plan with an unfinished cursor must still be able to end.
@@ -424,6 +447,12 @@ def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
             return {
                 "verdict": "continue",
                 "truncated": False,
+                # REFUNDED. The reply was cut off mid-sentence, so this turn
+                # bought no completed thought - charging for it spends the cap on
+                # the output limit rather than on work. Hermes does the same
+                # (iteration_budget.refund() beside api_call_count -= 1) for the
+                # turns its retries throw away. Never below zero.
+                "turns": max(0, state["turns"] - 1),
                 "messages": state["messages"] + [
                     {"role": "user", "content": TRUNCATED_HINT}],
             }
@@ -446,6 +475,15 @@ VERIFY_HINT = (
 # Adapted from Hermes _LENGTH_CONTINUATION_OUTPUT_LIMIT. It adds the one thing
 # their wording does not need and ours does: our budget is spent on visible
 # reasoning, so the way to finish is to call a tool rather than think further.
+# Asked once when the turn cap is reached. Hermes's wording, which is careful to
+# forbid further tools - a request for a summary that invites another tool call
+# just spends the turn it was given.
+CAP_SUMMARY_REQUEST = (
+    "[You have reached the maximum number of tool-calling turns. Give a final "
+    "answer summarising what you found and what you changed, and what is still "
+    "wrong. Do not call any more tools.]")
+
+
 TRUNCATED_HINT = (
     "[System: your previous reply was cut off by the output length limit. "
     "Do not restart or repeat it. Stop explaining and make the next tool call "
