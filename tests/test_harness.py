@@ -620,31 +620,62 @@ def test_turns_that_did_not_stream_are_excluded_rather_than_counted_as_zero():
 # ============================================ the manifest names its own code
 
 
-def test_the_manifest_records_which_commit_it_measured():
+def _git_returns(mapping):
+    """A subprocess.run stand-in keyed on the git subcommand."""
+    class Done:
+        def __init__(self, code, out): self.returncode, self.stdout, self.stderr = code, out, ""
+    def fake(cmd, **_kw):
+        key = cmd[1]
+        value = mapping.get(key, "")
+        return Done(1, "") if value is None else Done(0, value)
+    return fake
+
+
+def test_the_manifest_records_which_commit_it_measured(monkeypatch):
     """real-humanize's last measurement could not be attributed to any code: the
-    manifest held image, provider, model and egress, and no sha."""
-    from eval_harness import code_version
+    manifest held image, provider, model and egress, and no sha.
 
-    code = code_version()
-    assert set(code) == {"commit", "dirty", "dirty_files"}
-    assert code["commit"] == "UNKNOWN" or len(code["commit"]) == 40
+    Mocked, not real git: `git diff --name-only HEAD` has been measured at 7-36s
+    here because eval/fixtures holds six vendored repositories. A unit suite must
+    not pay that twice.
+    """
+    import eval_harness
+
+    monkeypatch.setattr(eval_harness.subprocess, "run", _git_returns({
+        "rev-parse": "a" * 40 + chr(10), "diff": "", "ls-files": ""}))
+    code = eval_harness.code_version()
+
+    assert code == {"commit": "a" * 40, "dirty": False, "dirty_files": []}
 
 
-def test_a_dirty_tree_is_reported_as_dirty():
-    """THE LOAD-BEARING HALF. A clean sha on a modified tree is precisely the lie
-    that invalidated the Cycles I/J comparison - both arms reported the same
-    commit and the working trees differed."""
-    from eval_harness import code_version
+def test_a_modified_tree_is_reported_as_dirty(monkeypatch):
+    """THE LOAD-BEARING HALF. A clean sha on a modified tree is the lie that
+    invalidated the Cycles I/J comparison - both arms reported the same commit and
+    the working trees differed."""
+    import eval_harness
 
-    code = code_version()
-    if code["commit"] == "UNKNOWN":
-        pytest.skip("not a git checkout")
-    assert code["dirty"] in (True, False)
-    assert isinstance(code["dirty_files"], list)
-    # stdout.strip() eats the leading space of porcelain's FIRST line, so a fixed
-    # 3-char slice reported "val/harness.py". Paths must survive intact.
-    assert all(not f.startswith(("M ", " M", "?")) for f in code["dirty_files"])
-    assert all(f == f.strip() and "/" not in f[:1] for f in code["dirty_files"])
+    monkeypatch.setattr(eval_harness.subprocess, "run", _git_returns({
+        "rev-parse": "b" * 40, "diff": "agent/tools.py" + chr(10),
+        "ls-files": "agent/new.py" + chr(10)}))
+    code = eval_harness.code_version()
+
+    assert code["dirty"] is True
+    assert code["dirty_files"] == ["agent/new.py", "agent/tools.py"]
+
+
+def test_a_tree_git_COULD_NOT_READ_is_neither_clean_nor_dirty(monkeypatch):
+    """THREE-VALUED, and this is the defect that prompted it. The first version
+    returned False when the git call failed, and `git status --porcelain` times
+    out here at 30s - so every manifest claimed a clean tree. Same shape as
+    AGENT_EGRESS defaulting to "restricted" where nothing ever set it."""
+    import eval_harness
+
+    monkeypatch.setattr(eval_harness.subprocess, "run", _git_returns({
+        "rev-parse": "c" * 40, "diff": None, "ls-files": ""}))
+    code = eval_harness.code_version()
+
+    assert code["commit"] == "c" * 40, "the sha is still trustworthy"
+    assert code["dirty"] is None, "unknown must never be recorded as clean"
 
 
 def test_git_failing_does_not_take_the_run_down():

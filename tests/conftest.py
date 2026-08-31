@@ -25,6 +25,21 @@ if "eval_harness" not in sys.modules:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_pacing(monkeypatch):
+    """FR-505 paces every host by 2 real seconds. AUTOUSE, because a unit suite
+    must not sleep: seven web_search tests were costing 12s of wall clock waiting
+    on a courtesy interval that only matters against a live server.
+
+    The pacing itself is still tested - test_pacing_waits_between_hits_on_one_host
+    patches time.sleep and asserts the interval directly.
+    """
+    from agent import tools
+
+    monkeypatch.setattr(tools.time, "sleep", lambda _seconds: None)
+    tools._LAST_HIT.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_state(tmp_path, monkeypatch):
     """Every test gets its own agent home. AUTOUSE - isolation is opt-OUT.
 

@@ -814,29 +814,49 @@ def code_version() -> dict:
 
     Added after real-humanize's last measurement could not be attributed to any
     code: be4c772 committed staged reverts 74 seconds after that run started, and
-    the manifest recorded image, provider, model and egress but not a sha. `dirty`
-    is the load-bearing half - a clean sha on a modified tree is the lie that
-    invalidated the Cycles I/J comparison.
+    the manifest recorded image, provider, model and egress but not a sha.
+
+    `dirty` is the load-bearing half, and it is THREE-valued. A clean sha on a
+    modified tree is the lie that invalidated the Cycles I/J comparison; `None`
+    means git could not be asked, which is a different claim from "clean" and
+    must never be collapsed into it. The first version returned False on failure
+    and every manifest here claimed a clean tree - the same shape as AGENT_EGRESS
+    defaulting to "restricted" where nothing ever set it.
+
+    NOT `git status --porcelain`: measured at 30s in the container because the
+    repo carries hermes_copy (928 MB) and vellum-assistant-main (128 MB), and git
+    stats them even to decide they are ignored. Asking about tracked and untracked
+    separately costs about 7s - though `diff` alone has been measured from 7s to
+    36s depending on cache state, because eval/fixtures holds six vendored
+    repositories and every tracked file must be stat-ed over a bind mount. The
+    timeout is 120s and this runs ONCE per scored run, against 13-60 minutes of
+    measurement; a slow honest answer beats a fast `dirty: False`.
     """
     import subprocess
 
-    def git(*args):
+    def git(*args) -> str | None:
+        """stdout, or None when git could not answer. None is not empty."""
         try:
-            return subprocess.run(("git", *args), cwd=REPO, capture_output=True,
-                                  text=True, timeout=10).stdout.strip()
+            done = subprocess.run(("git", *args), cwd=REPO, capture_output=True,
+                                  text=True, timeout=120)
         except (OSError, subprocess.SubprocessError):
-            return ""
+            return None
+        return done.stdout if done.returncode == 0 else None
 
     sha = git("rev-parse", "HEAD")
-    status = git("status", "--porcelain")
-    return {"commit": sha or "UNKNOWN",
-            "dirty": bool(status) if sha else None,
-            # Split rather than sliced: stdout.strip() eats the leading space of
-            # porcelain's first line, and a fixed offset then cuts into the path.
-            "dirty_files": sorted(l.split(maxsplit=1)[-1]
-                                  for l in status.splitlines() if l.strip())[:20]
-            if sha else []}
+    if sha is None:
+        return {"commit": "UNKNOWN", "dirty": None, "dirty_files": []}
 
+    modified = git("diff", "--name-only", "HEAD")
+    untracked = git("ls-files", "--others", "--exclude-standard")
+    if modified is None or untracked is None:
+        # A sha we trust and a tree we could not read. Saying "clean" here is the
+        # exact failure this field exists to prevent.
+        return {"commit": sha.strip(), "dirty": None, "dirty_files": []}
+
+    files = sorted({line.strip() for line in (modified + untracked).splitlines()
+                    if line.strip()})
+    return {"commit": sha.strip(), "dirty": bool(files), "dirty_files": files[:20]}
 
 def run_dir(args, cases) -> Path | None:
     """Choose the output directory, creating or resuming one.
