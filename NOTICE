@@ -5,13 +5,24 @@ This product includes software derived from Hermes Agent
 (https://github.com/NousResearch/hermes-agent), Copyright (c) 2025 Nous Research,
 licensed under the MIT License.
 
-ONE FILE IS VENDORED VERBATIM:
+VENDORED VERBATIM:
 
   agent/binary_extensions.py   from tools/binary_extensions.py, unchanged apart
                                from the module docstring. Taken as-is because the
                                value IS the list - a hand-written set of binary
                                and container-document extensions would be shorter
                                and wrong.
+
+  agent/secrets.py             the PATTERN LIST from agent/redact.py
+                               (_PREFIX_PATTERNS, _PRIVATE_KEY_RE, _JWT_RE) -
+                               forty issuer prefixes accumulated from real
+                               incidents. Their surrounding 1,427-line redactor
+                               was deliberately NOT taken: it also matches
+                               NAME=value where NAME merely contains
+                               key/token/secret, which is right for terminal
+                               output and destroys source code - measured on this
+                               tree it altered 29 lines including
+                               `spent_tokens: int` -> `spent_tokens: ***`.
 
 Everything else taken is a DESIGN, re-implemented against this project's own
 shapes, with each borrow site naming its original in a comment:

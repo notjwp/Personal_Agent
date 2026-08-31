@@ -10,7 +10,7 @@ import json
 import os
 from hashlib import sha256
 
-from agent import config
+from agent import config, secrets
 
 # NFR-203: secrets never enter model context. Matches VALUES, not env-var
 # names - the agent echoes a key far more often than it names the variable.
@@ -32,7 +32,10 @@ def redact(text: str) -> str:
     for name, value in os.environ.items():
         if len(value) >= MIN_SECRET_CHARS and name.upper().endswith(SECRET_SUFFIXES):
             text = text.replace(value, f"[redacted:{name}]")
-    return text
+    # The environment covers OUR credentials and nothing else. A workspace .env,
+    # an AWS key in source, a DSN with a password - all reached the model verbatim
+    # until this was added. See agent/secrets.py for why it matches SHAPES only.
+    return secrets.scrub(text)
 
 
 # Lone surrogates. From Hermes agent/message_sanitization.py, which states the
