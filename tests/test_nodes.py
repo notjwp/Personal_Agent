@@ -3041,3 +3041,65 @@ def test_stderr_is_still_separated(tmp_workspace):
     out = run_shell('echo to-out; echo to-err 1>&2')
 
     assert out.index('to-out') < out.index('--- stderr ---') < out.index('to-err')
+
+# ===================== edit_file: lossless bytes, and the guards write_file has
+
+
+LATIN1_SOURCE = bytes([0x23, 0x20, 0x63, 0x61, 0x66, 0xE9, 0x0A]) + b'x = 1' + bytes([0x0A])
+
+
+def test_editing_a_non_utf8_file_does_not_corrupt_the_bytes_it_did_not_touch(
+        tmp_workspace):
+    """MEASURED BEFORE THE FIX: a latin-1 byte became U+FFFD on any edit. The
+    write succeeded, the diff looked clean, and a byte the agent never touched was
+    destroyed - on a real repository, on every edit to that file."""
+    target = tmp_workspace / 'legacy.py'
+    target.write_bytes(LATIN1_SOURCE)
+
+    edit_file('legacy.py', 'x = 1', 'x = 2')
+
+    assert target.read_bytes() == LATIN1_SOURCE.replace(b'x = 1', b'x = 2')
+
+
+def test_the_diff_of_such_an_edit_is_safe_to_send_to_a_provider(tmp_workspace):
+    """surrogateescape puts lone surrogates in the text, and those are invalid in
+    UTF-8 and crash the SDK's encode step. shrink() is where they are removed -
+    the one seam every tool result crosses.
+
+    ENCODE, not json.dumps: json.dumps serialises a lone surrogate happily, so
+    asserting on it passes with the sanitiser removed. Found by mutating it."""
+    (tmp_workspace / 'legacy.py').write_bytes(LATIN1_SOURCE)
+    receipt = edit_file('legacy.py', 'x = 1', 'x = 2')
+
+    shrink('edit_file', receipt).encode('utf-8')
+
+
+def test_the_write_verify_reads_the_way_it_writes(tmp_workspace):
+    """It compared a surrogateescape write against an errors=replace read, so
+    every non-UTF-8 file reported a failed write on a correct edit."""
+    (tmp_workspace / 'legacy.py').write_bytes(LATIN1_SOURCE)
+
+    assert 'edited' in edit_file('legacy.py', 'x = 1', 'x = 2')
+
+
+def test_edit_file_refuses_a_container_document(tmp_workspace):
+    """It bypassed the guard write_file has: measured, it rewrote a .docx as text
+    and destroyed it."""
+    doc = tmp_workspace / 'report.docx'
+    doc.write_bytes(bytes([0x50, 0x4B, 0x03, 0x04]) + b'zip x = 1')
+
+    assert 'refused' in edit_file('report.docx', 'x = 1', 'x = 2')
+    assert doc.read_bytes().endswith(b'x = 1'), 'the original must be intact'
+
+
+def test_edit_file_refuses_a_binary_file(tmp_workspace):
+    (tmp_workspace / 'logo.png').write_bytes(bytes([0x89]) + b'PNG x = 1')
+    assert 'refused' in edit_file('logo.png', 'x = 1', 'x = 2')
+
+
+def test_an_ordinary_edit_is_unchanged(tmp_workspace):
+    target = tmp_workspace / 'plain.py'
+    target.write_text('x = 1' + chr(10), encoding='utf-8')
+
+    assert 'edited' in edit_file('plain.py', 'x = 1', 'x = 2')
+    assert target.read_text(encoding='utf-8') == 'x = 2' + chr(10)

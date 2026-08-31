@@ -598,6 +598,62 @@ also checks the forked grandchild its compound command exists to create.
 
 ---
 
+## edit_file was silently corrupting non-UTF-8 files (2026-08-31)
+
+595 -> 601 tests. No quota. Found by reading our own code, like the three before it.
+
+### The bug
+
+```
+before:  b'# café
+x = 1
+'      a latin-1 e-acute
+edit:    x = 1  ->  x = 2
+after:   b'# cafï¿½
+x = 2
+'   U+FFFD
+```
+
+The edit succeeded, the diff looked clean, and **a byte the agent never touched
+was destroyed**. `read_text(errors="replace")` followed by `write_text` is lossy
+by construction: every edit to a file with one non-UTF-8 byte corrupted it, on
+every real repository that has one.
+
+`edit_file` also bypassed the guard `write_file` had gained an hour earlier, and
+rewrote a `.docx` as text.
+
+### The fix, and where it goes
+
+`surrogateescape` on read AND write round-trips arbitrary bytes losslessly. That
+puts lone surrogates in the receipt, which are invalid in UTF-8 and break the
+provider's encode step - so they are stripped in `shrink()`, the one seam every
+tool result crosses on its way to the model. From Hermes
+`agent/message_sanitization.py`, which states the consequence in its own docstring.
+
+The write-verify check had to change with it: it compared a `surrogateescape`
+write against an `errors="replace"` read, so it reported a failed write on every
+correct edit to a non-UTF-8 file. It fired immediately, which is the check earning
+its keep.
+
+### Both directions, and TWO of three mutations did not fail
+
+| mutation | first result | after fixing the test |
+|---|---|---|
+| `errors="replace"` on read | 1 failed | - |
+| drop the surrogate sanitiser | **220 passed** | 1 failed |
+| let `edit_file` touch a `.docx` | **220 passed** | branch DELETED |
+
+**The sanitiser test asserted `json.dumps`, which serialises a lone surrogate
+happily.** The real failure is `.encode("utf-8")`. A test that cannot fail is
+worse than no test, and only the mutation showed it.
+
+**The `.docx` branch was unreachable.** Every container document is already in
+`BINARY_EXTENSIONS`, so the binary guard fires first - the live output said *is a
+binary file*, not the container message. Deleted rather than kept: §13 makes dead
+code a defect. `write_file` keeps its own, because it has no binary guard.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

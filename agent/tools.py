@@ -192,7 +192,17 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         raise IsADirectoryError(
             f"{path} is a directory, not a file. "
             f"List it with run_shell(command='ls -la {path}').")
-    text = target.read_text(encoding="utf-8", errors="replace")
+    # edit_file bypassed this entirely: measured, it rewrote a .docx as text and
+    # destroyed it. One check, not two - every container document is already in
+    # BINARY_EXTENSIONS, so an opaque-document branch here is unreachable. write_file
+    # still needs its own, because it has no binary guard.
+    if has_binary_extension(path):
+        return f"refused: {path} is a binary file and cannot be edited as text."
+    # surrogateescape, NOT errors="replace". Measured: a latin-1 byte in a source
+    # file became U+FFFD on any edit - the write succeeded, the diff looked clean,
+    # and a byte the agent never touched was destroyed. surrogateescape round-trips
+    # arbitrary bytes losslessly; shrink() strips the surrogates before display.
+    text = target.read_text(encoding="utf-8", errors="surrogateescape")
 
     found = text.count(old_string)
     if found == 0:
@@ -210,11 +220,14 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
             f"once. Include more of the surrounding lines to make it unique.")
 
     updated = text.replace(old_string, new_string)
-    target.write_text(updated, encoding="utf-8")
+    target.write_text(updated, encoding="utf-8", errors="surrogateescape")
 
     # A write that did not land must not report success. Hermes makes this a
     # hard error rather than a silent flag and that is the right call.
-    if target.read_text(encoding="utf-8", errors="replace") != updated:
+    # Read back the SAME WAY it was written. Comparing a surrogateescape write
+    # against an errors="replace" read reports every non-UTF-8 file as a failed
+    # write, which is how this check first fired on a correct edit.
+    if target.read_text(encoding="utf-8", errors="surrogateescape") != updated:
         raise RuntimeError(
             f"the edit to {path} did not persist - the file on disk differs "
             f"from what was written. Re-read it and retry.")

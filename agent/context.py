@@ -5,6 +5,7 @@ text, where the model can act on it. That is the only place it was ever useful.
 
 CE-05: the artifacts directory is created at call time, never at import.
 """
+import re
 import json
 import os
 from hashlib import sha256
@@ -34,12 +35,22 @@ def redact(text: str) -> str:
     return text
 
 
+# Lone surrogates. From Hermes agent/message_sanitization.py, which states the
+# consequence: they are invalid in UTF-8 and crash json.dumps() inside the SDK.
+_SURROGATE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
+
+
 def shrink(tool: str, text: str) -> str:
     """Cap `text` for `tool`, spilling the full output to disk when it overflows."""
     # Before the cap AND before the spill: the artifact is readable with read_file,
     # so redacting only the returned string would leave the secret sitting on disk
     # inside the workspace, one tool call away.
     text = redact(text)
+    # Files are read with surrogateescape so a non-UTF-8 byte survives a
+    # read-edit-write round trip. Those surrogates must not reach the provider:
+    # they are invalid in UTF-8 and crash json.dumps inside the SDK. Sanitised
+    # HERE because shrink() is the one place every tool result passes through.
+    text = _SURROGATE.sub(chr(0xFFFD), text)
     cap = min(config.TOOL_CAPS.get(tool, config.MAX_RESULT_CHARS), config.MAX_RESULT_CHARS)
     if len(text) <= cap:
         return text
