@@ -615,3 +615,52 @@ def test_turns_that_did_not_stream_are_excluded_rather_than_counted_as_zero():
     from eval_harness import first_token_p50
 
     assert first_token_p50(trace) == 2.0
+
+
+# ============================================ the manifest names its own code
+
+
+def test_the_manifest_records_which_commit_it_measured():
+    """real-humanize's last measurement could not be attributed to any code: the
+    manifest held image, provider, model and egress, and no sha."""
+    from eval_harness import code_version
+
+    code = code_version()
+    assert set(code) == {"commit", "dirty", "dirty_files"}
+    assert code["commit"] == "UNKNOWN" or len(code["commit"]) == 40
+
+
+def test_a_dirty_tree_is_reported_as_dirty():
+    """THE LOAD-BEARING HALF. A clean sha on a modified tree is precisely the lie
+    that invalidated the Cycles I/J comparison - both arms reported the same
+    commit and the working trees differed."""
+    from eval_harness import code_version
+
+    code = code_version()
+    if code["commit"] == "UNKNOWN":
+        pytest.skip("not a git checkout")
+    assert code["dirty"] in (True, False)
+    assert isinstance(code["dirty_files"], list)
+    # stdout.strip() eats the leading space of porcelain's FIRST line, so a fixed
+    # 3-char slice reported "val/harness.py". Paths must survive intact.
+    assert all(not f.startswith(("M ", " M", "?")) for f in code["dirty_files"])
+    assert all(f == f.strip() and "/" not in f[:1] for f in code["dirty_files"])
+
+
+def test_git_failing_does_not_take_the_run_down():
+    """A measurement must not be lost because git was unavailable."""
+    import subprocess
+
+    import eval_harness
+
+    def boom(*a, **k):
+        raise OSError("no git here")
+
+    original = subprocess.run
+    subprocess.run = boom
+    try:
+        code = eval_harness.code_version()
+    finally:
+        subprocess.run = original
+
+    assert code == {"commit": "UNKNOWN", "dirty": None, "dirty_files": []}

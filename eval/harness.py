@@ -739,6 +739,35 @@ def delta(rows: list[dict], before: list[dict], label: str) -> str:
     return "\n".join(lines)
 
 
+def code_version() -> dict:
+    """The commit a run measured, and whether the tree matched it.
+
+    Added after real-humanize's last measurement could not be attributed to any
+    code: be4c772 committed staged reverts 74 seconds after that run started, and
+    the manifest recorded image, provider, model and egress but not a sha. `dirty`
+    is the load-bearing half - a clean sha on a modified tree is the lie that
+    invalidated the Cycles I/J comparison.
+    """
+    import subprocess
+
+    def git(*args):
+        try:
+            return subprocess.run(("git", *args), cwd=REPO, capture_output=True,
+                                  text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    sha = git("rev-parse", "HEAD")
+    status = git("status", "--porcelain")
+    return {"commit": sha or "UNKNOWN",
+            "dirty": bool(status) if sha else None,
+            # Split rather than sliced: stdout.strip() eats the leading space of
+            # porcelain's first line, and a fixed offset then cuts into the path.
+            "dirty_files": sorted(l.split(maxsplit=1)[-1]
+                                  for l in status.splitlines() if l.strip())[:20]
+            if sha else []}
+
+
 def run_dir(args, cases) -> Path | None:
     """Choose the output directory, creating or resuming one.
 
@@ -758,6 +787,9 @@ def run_dir(args, cases) -> Path | None:
         from agent import config as _cfg
         (out / "manifest.json").write_text(
             json.dumps({**want, "image": IMAGE,
+                        # WHICH CODE this measured. Recorded because it was not,
+                        # and a run that cannot name its commit proves nothing.
+                        "code": code_version(),
                         "provider": _cfg.PROVIDER,
                         "model": _cfg.OPENAI_MODEL if _cfg.PROVIDER != "anthropic" else _cfg.MODEL,
                         "network": NETWORK,
