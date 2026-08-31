@@ -309,6 +309,70 @@ def _proxy_can_resolve() -> bool:
     return True
 
 
+# How many consecutive probes must succeed before a scored run starts, and how
+# long to wait between them. THREE, because one success is not a state: NVIDIA
+# returned 503 `Service temporarily overloaded` intermittently on 2026-08-31, a
+# single probe passed, and the run launched on the strength of it blocked all
+# three case-runs.
+MODEL_PROBES = 3
+MODEL_PROBE_GAP = 20.0
+
+
+def model_answers(probes: int = MODEL_PROBES, gap: float = MODEL_PROBE_GAP) -> bool:
+    """Whether the model endpoint is answering, and answering CONSISTENTLY.
+
+    _proxy_can_resolve() checks that DNS works. This checks the operation the
+    scored run actually performs, which is the same lesson one level up: a proxy
+    reported Running for two hours while failing every request, and resolving a
+    host is not the same as the model behind it replying.
+
+    RUN IN A CONTAINER ON THE EGRESS NETWORK, not in this process. The first
+    version probed from the host and failed with `no API key` on a machine whose
+    scored runs work perfectly - the host has neither the .env file nor the proxy,
+    so it was probing a different operation from a different place, which is the
+    defect this preflight exists to catch.
+
+    Costs about 40 tokens per probe against a run that costs 250k-1.1M, and buys
+    back an hour of wall clock: at the 1-in-3 success rate measured on 2026-08-31
+    a 45 case-run split would have spent that hour producing mostly blocked rows
+    and a partial set nobody may quote.
+    """
+    cmd = ["docker", "run", "--rm", "--network", NETWORK,
+           "-v", f"{REPO.as_posix()}:/app:ro"]
+    if ENV_FILE.exists():
+        cmd += ["--env-file", str(ENV_FILE)]
+    for name in FORWARDED_ENV:
+        if os.environ.get(name):
+            cmd += ["-e", name]
+    if NETWORK == EGRESS_NET:
+        proxy = f"http://{EGRESS_PROXY}:{PROXY_PORT}"
+        cmd += ["-e", f"HTTPS_PROXY={proxy}", "-e", f"HTTP_PROXY={proxy}", "-e", "NO_PROXY="]
+    cmd += [IMAGE, "python", "-c", _PROBE_SRC, str(probes), str(gap)]
+
+    done = subprocess.run(cmd, capture_output=True, text=True)
+    for line in (done.stdout or "").splitlines():
+        print(f"   {line}", flush=True)
+    if done.returncode != 0 and done.stderr.strip():
+        print(done.stderr.strip()[-300:], file=sys.stderr)
+    return done.returncode == 0
+
+
+_PROBE_SRC = (
+    'import sys, time\n'
+    'from agent.provider import ProviderMisconfigured, ProviderUnavailable, call_model\n'
+    "m=[{'role':'user','content':[{'type':'text','text':'say ok'}]}]\n"
+    'for i in range(int(sys.argv[1])):\n'
+    '    if i: time.sleep(float(sys.argv[2]))\n'
+    '    try:\n'
+    "        call_model(m, 'Answer with one word.', [])\n"
+    '    except ProviderMisconfigured as e:\n'
+    "        print('MISCONFIGURED: %s' % e); raise SystemExit(4)\n"
+    '    except ProviderUnavailable as e:\n'
+    "        print('probe %d: %s' % (i+1, e)); raise SystemExit(3)\n"
+    "    print('probe %d: ok' % (i+1), flush=True)\n"
+)
+
+
 # Scored runs sit on the internal egress network and reach the model only
 # through the proxy. Overridable for local iteration, but outer() refuses to
 # score a split without it - a number with egress silently open is not one.
@@ -948,6 +1012,16 @@ def outer(args) -> int:
               file=sys.stderr)
         return 2
 
+    # AFTER the egress proxy, which the probe itself has to go through, and
+    # BEFORE run_dir, so a refused preflight leaves no directory behind.
+    if not args.no_preflight and not model_answers():
+        print("the model endpoint is not answering consistently; refusing to "
+              "start a scored run.", file=sys.stderr)
+        print("  Nothing was written. Re-run when it recovers, or pass "
+              "--no-preflight to measure anyway and accept blocked rows.",
+              file=sys.stderr)
+        return 2
+
     out = run_dir(args, cases)
     if out is None:
         return 2
@@ -1382,6 +1456,9 @@ def main() -> int:
     p.add_argument("--pace", type=int, default=15,
                    help="seconds between case-runs; the free tier refuses bursts")
     # `continue` is a keyword, hence the dest.
+    p.add_argument("--no-preflight", action="store_true",
+                   help="skip the model probe and measure anyway, accepting "
+                        "blocked rows against a flapping endpoint")
     p.add_argument("--continue", dest="continue_", action="store_true",
                    help="resume the newest run directory instead of starting one")
     p.add_argument("--check-provider", action="store_true",

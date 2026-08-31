@@ -296,6 +296,63 @@ HERE, not that it never would.
 
 ---
 
+## Phase 0 - a preflight that probes the model, not just DNS (2026-08-31)
+
+Offline build, ~40 tokens to run. 550 -> 559 tests.
+
+The harness already refused to start when the egress proxy could not RESOLVE the
+model host, and `_proxy_can_resolve`'s own docstring says why: *running is not the
+same as usable*. It never checked whether the model behind that name replies.
+
+Measured the same day: NVIDIA returned HTTP 503 `Service temporarily overloaded`
+about two times in three. Four separate `real-humanize` invocations spent roughly an
+hour each producing blocked rows, and one of them - before `c87f371` - was scored
+**0/3 for a provider outage**. A 45 case-run split at that success rate would burn an
+hour to produce a partial set nobody may quote.
+
+`model_answers()` makes THREE consecutive minimal calls before a scored run starts and
+refuses if any fails. Three because one success is not a state: a single probe passed
+earlier that day, a run launched on the strength of it, and all three case-runs
+blocked. `--no-preflight` measures anyway for anyone who wants the blocked rows.
+
+### The defect in the first version, and it is the same lesson one level up
+
+The first implementation probed **in the driver's own process** and failed with `no
+API key` on a machine whose scored runs work perfectly. The host has neither the
+`.env` file nor the proxy; a case-run has both, inside a container on the egress
+network. It was probing a different operation, from a different place - which is
+precisely what a preflight exists to avoid.
+
+Now it runs `docker run` with the same image, the same `--env-file`, the same
+`FORWARDED_ENV` and the same `HTTPS_PROXY` a case-run gets. A test asserts the
+command is `docker`, carries `IMAGE`, joins `EGRESS_NET` and sets `HTTPS_PROXY`.
+
+### Verified in both directions
+
+| mutation | result |
+|---|---|
+| keep probing after a failure | 2 failed |
+| `MODEL_PROBES = 1` | **passed** at first - no test asserted the DEFAULT |
+| `MODEL_PROBES = 1`, after adding that test | 1 failed |
+
+The second row is the same class of defect as the cron race test that could not fail:
+every test passed `probes=3` explicitly, so lowering the default defeated the whole
+preflight silently.
+
+### Live
+
+```
+   probe 1: APIError: Service temporarily overloaded
+the model endpoint is not answering consistently; refusing to start a scored run.
+```
+
+105 run directories before, 105 after - a refused preflight leaves nothing behind.
+
+**Phase 0's MEASUREMENT is still outstanding.** The dev guard on streaming has not
+run, because the endpoint will not hold still long enough to start it.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

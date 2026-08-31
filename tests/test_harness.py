@@ -664,3 +664,106 @@ def test_git_failing_does_not_take_the_run_down():
         subprocess.run = original
 
     assert code == {"commit": "UNKNOWN", "dirty": None, "dirty_files": []}
+
+# ====================================== the model preflight (running != usable)
+
+
+class _Done:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_a_steady_endpoint_passes_the_preflight(monkeypatch):
+    import eval_harness
+
+    monkeypatch.setattr(eval_harness.subprocess, "run",
+                        lambda *a, **k: _Done(0, "probe 1: ok\nprobe 2: ok\nprobe 3: ok"))
+    assert eval_harness.model_answers() is True
+
+
+def test_a_flapping_endpoint_is_refused(monkeypatch):
+    """THE TRAP THIS EXISTS FOR. On 2026-08-31 a single probe passed against an
+    endpoint returning 503 about two times in three; the run launched on that and
+    blocked all three case-runs."""
+    import eval_harness
+
+    monkeypatch.setattr(eval_harness.subprocess, "run",
+                        lambda *a, **k: _Done(3, "probe 1: ok\nprobe 2: overloaded"))
+    assert eval_harness.model_answers() is False
+
+
+def test_a_misconfigured_provider_is_refused_too(monkeypatch):
+    import eval_harness
+
+    monkeypatch.setattr(eval_harness.subprocess, "run",
+                        lambda *a, **k: _Done(4, "MISCONFIGURED: no key"))
+    assert eval_harness.model_answers() is False
+
+
+def test_the_probe_runs_WHERE_THE_SCORED_RUN_RUNS(monkeypatch):
+    """The defect this replaced: the first version probed from the host, which has
+    neither the .env file nor the proxy, and failed with `no API key` on a machine
+    whose scored runs work. A preflight must perform the dependent operation, in
+    the place the dependent code performs it."""
+    import eval_harness
+
+    seen = {}
+
+    def fake(cmd, **_kwargs):
+        seen["cmd"] = cmd
+        return _Done(0, "probe 1: ok")
+
+    monkeypatch.setattr(eval_harness.subprocess, "run", fake)
+    monkeypatch.setattr(eval_harness, "NETWORK", eval_harness.EGRESS_NET)
+    eval_harness.model_answers()
+
+    cmd = seen["cmd"]
+    assert cmd[0] == "docker", "the probe must not run in the driver's process"
+    assert eval_harness.IMAGE in cmd, "the same image a case-run uses"
+    assert "--network" in cmd and eval_harness.EGRESS_NET in cmd
+    joined = " ".join(cmd)
+    assert "HTTPS_PROXY" in joined, "through the proxy, like every scored request"
+
+
+def test_the_env_file_is_passed_so_the_key_is_present(monkeypatch):
+    import eval_harness
+
+    seen = {}
+    monkeypatch.setattr(eval_harness.subprocess, "run",
+                        lambda cmd, **k: (seen.setdefault("cmd", cmd), _Done(0))[1])
+    eval_harness.model_answers()
+
+    if eval_harness.ENV_FILE.exists():
+        assert "--env-file" in seen["cmd"]
+
+
+def test_the_DEFAULT_is_more_than_one_probe():
+    """Lowering the default to 1 defeats the whole preflight, and every other test
+    here would still pass. Found by mutating it."""
+    import eval_harness
+
+    assert eval_harness.MODEL_PROBES >= 3
+
+
+def test_the_probe_script_waits_between_probes_and_not_before_the_first():
+    """Back-to-back probes sample one moment, not a state."""
+    import eval_harness
+
+    assert "if i: time.sleep" in eval_harness._PROBE_SRC
+
+
+def test_the_probe_stops_at_the_first_failure():
+    """It must not keep probing a dead endpoint - the point is to be cheap."""
+    import eval_harness
+
+    assert "raise SystemExit(3)" in eval_harness._PROBE_SRC
+
+
+def test_no_preflight_is_an_available_escape_hatch():
+    """Measuring a flapping endpoint deliberately must stay possible."""
+    source = (pathlib.Path(__file__).resolve().parent.parent
+              / "eval" / "harness.py").read_text(encoding="utf-8")
+    assert '"--no-preflight"' in source
+    assert "args.no_preflight" in source
