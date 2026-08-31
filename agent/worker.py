@@ -38,45 +38,20 @@ import sqlite3
 import time
 import uuid
 
-from agent import config
+from agent import config, migrations
 
 # FR-604's five states, enforced by SQLite rather than by convention: a CHECK
 # constraint refuses a typo that a Python-side check would let through.
 STATUSES = ("queued", "running", "awaiting-approval", "done", "failed")
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS tasks (
-    id           TEXT PRIMARY KEY,
-    goal         TEXT NOT NULL,
-    status       TEXT NOT NULL CHECK(status IN
-                   ('queued','running','awaiting-approval','done','failed')),
-    verdict      TEXT,
-    detail       TEXT,
-    submitted_at REAL NOT NULL,
-    started_at   REAL,
-    finished_at  REAL,
-    pid          INTEGER,
-    pid_started  REAL
-);
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, submitted_at);
-CREATE TABLE IF NOT EXISTS schedules (
-    id         TEXT PRIMARY KEY,
-    cron       TEXT NOT NULL,
-    goal       TEXT NOT NULL,
-    next_run   REAL NOT NULL,
-    created_at REAL NOT NULL,
-    last_fired REAL,
-    last_task  TEXT
-);
-"""
-
 
 def _connect() -> sqlite3.Connection:
     config.TASKS_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(config.TASKS_DB), isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.executescript(SCHEMA)
+    # isolation_level=None means autocommit, and migrations.apply() opens its own
+    # transaction per migration - `with conn` still begins one under autocommit.
+    migrations.apply(conn, migrations.TASKS)
     return conn
 
 

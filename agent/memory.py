@@ -31,36 +31,24 @@ import json
 import sqlite3
 import time
 
-from agent import config, policy
+from agent import config, migrations, policy
 
 # Names this module put into policy.RISK, so deactivate() removes exactly
 # those and cannot strip a built-in's classification.
 _REGISTERED: list[str] = []
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS episodes (
-    id        INTEGER PRIMARY KEY,
-    thread_id TEXT NOT NULL,
-    at        REAL NOT NULL,
-    goal      TEXT NOT NULL,
-    verdict   TEXT,
-    answer    TEXT,
-    files     TEXT,
-    commands  TEXT
-);
-CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts
-    USING fts5(goal, answer, files, commands, content='episodes',
-               content_rowid='id', tokenize='porter');
-
-"""
-
-
 def _connect() -> sqlite3.Connection:
-    """Open the store, creating it if absent. Never at import (CE-05)."""
+    """Open the store, creating or upgrading it. Never at import (CE-05).
+
+    Migrated rather than re-declared: CREATE TABLE IF NOT EXISTS is correct for a
+    fresh database and silently wrong for an existing one. Measured - every memory
+    database written before 2026-08-31 still carries the default FTS tokenizer
+    while this code assumes porter.
+    """
     config.MEMORY_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(config.MEMORY_DB))
     conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
+    migrations.apply(conn, migrations.MEMORY)
     return conn
 
 

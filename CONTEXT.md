@@ -805,6 +805,27 @@ re-argue a decision that has already been measured.
                        sandbox, tools risk-classified before exposure (§11
                        amendment)
       memory.py        episodes in SQLite FTS5 + the AGENT.md profile
+      migrations.py    ADDED 2026-08-31, a DEVIATION recorded here to the same
+                       standard as the others. Every store was created with
+                       CREATE TABLE IF NOT EXISTS, which is right for a fresh
+                       database and silently wrong for one already on disk: it
+                       skips the statement, so later schema does not appear and
+                       the failure surfaces as an odd SQL error at some random
+                       call site. Measured, not feared - episodes_fts gained
+                       tokenize=porter and every database written before that
+                       still has the default tokenizer while the code assumes
+                       porter. It is its own file because BOTH memory.py and
+                       worker.py need it, which is CE-01 satisfied by two callers.
+      secrets.py       ADDED 2026-08-31, a DEVIATION recorded here. NFR-203 says
+                       secrets never enter model context; context.redact() only
+                       replaced values found in os.environ, so a workspace .env,
+                       an AWS key in source and a DSN password all reached the
+                       model verbatim - measured, not feared. Its own file
+                       because it is a curated PATTERN LIST rather than logic,
+                       and mixing 40 issuer regexes into context.py would bury
+                       shrink(). Hermes's list, their redactor deliberately NOT
+                       vendored: applied to source it destroys type annotations
+                       (`spent_tokens: int` -> `spent_tokens: ***`).
       skills.py        agentskills.io loading, and extraction at finish
       provider.py      earned by a SECOND implementation: Anthropic plus any
                        OpenAI-compatible endpoint (CE-01)
@@ -812,7 +833,7 @@ re-argue a decision that has already been measured.
       SOUL.md          system prompt, version controlled (NFR-603)
       PLAN.md          the planning instruction, same rule
     tests/             test_policy, test_context, test_reflect are the three §12
-                       allowed. SEVEN stated deviations, each to the same standard
+                       allowed. EIGHT stated deviations, each to the same standard
                        - the component's failure is SILENT or is where consent
                        is decided: test_nodes (every deterministic node, §10),
                        test_cli and test_tui (the approval prompt), test_harness
