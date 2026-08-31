@@ -484,6 +484,59 @@ tests and is described as that rather than as an improvement.
 
 ---
 
+## The preflight was too easily satisfied, and nothing stopped a dead run (2026-08-31)
+
+581 -> 583 tests. Both defects were found by the preflight built this morning
+failing to do its job, twice, in the same hour.
+
+### What happened
+
+```
+attempt 2/16  10:38Z   probe 1 ok   probe 2 ok   probe 3 503
+attempt 4/16  11:09Z   probe 1 ok   probe 2 ok   probe 3 ok   -> guard launched
+11:09-11:20             fix-import run 0  BLOCKED x3
+                        fix-import run 1  BLOCKED x2 ...
+```
+
+The gate passed 3/3 and the endpoint 503'd on the very next request.
+
+### Defect 1 - three probes at 20s samples 45 SECONDS
+
+Probes take 1-3s, so `3 x 20s` is a ~45 second window. NVIDIA held for 45 seconds
+and failed immediately after. **Widened to 5 probes at 45s, a ~3 minute window**,
+with a test asserting the window is at least 120s rather than asserting the two
+constants separately - narrowing either one now fails.
+
+### Defect 2 - and this is the one that cost the time
+
+No gate covers a 30-minute run from its first minute. Once the endpoint died the
+driver ground through case-run after case-run, each burning three attempts and
+three minutes of backoff, to produce a directory of blocked rows and `pass 0/0`.
+**It did that twice, about 45 minutes each.**
+
+`BLOCKED_RUN_LIMIT = 2` aborts the run after two consecutive blocked case-runs. Two
+is enough to tell an outage from one unlucky case, because a case-run that blocks
+has ALREADY failed three attempts with backoff between them.
+
+The counter resets on any completed case-run - `consecutive_blocked + 1 if code ==
+BLOCKED else 0`, not `+=`. A mutation to the accumulating form is caught.
+
+### Verified in both directions
+
+| mutation | result |
+|---|---|
+| narrow the gate back to 3 x 20s | 1 failed |
+| accumulate blocks without resetting | 1 failed |
+
+### The standing lesson
+
+**A preflight samples a moment; a run occupies an hour.** Gating the start is
+necessary and never sufficient - the run needs its own abort. This project already
+had the first half (`_proxy_can_resolve`, then `model_answers`) and neither noticed
+that the second was missing.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

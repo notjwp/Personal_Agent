@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, web search, measurement rig. **581 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, web search, measurement rig. **583 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -128,6 +128,10 @@ Ordered by how often they have caught something.
   `AGENT_EGRESS` defaulted to `"restricted"` and nothing ever set it, so every trace row ever
   written claimed restricted egress. Where a fallback describes what was measured, it says
   `UNKNOWN`.
+- **A preflight samples a moment; a run occupies an hour.** Gating the start is
+  necessary and never sufficient. A model probe passed 3/3 and the endpoint 503'd on
+  the very next request; the driver then ground through every case-run producing
+  blocked rows. Gate the start AND abort the run.
 - **A blocked connection is not proof of a boundary.** "Could not resolve host" is DNS failing;
   re-test by raw IP.
 - **"Running" is not "usable".** A proxy reported `Running: true` for two hours while failing every
@@ -215,7 +219,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 581 tests, no API key, no network
+pytest                            # 583 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

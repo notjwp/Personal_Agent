@@ -310,12 +310,18 @@ def _proxy_can_resolve() -> bool:
 
 
 # How many consecutive probes must succeed before a scored run starts, and how
-# long to wait between them. THREE, because one success is not a state: NVIDIA
-# returned 503 `Service temporarily overloaded` intermittently on 2026-08-31, a
-# single probe passed, and the run launched on the strength of it blocked all
-# three case-runs.
-MODEL_PROBES = 3
-MODEL_PROBE_GAP = 20.0
+# long to wait between them. One success is not a state: NVIDIA returned 503
+# `Service temporarily overloaded` intermittently on 2026-08-31, a single probe
+# passed, and the run launched on the strength of it blocked all three case-runs.
+#
+# WIDENED the same day, because three probes were not enough either. Three at 20s
+# samples a ~45 SECOND window; the endpoint held for 45 seconds, passed 3/3, and
+# 503'd on the very next request. Five at 45s samples ~3 minutes.
+#
+# No gate can cover a 30-minute run from its first minute, which is what
+# BLOCKED_RUN_LIMIT below is for.
+MODEL_PROBES = 5
+MODEL_PROBE_GAP = 45.0
 
 
 def model_answers(probes: int = MODEL_PROBES, gap: float = MODEL_PROBE_GAP) -> bool:
@@ -989,6 +995,18 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
     return subprocess.run(cmd, check=False).returncode
 
 
+# Consecutive case-runs that may block before the whole run is abandoned.
+#
+# Measured 2026-08-31: the endpoint died immediately after passing the preflight
+# and the driver ground through case-run after case-run, each burning three
+# attempts and three minutes of backoff, to produce a directory of blocked rows
+# and `pass 0/0`. It did that twice, for about 45 minutes each time.
+#
+# Two is enough to distinguish an outage from one unlucky case: a case-run that
+# blocks has already failed THREE attempts with backoff between them.
+BLOCKED_RUN_LIMIT = 2
+
+
 def outer(args) -> int:
     cases = [
         c for c in load_cases()
@@ -1033,6 +1051,7 @@ def outer(args) -> int:
         print(f"{len(already)} of {len(planned)} case-runs already complete; "
               f"{len(todo)} to go")
 
+    consecutive_blocked = 0
     for position, (case, run_index) in enumerate(todo):
         print(f"-> {case['id']} run {run_index}", flush=True)
         for attempt in range(BLOCKED_RETRIES + 1):
@@ -1060,6 +1079,17 @@ def outer(args) -> int:
             print(f"   {case['id']} run {run_index}: NO ROW WRITTEN (exit {code}) "
                   f"- not counted. Re-run with --continue.",
                   file=sys.stderr, flush=True)
+
+        # A case-run that blocked has already failed every attempt with backoff
+        # between them. Several in a row is an outage, not bad luck, and grinding
+        # through the rest produces a directory of blocked rows and nothing else.
+        consecutive_blocked = consecutive_blocked + 1 if code == BLOCKED else 0
+        if consecutive_blocked >= BLOCKED_RUN_LIMIT:
+            print(f"{chr(10)}aborting: {consecutive_blocked} case-runs blocked in a "
+                  f"row. The provider is down, not the agent.", file=sys.stderr)
+            print("  Nothing further was attempted. Re-run with --continue when "
+                  "it recovers.", file=sys.stderr)
+            break
 
         if args.pace and position < len(todo) - 1:
             time.sleep(args.pace)

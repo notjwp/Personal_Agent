@@ -739,12 +739,15 @@ def test_the_env_file_is_passed_so_the_key_is_present(monkeypatch):
         assert "--env-file" in seen["cmd"]
 
 
-def test_the_DEFAULT_is_more_than_one_probe():
-    """Lowering the default to 1 defeats the whole preflight, and every other test
-    here would still pass. Found by mutating it."""
+def test_the_DEFAULT_gate_samples_MINUTES_not_seconds():
+    """Lowering the default defeats the whole preflight and every other test here
+    would still pass. Widened after 3 probes at 20s - a ~45 SECOND window - passed
+    3/3 and the endpoint 503'd on the very next request."""
     import eval_harness
 
-    assert eval_harness.MODEL_PROBES >= 3
+    assert eval_harness.MODEL_PROBES >= 5
+    window = (eval_harness.MODEL_PROBES - 1) * eval_harness.MODEL_PROBE_GAP
+    assert window >= 120, f"a {window}s window is too narrow to see flapping"
 
 
 def test_the_probe_script_waits_between_probes_and_not_before_the_first():
@@ -767,3 +770,27 @@ def test_no_preflight_is_an_available_escape_hatch():
               / "eval" / "harness.py").read_text(encoding="utf-8")
     assert '"--no-preflight"' in source
     assert "args.no_preflight" in source
+
+# ===================================== aborting a run against a dead endpoint
+
+
+def test_the_run_aborts_after_consecutive_blocks():
+    """THE 45 MINUTES THIS EXISTS FOR. Twice on 2026-08-31 the endpoint died right
+    after the preflight passed, and the driver ground through every case-run -
+    three attempts and three minutes of backoff each - to produce a directory of
+    blocked rows and `pass 0/0`."""
+    import eval_harness
+
+    assert eval_harness.BLOCKED_RUN_LIMIT >= 1
+    source = (pathlib.Path(__file__).resolve().parent.parent
+              / "eval" / "harness.py").read_text(encoding="utf-8")
+    assert "consecutive_blocked >= BLOCKED_RUN_LIMIT" in source
+    assert "consecutive_blocked = consecutive_blocked + 1 if code == BLOCKED else 0"         in source, "a completed case-run must RESET the counter, not accumulate"
+
+
+def test_the_limit_is_small_enough_to_be_worth_having():
+    """A case-run that blocked already failed BLOCKED_RETRIES+1 attempts with
+    backoff between them, so the limit counts outages, not unlucky cases."""
+    import eval_harness
+
+    assert eval_harness.BLOCKED_RUN_LIMIT <= 3
