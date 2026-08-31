@@ -24,3 +24,4 @@ __pycache__/
 # hermes-agent/.git makes git skip it. Delete that and 928 MB becomes
 # committable.
 hermes_copy/
+vellum-assistant-main/

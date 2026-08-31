@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, web search, measurement rig. **544 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, web search, measurement rig. **550 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -83,6 +83,15 @@ Ordered by how often they have caught something.
   Fuzzy matching stays unearned.
 - **Each extra independent bug costs ~2.8 turns.** Difficulty on that axis is a budget question,
   not a reasoning one.
+
+- **A number that improves for a reason you have not identified is not a result.** A
+  hybrid retrieval build measured 6/6 against a 5/6 baseline and the gain was a bug:
+  the query builder ranked candidate words by document frequency ascending, so words
+  appearing in NO episode sorted first and ate the slots. The dead terms shortened
+  the query, and the shortening was the whole effect. Fixed, it scored 3/6.
+- **A probe against the answer set is not a probe against the corpus.** An embedding
+  ranked the right episode 1 of 6 among the six known targets, and never reached the
+  top 3 among the 35 episodes it would actually compete with.
 
 **Cost**
 
@@ -202,7 +211,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 544 tests, no API key, no network
+pytest                            # 550 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

@@ -209,6 +209,93 @@ the check, and it costs roughly a day of the free tier.
 
 ---
 
+## Vellum's retrieval stack, ported and mostly reverted (2026-08-31)
+
+Offline, no quota. The user asked for Vellum's four-channel hybrid, memory graph,
+spreading activation and cross-encoder rerank. All of it was built. Almost none of
+it survived measurement, and the one thing that did was free.
+
+### Headline
+
+| configuration | recall@3 | recall@1 | image |
+|---|---|---|---|
+| as shipped that morning | 2/6 | 0/6 | 593 MB |
+| **query fix alone** | **5/6** | **4/6** | **594 MB** |
+| query fix + dense lane | 5/6 | 4/6 | 1.04 GB |
+| dense lane alone | 3/6 | 0/6 | 1.04 GB |
+| Vellum's shape: 4 lanes + graph + rerank | **1/6** | 0/6 | 1.22 GB |
+
+**The faithful port scored worse than the code it replaced.** Kept: the query fix.
+Reverted: onnxruntime, tokenizers, numpy, bge-small-en-v1.5, `agent/embeddings.py`,
+the vector table, the edge table, spreading activation and the cross-encoder.
+
+### The ablation, which is the whole value of this entry
+
+| lane | recall@3 |
+|---|---|
+| sparse over `goal` | 4/6 |
+| sparse over `answer` | **0/6** |
+| dense over `body` | 1/6 |
+| dense over `summary` | 3/6 |
+| all four fused | 2/6 |
+| + spreading activation | 2/6, no change |
+| + cross-encoder rerank | **1/6, worse** |
+
+Why each failed here and not there:
+
+- **`answer`-sparse is 0/6** because our `answer` is a terse verdict where theirs is
+  a generated summary paragraph. Same lane, different data, no signal.
+- **The cross-encoder makes it worse** because ms-marco ranks web passages by
+  relevance to a search query. An episode is not a passage and a goal is not a query.
+- **Spreading activation changes nothing** at 36 episodes. It is built for a corpus
+  where the graph is denser than the direct match, and ours is not.
+
+### Two defects found in my own work, both by measuring rather than reasoning
+
+**The 6/6 that was not real.** An intermediate result showed sparse+dense at 6/6 and
+was reported as beating keyword-only. It rested on a bug: `_terms` sorted candidate
+words by document frequency ASCENDING, which puts `df == 0` first - words appearing
+in no episode at all. Those dead terms ate query slots, accidentally making the query
+shorter and rarer, which is what actually helped. Fixing the bug dropped it to 3/6;
+fixing it *and* re-deriving the term count reached 5/6 with no dense lane at all.
+
+A number that improves for a reason you have not identified is not yet a result.
+
+**The isolated probe that proved nothing.** `profile-units` - "two seconds" against
+"duration in centiseconds", sharing one word - ranked 1 of 6 in a direct embedding
+comparison, and that was taken as evidence dense retrieval would close it. Against
+the real 35-episode corpus it never enters the top 3 at any depth from 5 to 35. A
+six-way comparison says nothing about a thirty-five-way one, and `profile-units`
+remains the single miss in every configuration tried.
+
+### What actually moved the number
+
+Two changes to the QUERY, neither touching the index:
+
+1. **Keep only the rarest terms.** `_terms` OR-ed every word over two characters, so
+   a goal matching `write`, `file`, `workspace` and `called` outranked one matching
+   `Quartzite` and `deploy`. Swept after the `df == 0` fix: 2 and 3 terms both score
+   5/6, 1 and 4+ score 4/6.
+2. **Match `goal` alone, not the whole row.** 5/6 against 4/6. A query's rare words
+   turn up in some other episode's answer or command list and outrank the episode
+   whose GOAL is the thing being recalled.
+
+### FR-408 and §11 are unchanged
+
+§11 forbids vector search "before keyword recall has been measured and found
+wanting". It was measured and found wanting only where the QUERY was wrong. Fixed,
+keyword recall matches everything the dense lane could do. FR-408 stays closed as
+NOT JUSTIFIED, now with an ablation behind it rather than a cost argument.
+
+The trigger to reopen is unchanged and still unmet: a corpus where dense retrieval
+beats a correctly-constructed keyword query. 36 goals is not that corpus, and the
+honest caveat is that six pairs is a small sample - this says dense buys nothing
+HERE, not that it never would.
+
+550 tests, green with the models present and absent.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

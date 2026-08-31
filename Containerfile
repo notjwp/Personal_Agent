@@ -61,6 +61,11 @@ RUN pip install --no-cache-dir "textual==8.0.1" "rich==14.3.3"
 # no-index, so nothing installs at run time.
 RUN pip install --no-cache-dir "ddgs==9.16.0"
 
+# Semantic retrieval was built here and REVERTED. onnxruntime, tokenizers,
+# numpy and bge-small-en-v1.5 added 450 MB and, measured on the six recall
+# pairs, changed the score by nothing: 5/6 fused, 5/6 without. The win was in
+# the QUERY - see memory._terms. eval/CHANGELOG.md carries the ablation.
+
 # The `missing-dep` case must be solvable with networking off: stage the wheel
 # but deliberately do NOT install it.
 RUN pip download --no-cache-dir tabulate -d /wheels

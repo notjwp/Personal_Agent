@@ -12,9 +12,15 @@ Two stores, because they answer two different questions:
              the `remember` tool. §12 names the file and says "written by the
              agent"; a tool is how that stays true without `finish` calling a model.
 
-**Keyword search only.** FR-408 gates semantic retrieval on "a measured shortfall
-in keyword recall" and §11 forbids vectors until keyword recall is "measured and
-found wanting". This module is that measurement's subject, not its conclusion.
+**Keyword search only, and now for a measured reason rather than an untested**
+**gate.** FR-408 asked for semantic retrieval only on "a measured shortfall in
+keyword recall". Both halves were measured (eval/CHANGELOG.md): recall@3 was
+2/6, and the shortfall was in the QUERY - `_terms` OR-ed every word, so a goal
+matching eight corpus-wide words outranked one matching two rare ones. Fixing
+that alone reached 5/6, free.
+
+A dense lane over bge-small was then built and reverted: fused it scored 5/6,
+the same score with the same single miss, for 450 MB of image.
 
 CE-05: nothing here runs at import, and the database is created on first use.
 NFR-602: every function below is testable with no API key and no network.
@@ -43,7 +49,9 @@ CREATE TABLE IF NOT EXISTS episodes (
     commands  TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts
-    USING fts5(goal, answer, files, commands, content='episodes', content_rowid='id');
+    USING fts5(goal, answer, files, commands, content='episodes',
+               content_rowid='id', tokenize='porter');
+
 """
 
 
@@ -89,29 +97,87 @@ def write_episode(thread_id: str, goal: str, verdict: str | None, answer: str,
         conn.close()
 
 
-def _terms(text: str) -> str:
-    """An FTS5 MATCH query from free text, defensively.
+def _words(text: str) -> list[str]:
+    """Alphanumeric words over two characters, lowercased, in order."""
+    return [w for w in "".join(c if c.isalnum() else " " for c in text).lower().split()
+            if len(w) > 2]
 
-    User text is full of characters FTS5 treats as syntax - quotes, hyphens,
-    parentheses, `*` - and one of them turns a lookup into a SyntaxError at exactly
-    the moment recall was supposed to happen. Every word is requoted as a literal
-    and OR-ed, so a partial overlap still returns something rather than nothing.
+
+def _document_frequency() -> dict:
+    """How many episodes each word appears in. Cheap at this scale, and the
+    thing that makes a query discriminate: a word in most episodes carries no
+    information about which one is meant."""
+    df: dict = {}
+    total = 0
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT goal, answer FROM episodes").fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        total += 1
+        for word in set(_words(f'{row["goal"]} {row["answer"] or ""}')):
+            df[word] = df.get(word, 0) + 1
+    return {"df": df, "n": total}
+
+
+def _terms(text: str, stats: dict | None = None) -> str:
+    """An FTS5 MATCH query from free text, weighted by how rare each word is.
+
+    Measured: OR-ing every word scored recall@3 of 2/6 on a 36-goal corpus,
+    because a goal matching eight corpus-wide words - write, file, workspace,
+    called - outranked the one matching two rare ones. Keeping only the rarest
+    two scored 5/6.
+
+    User text is also full of characters FTS5 treats as syntax, so every word is
+    requoted as a literal and OR-ed: a partial overlap returns something.
     """
-    words = [w for w in "".join(c if c.isalnum() else " " for c in text).split()
-             if len(w) > 2]
+    words = list(dict.fromkeys(_words(text)))
+    if stats and stats["n"]:
+        df = stats["df"]
+        total = stats["n"]
+        # Only words the corpus actually contains can rank anything. Sorting the
+        # rest by rarity puts df == 0 FIRST - terms that match nothing - which
+        # returned an empty result on any corpus small enough that every real
+        # term appears everywhere. Found by the offline suite, not by the
+        # 36-goal measurement, where every target word had df >= 1.
+        present = [w for w in words if df.get(w, 0) > 0]
+        if present:
+            # A word in EVERY episode discriminates nothing, but dropping it is
+            # only safe while something else survives.
+            discriminating = [w for w in present if df[w] < total] or present
+            words = sorted(discriminating, key=lambda w: df[w])[:QUERY_TERMS]
     return " OR ".join(f'"{w}"' for w in words[:40])
 
 
+# How many of the rarest query words survive into the MATCH. Swept once the
+# df == 0 defect was fixed: 2 and 3 both score 5/6, 1 and 4+ score 4/6.
+QUERY_TERMS = 2
+
+
 def search(query: str, limit: int | None = None) -> list[dict]:
-    """Past episodes matching `query`, most relevant first. Keyword only."""
-    terms = _terms(query)
+    """Past episodes matching `query`, most relevant first. Keyword only.
+
+    A dense lane over bge-small embeddings was built, measured and REVERTED. On
+    the six recall pairs it scored 5/6 fused and 3/6 alone, against 5/6 for this
+    function on its own - the same score with the same single miss, at every
+    depth from 5 to 35. It cost 450 MB of image for nothing. The four-channel
+    shape it came from scored 1/6. eval/CHANGELOG.md carries the ablation.
+
+    What DID move the number was the query, not the index: see `_terms`.
+    """
+    terms = _terms(query, _document_frequency())
     if not terms:
         return []
     conn = _connect()
     try:
         rows = conn.execute(
+            # MATCHED ON `goal` ALONE, not the whole row. Measured: matching every
+            # column scores 4/6 against 5/6, because a query's rare words turn up
+            # in some other episode's answer or command list and outrank the
+            # episode whose GOAL is the thing being recalled.
             "SELECT e.* FROM episodes_fts f JOIN episodes e ON e.id = f.rowid"
-            " WHERE episodes_fts MATCH ? ORDER BY bm25(episodes_fts), e.at DESC"
+            " WHERE f.goal MATCH ? ORDER BY bm25(episodes_fts), e.at DESC"
             " LIMIT ?",
             (terms, limit if limit is not None else config.MEMORY_EPISODES)).fetchall()
         return [dict(r) for r in rows]
@@ -121,7 +187,6 @@ def search(query: str, limit: int | None = None) -> list[dict]:
         return []
     finally:
         conn.close()
-
 
 def profile() -> str:
     """The durable profile, or empty when nothing has been recorded."""
