@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 import uuid
 
 from langgraph.types import Command
@@ -261,6 +262,9 @@ def list_threads(app) -> int:
     return 0
 
 
+TIME_FMT = "%Y-%m-%d %H:%M"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent")
     parser.add_argument("goal", nargs="?", help="what to do, in plain language")
@@ -272,6 +276,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="queue a task and print its id, without running it")
     parser.add_argument("--worker", action="store_true",
                         help="drain the task queue; runs until interrupted")
+    parser.add_argument("--schedule", nargs=2, metavar=("CRON", "GOAL"),
+                        help="run GOAL on a cron schedule, e.g. '0 9 * * 1'")
+    parser.add_argument("--schedules", action="store_true",
+                        help="show cron schedules, soonest first")
+    parser.add_argument("--unschedule", metavar="SCHEDULE_ID",
+                        help="remove a cron schedule")
     parser.add_argument("--tasks", action="store_true",
                         help="show queued and finished tasks")
     args = parser.parse_args(argv)
@@ -344,6 +354,35 @@ def _dispatch(args, app, parser) -> int:
 
     if args.tasks:
         return list_tasks()
+
+    if args.schedule:
+        expr, goal = args.schedule
+        try:
+            sched_id = worker.schedule(expr, goal)
+        except ValueError as exc:
+            print(f"bad schedule: {exc}", file=sys.stderr)
+            return 2
+        due = worker.next_run(expr, time.time())
+        print(f"scheduled {sched_id}, first run {time.strftime(TIME_FMT, time.localtime(due))}")
+        print("run it with:   python -m agent --worker")
+        return 0
+
+    if args.schedules:
+        rows = worker.schedules()
+        if not rows:
+            print("no schedules")
+            return 0
+        for row in rows:
+            nxt = time.strftime(TIME_FMT, time.localtime(row["next_run"]))
+            print(f'{row["id"]}  {row["cron"]:<16} next {nxt}  {row["goal"]}')
+        return 0
+
+    if args.unschedule:
+        if not worker.unschedule(args.unschedule):
+            print(f"no such schedule: {args.unschedule}", file=sys.stderr)
+            return 1
+        print(f"removed {args.unschedule}")
+        return 0
 
     if args.submit:
         # FR-601: returns immediately. The id IS the thread id, which is what

@@ -91,6 +91,63 @@ change to `_terms()` whenever a corpus exists that would show it.
 
 ---
 
+## Stage D1 - FR-605, cron schedules (2026-08-31)
+
+Offline, no quota. 510 -> 528 tests.
+
+### What was consulted, and what was actually taken
+
+Hermes's `cron/` is 14,880 lines across 12 modules, `scheduler.py` alone 7,644. Two
+things came out of reading it and nothing else did:
+
+**The ordering, which is the whole correctness argument.** `scheduler.py:7360` advances
+`next_run_at` for every due job BEFORE any execution begins, and says why: *this
+preserves at-most-once semantics*. Ours does the same - `fire()` advances `next_run`
+guarded on the value it just read, and only the writer whose rowcount is 1 calls
+`submit()`. A worker polling every two seconds would otherwise enqueue a task per poll
+for the whole minute the schedule is due.
+
+**`croniter` did NOT come across, and could not.** `pip.conf` sets `no-index`, so a
+library not baked into the image does not exist - the same wall that stopped their
+ripgrep-backed `search_files`. Five fields of `*`, `*/n`, `a-b` and `a,b` is 25 lines.
+
+Their execution ledger was already borrowed once, in `worker.py`'s header.
+
+### The shape
+
+A `schedules` table beside `tasks`, and `run_worker()`'s existing poll calls `fire()`.
+Schedules enqueue through `submit()`; the worker stays the only thing that executes a
+task. A second execution path is how two components come to disagree about what ran.
+
+### The test that could not fail, and the fix
+
+**Recorded because it nearly shipped.** The first race test asserted the right property
+and could not detect its own violation. Inverting the ordering in `fire()` - submit
+first, advance after, exactly the bug Hermes's comment warns about - left **51 of 51
+passing**.
+
+The reason is worth keeping: the test called `fire()` twice, and the second call found
+no due row at all, so it never reached the branch it was written to protect. It was
+testing that an advanced schedule is not due, which was never in question.
+
+The replacement interleaves for real - `next_run` is monkeypatched to advance the row
+from underneath, standing in for the other worker between this one's SELECT and UPDATE.
+Re-run against the same inverted ordering it **fails**, naming the duplicate submit.
+
+Verified in both directions, which is the only reason the first version was caught:
+correct code passes 51/51, inverted code fails 1.
+
+### Verified
+
+| | |
+|---|---|
+| offline suite, container | **528 passed** |
+| `next_run` against real weekdays | `0 9 * * 1`, `*/15 * * * *`, `0 0 1 * *`, `30 3 * * 0` all correct |
+| CLI round-trip | schedule, list, unschedule, unschedule-again |
+| malformed expression | refused in `schedule()` before the insert, so `fire()` cannot trip on a stored row that no longer parses |
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

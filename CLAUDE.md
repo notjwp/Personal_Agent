@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, web search, measurement rig. **510 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, web search, measurement rig. **528 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -193,12 +193,16 @@ python -m agent --submit "goal"   # queue a task, print its id, return immediate
 python -m agent --worker          # drain the queue; resumes anything a dead worker left
 python -m agent --tasks           # queued / running / awaiting-approval / done / failed
 
+python -m agent --schedule "0 9 * * 1" "goal"   # run it every Monday at 09:00
+python -m agent --schedules       # schedules, soonest first
+python -m agent --unschedule <id> # remove one
+
 python eval/harness.py --split dev --runs 3 --pace 20              # a baseline
 python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an interrupted one
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 510 tests, no API key, no network
+pytest                            # 528 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

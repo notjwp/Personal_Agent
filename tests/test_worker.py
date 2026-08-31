@@ -436,3 +436,183 @@ def test_amending_keeps_the_arguments_it_was_not_given(tmp_workspace):
     assert amended["input"]["path"] == "a.py"
     assert amended["input"]["old_string"] == "x"
     assert amended["input"]["new_string"] == "z"
+
+# ===================================================================== FR-605
+
+
+def test_the_five_syntaxes_standard_cron_has(tmp_workspace):
+    from agent import worker
+
+    assert worker._field("*", 0, 59) == set(range(60))
+    assert worker._field("*/15", 0, 59) == {0, 15, 30, 45}
+    assert worker._field("9-17", 0, 23) == set(range(9, 18))
+    assert worker._field("1,3,5", 0, 6) == {1, 3, 5}
+    assert worker._field("0-30/10", 0, 59) == {0, 10, 20, 30}
+
+
+@pytest.mark.parametrize("expr", ["* * * *", "* * * * * *", "60 * * * *",
+                                  "* 24 * * *", "*/0 * * * *", "not-cron"])
+def test_a_malformed_expression_is_refused_not_stored(tmp_workspace, expr):
+    """Validation happens in schedule() BEFORE the insert, so a bad expression
+    cannot become a row that fire() trips over every poll."""
+    from agent import worker
+
+    with pytest.raises(ValueError):
+        worker.schedule(expr, "anything")
+    assert worker.schedules() == []
+
+
+def test_next_run_lands_on_the_next_matching_minute(tmp_workspace):
+    import time
+
+    from agent import worker
+
+    monday_0800 = time.mktime((2026, 8, 31, 8, 0, 0, 0, 0, -1))
+    got = time.localtime(worker.next_run("30 9 * * *", monday_0800))
+    assert (got.tm_hour, got.tm_min) == (9, 30)
+    assert got.tm_mday == 31
+
+
+def test_next_run_is_strictly_after_so_a_slot_cannot_rematch(tmp_workspace):
+    """The whole at-most-once property rests on this: if next_run could return
+    the instant it was given, a schedule would fire forever inside one minute."""
+    import time
+
+    from agent import worker
+
+    on_the_minute = time.mktime((2026, 8, 31, 9, 30, 0, 0, 0, -1))
+    assert worker.next_run("30 9 * * *", on_the_minute) > on_the_minute
+
+
+def test_day_of_week_uses_crons_numbering_not_pythons(tmp_workspace):
+    """Cron calls Sunday 0; struct_time calls Monday 0. Getting this wrong fires
+    everything one day early and nothing complains."""
+    import time
+
+    from agent import worker
+
+    saturday = time.mktime((2026, 8, 29, 12, 0, 0, 0, 0, -1))
+    sunday = time.localtime(worker.next_run("0 9 * * 0", saturday))
+    assert sunday.tm_wday == 6, "cron 0 must be Sunday"
+    monday = time.localtime(worker.next_run("0 9 * * 1", saturday))
+    assert monday.tm_wday == 0
+
+
+def test_an_impossible_date_raises_rather_than_spinning(tmp_workspace):
+    from agent import worker
+
+    with pytest.raises(ValueError):
+        worker.next_run("0 0 30 2 *", 0.0)
+
+
+def test_a_due_schedule_enqueues_exactly_one_task(tmp_workspace):
+    import time
+
+    from agent import worker
+
+    sched_id = worker.schedule("* * * * *", "the recurring goal")
+    fired = worker.fire(now=time.time() + 3600)
+
+    assert len(fired) == 1
+    queued = [t for t in worker.tasks() if t["goal"] == "the recurring goal"]
+    assert len(queued) == 1 and queued[0]["status"] == "queued"
+    assert worker.get(fired[0])["id"] == worker.schedules()[0]["last_task"]
+    assert worker.schedules()[0]["id"] == sched_id
+
+
+def test_polling_again_in_the_same_slot_does_not_fire_twice(tmp_workspace):
+    """THE TRAP THIS ORDERING EXISTS FOR, and Hermes states it: next_run is
+    advanced BEFORE the submit. A worker polling every two seconds would
+    otherwise enqueue a task per poll for the whole minute."""
+    import time
+
+    from agent import worker
+
+    worker.schedule("* * * * *", "once please")
+    later = time.time() + 3600
+    first = worker.fire(now=later)
+    second = worker.fire(now=later)
+
+    assert len(first) == 1
+    assert second == [], "the slot was already claimed"
+
+
+def test_a_schedule_not_yet_due_enqueues_nothing(tmp_workspace):
+    from agent import worker
+
+    worker.schedule("0 3 * * *", "much later")
+    assert worker.fire(now=0.0) == []
+    assert worker.tasks() == []
+
+
+def test_a_worker_that_loses_the_race_submits_NOTHING(tmp_workspace, monkeypatch):
+    """THE TRAP THIS ORDERING EXISTS FOR, and the reason submit() comes after the
+    advance rather than before it.
+
+    Interleaved for real: this fire() reads the due row, and another worker
+    advances it before this one gets to. The guard on the value just read is the
+    only thing that stops a duplicate task, so the loser must submit nothing.
+    """
+    import time
+
+    from agent import worker
+
+    worker.schedule("* * * * *", "contested")
+    later = time.time() + 3600
+    row = worker.schedules()[0]
+
+    submitted = []
+    monkeypatch.setattr(worker, "submit", lambda goal: submitted.append(goal) or "x")
+
+    real_next_run = worker.next_run
+
+    def steal(expr, after):
+        """Stand in for the other worker, between this one's SELECT and UPDATE."""
+        with worker._connect() as conn:
+            conn.execute("UPDATE schedules SET next_run=? WHERE id=?",
+                         (later + 999, row["id"]))
+        return real_next_run(expr, after)
+
+    monkeypatch.setattr(worker, "next_run", steal)
+
+    assert worker.fire(now=later) == []
+    assert submitted == [], "a lost race must not enqueue anything"
+
+
+def test_a_schedule_can_be_removed(tmp_workspace):
+    import time
+
+    from agent import worker
+
+    sched_id = worker.schedule("* * * * *", "temporary")
+    assert worker.unschedule(sched_id) is True
+    assert worker.unschedule(sched_id) is False
+    assert worker.fire(now=time.time() + 3600) == []
+
+
+def test_schedules_go_through_submit_not_a_second_execution_path(tmp_workspace,
+                                                                 monkeypatch):
+    """§12 keeps one path to running a task. A schedule that executed directly
+    would be a second, and two paths are how components come to disagree about
+    what ran."""
+    import time
+
+    from agent import worker
+
+    seen = []
+    real = worker.submit
+    monkeypatch.setattr(worker, "submit", lambda goal: seen.append(goal) or real(goal))
+    worker.schedule("* * * * *", "through the queue")
+    worker.fire(now=time.time() + 3600)
+
+    assert seen == ["through the queue"]
+
+
+def test_the_worker_loop_polls_schedules(tmp_workspace, monkeypatch):
+    from agent import worker
+
+    calls = {"n": 0}
+    monkeypatch.setattr(worker, "fire", lambda: calls.__setitem__("n", calls["n"] + 1) or [])
+    worker.run_worker(app=None, once=True)
+
+    assert calls["n"] == 1, "a poll that skips fire() never triggers a schedule"

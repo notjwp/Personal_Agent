@@ -59,6 +59,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     pid_started  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, submitted_at);
+CREATE TABLE IF NOT EXISTS schedules (
+    id         TEXT PRIMARY KEY,
+    cron       TEXT NOT NULL,
+    goal       TEXT NOT NULL,
+    next_run   REAL NOT NULL,
+    created_at REAL NOT NULL,
+    last_fired REAL,
+    last_task  TEXT
+);
 """
 
 
@@ -216,6 +225,123 @@ def recover() -> int:
     return changed
 
 
+# ------------------------------------------------------------------ FR-605
+
+FIELDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))
+
+
+def _field(spec: str, low: int, high: int) -> set[int]:
+    """The set of values one cron field matches.
+
+    Written rather than taken from croniter, which Hermes uses: pip.conf sets
+    no-index, so a library not baked into the image does not exist. Five fields
+    of `*`, `*/n`, `a-b` and `a,b` is the whole of standard cron syntax.
+    """
+    matched: set[int] = set()
+    for part in spec.split(","):
+        step = 1
+        if "/" in part:
+            part, _, raw = part.partition("/")
+            step = int(raw)
+            if step < 1:
+                raise ValueError(f"step must be positive: {spec!r}")
+        if part in ("*", ""):
+            first, last = low, high
+        elif "-" in part.lstrip("-"):
+            a, _, b = part.partition("-")
+            first, last = int(a), int(b)
+        else:
+            first = last = int(part)
+        if not (low <= first <= last <= high):
+            raise ValueError(f"{part!r} is outside {low}-{high}")
+        matched.update(range(first, last + 1, step))
+    return matched
+
+
+def parse_cron(expr: str) -> list[set[int]]:
+    """Five fields: minute, hour, day-of-month, month, day-of-week."""
+    parts = expr.split()
+    if len(parts) != 5:
+        raise ValueError(f"a cron expression has five fields, got {len(parts)}: {expr!r}")
+    return [_field(p, low, high) for p, (low, high) in zip(parts, FIELDS)]
+
+
+def next_run(expr: str, after: float) -> float:
+    """The first whole minute strictly after `after` that `expr` matches.
+
+    Searched a minute at a time over four years, which covers 29 February. An
+    expression matching nothing - 30 February - raises rather than looping.
+    """
+    minute, hour, dom, month, dow = parse_cron(expr)
+    when = time.localtime(after + 60)
+    stamp = time.mktime((when.tm_year, when.tm_mon, when.tm_mday,
+                         when.tm_hour, when.tm_min, 0, 0, 0, -1))
+    for _ in range(4 * 366 * 24 * 60):
+        t = time.localtime(stamp)
+        # Cron numbers Sunday 0; struct_time numbers Monday 0.
+        if (t.tm_min in minute and t.tm_hour in hour and t.tm_mon in month
+                and t.tm_mday in dom and (t.tm_wday + 1) % 7 in dow):
+            return stamp
+        stamp += 60
+    raise ValueError(f"{expr!r} never matches")
+
+
+def schedule(expr: str, goal: str) -> str:
+    """Register a recurring task and return its id (FR-605)."""
+    now = time.time()
+    due = next_run(expr, now)            # validates expr before anything is written
+    sched_id = uuid.uuid4().hex[:8]
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO schedules (id, cron, goal, next_run, created_at)"
+            " VALUES (?,?,?,?,?)", (sched_id, expr, goal, due, now))
+    return sched_id
+
+
+def schedules() -> list[dict]:
+    with _connect() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM schedules ORDER BY next_run")]
+
+
+def unschedule(sched_id: str) -> bool:
+    with _connect() as conn:
+        return conn.execute("DELETE FROM schedules WHERE id=?",
+                            (sched_id,)).rowcount == 1
+
+
+def fire(now: float | None = None) -> list[str]:
+    """Enqueue one task per schedule now due. Returns the task ids.
+
+    Hermes's ordering, and it is the whole correctness argument: next_run is
+    ADVANCED FIRST, guarded on the value just read, and only the writer whose
+    rowcount is 1 submits. Two workers polling the same second produce one task,
+    not two, and a submit that follows cannot fire the same slot twice.
+    """
+    now = time.time() if now is None else now
+    fired = []
+    with _connect() as conn:
+        due = conn.execute("SELECT * FROM schedules WHERE next_run <= ?",
+                           (now,)).fetchall()
+    for row in due:
+        try:
+            following = next_run(row["cron"], now)
+        except ValueError:
+            continue                     # a stored expression that no longer parses
+        with _connect() as conn:
+            claimed = conn.execute(
+                "UPDATE schedules SET next_run=? WHERE id=? AND next_run=?",
+                (following, row["id"], row["next_run"])).rowcount == 1
+        if not claimed:
+            continue                     # another worker took this slot
+        task_id = submit(row["goal"])
+        with _connect() as conn:
+            conn.execute("UPDATE schedules SET last_fired=?, last_task=? WHERE id=?",
+                         (now, task_id, row["id"]))
+        fired.append(task_id)
+    return fired
+
+
 # ------------------------------------------------------------------ FR-602
 
 def run_once(app, task: dict, trace: list | None = None) -> dict | None:
@@ -265,9 +391,13 @@ def run_worker(app, once: bool = False, poll: float = 2.0) -> int:
     A loop over the graph this project already has, not a supervisor: ~40 lines
     against Hermes's 7,644, because everything hard about running a task -
     checkpointing, the gate, budgets - is already in the graph.
+
+    Schedules are polled here rather than run here: fire() enqueues through
+    submit(), so the worker stays the only thing that executes a task.
     """
     recover()
     while True:
+        fire()                           # FR-605: due schedules enter the SAME queue
         task = claim()
         if task is None:
             if once:
