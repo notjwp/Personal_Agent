@@ -114,6 +114,11 @@ VERIFY_ON_STOP = _env("AGENT_VERIFY_ON_STOP", "off").strip().lower() not in (
     "0", "off", "false")
 MAX_VERIFY_NUDGES = 2
 
+# FR-607. How many tasks may be `running` at once. Each worker holds a
+# container and the shared /workspace, so the real bound is the machine, not
+# the queue - one is the honest default for a single-user agent.
+MAX_WORKERS = int(_env("AGENT_MAX_WORKERS", "1"))
+
 # --- planning (FR-101, FR-105, UR-02) --------------------------------------
 
 # DEFAULT OFF because it does not pay, not because it does not work: 1/3 on

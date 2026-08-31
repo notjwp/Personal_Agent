@@ -289,3 +289,150 @@ def test_a_budget_exhausted_agent_is_also_failed(queue):
     worker.run_worker(FakeGraph(out={"verdict": "budget", "denied": []}), once=True)
 
     assert worker.tasks()[0]["status"] == "failed"
+
+
+# ===================================================== Stage B: FR-505, FR-607, FR-307
+
+
+def test_robots_disallow_is_honoured(tmp_workspace, monkeypatch):
+    """FR-505. A host that forbids a path must not be fetched from it."""
+    import agent.tools as t
+
+    t._ROBOTS.clear()
+
+    class _Parser:
+        def set_url(self, url): pass
+        def read(self): pass
+        def can_fetch(self, agent, url): return "/private" not in url
+
+    monkeypatch.setattr("urllib.robotparser.RobotFileParser", _Parser)
+    assert t.robots_allows("https://example.com/public")
+    assert not t.robots_allows("https://example.com/private/x")
+
+
+def test_an_unreachable_robots_txt_fails_OPEN(tmp_workspace, monkeypatch):
+    """The judgement call, stated: a robots.txt that cannot be fetched must not
+    disable searching, or one flaky host takes the capability down."""
+    import agent.tools as t
+
+    t._ROBOTS.clear()
+
+    class _Broken:
+        def set_url(self, url): pass
+        def read(self): raise OSError("unreachable")
+        def can_fetch(self, agent, url): return False
+
+    monkeypatch.setattr("urllib.robotparser.RobotFileParser", _Broken)
+    assert t.robots_allows("https://example.com/anything")
+
+
+def test_robots_is_fetched_once_per_host(tmp_workspace, monkeypatch):
+    """The check is itself a network call and must not double the cost of every
+    request."""
+    import agent.tools as t
+
+    t._ROBOTS.clear()
+    reads = {"n": 0}
+
+    class _Counting:
+        def set_url(self, url): pass
+        def read(self): reads["n"] += 1
+        def can_fetch(self, agent, url): return True
+
+    monkeypatch.setattr("urllib.robotparser.RobotFileParser", _Counting)
+    for _ in range(4):
+        t.robots_allows("https://example.com/a")
+    assert reads["n"] == 1
+
+
+def test_pacing_waits_between_hits_on_one_host(tmp_workspace, monkeypatch):
+    """FR-505's rate limit. Measured lesson: html.duckduckgo.com blocks after one
+    request and every retry re-arms a ~30s cooldown."""
+    import agent.tools as t
+
+    slept = []
+    monkeypatch.setattr(t.time, "sleep", lambda s: slept.append(s))
+    t._LAST_HIT.clear()
+
+    t._pace("example.com")
+    assert slept == [], "the first hit on a host waits for nothing"
+    t._pace("example.com")
+    assert slept and 0 < slept[0] <= t.PER_HOST_INTERVAL
+
+
+def test_a_different_host_is_not_paced(tmp_workspace, monkeypatch):
+    import agent.tools as t
+
+    slept = []
+    monkeypatch.setattr(t.time, "sleep", lambda s: slept.append(s))
+    t._LAST_HIT.clear()
+
+    t._pace("a.example")
+    t._pace("b.example")
+    assert slept == [], "pacing is PER host; one slow host must not stall another"
+
+
+def test_the_worker_cap_refuses_past_max(queue, monkeypatch):
+    """FR-607."""
+    from agent import config, worker
+
+    monkeypatch.setattr(config, "MAX_WORKERS", 1)
+    worker.submit("first")
+    worker.submit("second")
+
+    assert worker.claim() is not None
+    assert worker.claim() is None, "a second claim past the cap must be refused"
+
+
+def test_concluding_frees_a_slot(queue, monkeypatch):
+    from agent import config, worker
+
+    monkeypatch.setattr(config, "MAX_WORKERS", 1)
+    worker.submit("first")
+    worker.submit("second")
+    first = worker.claim()
+    worker.conclude(first["id"], status="done")
+
+    assert worker.claim() is not None
+
+
+def test_a_dead_worker_does_not_deadlock_the_cap(queue, monkeypatch):
+    """THE TRAP THIS ORDERING EXISTS FOR. A `running` row whose worker died still
+    counts against the cap, so without recover() running FIRST one crash blocks the
+    queue permanently."""
+    import sqlite3
+
+    from agent import config, worker
+
+    monkeypatch.setattr(config, "MAX_WORKERS", 1)
+    worker.submit("first")
+    worker.submit("second")
+    task = worker.claim()
+
+    # The owner is gone: a pid that cannot be alive.
+    with sqlite3.connect(config.TASKS_DB) as conn:
+        conn.execute("UPDATE tasks SET pid=?, pid_started=? WHERE id=?",
+                     (999999, 1.0, task["id"]))
+
+    assert worker.claim() is not None, "recover() must free the slot before counting"
+
+
+def test_an_amended_call_is_reclassified_not_waved_through(tmp_workspace):
+    """FR-307, and this is the whole safety property: amending a path to escape the
+    workspace must still be DENIED, or the approval prompt becomes a bypass."""
+    from agent.policy import classify
+
+    verdict, _ = classify("read_file", {"path": "../../etc/passwd"}, autonomous=True)
+    assert verdict == "deny", "the gate re-runs classify() on the amended input"
+
+
+def test_amending_keeps_the_arguments_it_was_not_given(tmp_workspace):
+    """An amendment is a partial update - naming one argument must not drop the
+    others."""
+    call = {"name": "edit_file", "id": "t1",
+            "input": {"path": "a.py", "old_string": "x", "new_string": "y"}}
+    amended = {**call, "input": {**call["input"], **{"new_string": "z"}}}
+
+    assert amended["input"]["path"] == "a.py"
+    assert amended["input"]["old_string"] == "x"
+    assert amended["input"]["new_string"] == "z"

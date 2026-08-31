@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, web search, measurement rig. **503 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, web search, measurement rig. **510 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -198,7 +198,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 503 tests, no API key, no network
+pytest                            # 510 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

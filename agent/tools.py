@@ -18,6 +18,7 @@ import difflib
 import os
 import re
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -380,6 +381,51 @@ WEB_TIMEOUT = 20        # seconds; the default of 5 is thin through a CONNECT pr
 _NO_RESULTS = "no results found"
 
 
+# FR-505. Both halves are about not abusing a host we do not own.
+#
+# The rate limit is a lesson already paid for: html.duckduckgo.com returns
+# results once, then blocks, and every retry re-arms a ~30s cooldown. That is
+# why the fan-out exists; this makes the same courtesy explicit and general.
+PER_HOST_INTERVAL = 2.0
+_LAST_HIT: dict = {}
+_ROBOTS: dict = {}
+
+
+def _pace(host: str) -> None:
+    """Sleep just long enough that this host is not hit faster than agreed."""
+    wait = PER_HOST_INTERVAL - (time.monotonic() - _LAST_HIT.get(host, 0.0))
+    if wait > 0:
+        time.sleep(min(wait, PER_HOST_INTERVAL))
+    _LAST_HIT[host] = time.monotonic()
+
+
+def robots_allows(url: str, agent: str = "*") -> bool:
+    """Whether robots.txt permits fetching `url`.
+
+    FAILS OPEN, deliberately. A robots.txt that cannot be fetched - a blocked
+    host, a timeout, a 500 - must not disable searching, or one flaky server
+    takes the capability down. Parsed once per host and cached: the check is a
+    network call itself and must not double the cost of every request.
+    """
+    from urllib.parse import urlsplit
+    from urllib.robotparser import RobotFileParser
+
+    parts = urlsplit(url)
+    if not parts.netloc:
+        return True
+    if parts.netloc not in _ROBOTS:
+        parser = RobotFileParser()
+        parser.set_url(f"{parts.scheme or 'https'}://{parts.netloc}/robots.txt")
+        try:
+            _pace(parts.netloc)
+            parser.read()
+        except Exception:
+            parser = None                 # unreachable: fail open, cache that
+        _ROBOTS[parts.netloc] = parser
+    parser = _ROBOTS[parts.netloc]
+    return True if parser is None else parser.can_fetch(agent, url)
+
+
 @tool(risk="read")
 def web_search(query: str, limit: int = 5) -> str:
     """Search the web for current information and return ranked results: title,
@@ -401,6 +447,10 @@ def web_search(query: str, limit: int = 5) -> str:
         raise ValueError("web_search needs a query. Pass what you would type into "
                          "a search engine, e.g. query='fastapi APIRouter post'.")
     count = max(1, min(_int(limit, 5), RESULT_CAP))
+
+    # FR-505: pace the engines we are about to fan out across.
+    for host in WEB_HOSTS:
+        _pace(host)
 
     # Passed EXPLICITLY: the openai SDK gets proxies from httpx's trust_env, but
     # ddgs goes through primp, which makes no such promise. Under a scored run an

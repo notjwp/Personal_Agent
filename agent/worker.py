@@ -151,9 +151,19 @@ def claim() -> dict | None:
     workers racing for the same row produce one winner and one None, because
     SQLite settles it rather than the reader-then-writer sequence that would
     hand it to both.
+
+    Returns None when MAX_WORKERS are already running (FR-607).
     """
     pid = os.getpid()
+    # FR-607, and the ORDER matters. A `running` row whose worker died still
+    # counts against the cap, so without this a single crash deadlocks the
+    # queue permanently. recover() is the existing liveness sweep.
+    recover()
     with _connect() as conn:
+        running = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE status='running'").fetchone()
+        if running["n"] >= config.MAX_WORKERS:
+            return None
         row = conn.execute(
             "SELECT id FROM tasks WHERE status='queued' "
             "ORDER BY submitted_at LIMIT 1").fetchone()

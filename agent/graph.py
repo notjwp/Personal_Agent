@@ -240,7 +240,18 @@ def gate(state: AgentState, config: RunnableConfig) -> dict:
             denied.append({**call, "reason": reason})
         else:
             decision = interrupt({"call": call, "reason": reason})
-            if decision == "allow":
+            # FR-307. An amendment arrives as DATA through the interrupt and is
+            # RE-CLASSIFIED, never waved through: editing a path to escape the
+            # workspace must still be denied, or the prompt becomes a bypass.
+            if isinstance(decision, dict) and decision.get("decision") == "amend":
+                call = {**call, "input": {**call["input"], **(decision.get("input") or {})}}
+                verdict, reason = classify(call["name"], call["input"],
+                                           autonomous, planning)
+                if verdict == "deny":
+                    denied.append({**call, "reason": reason})
+                    continue
+                approved.append(call)
+            elif decision == "allow":
                 approved.append(call)
             else:
                 denied.append({**call, "reason": "rejected by user"})

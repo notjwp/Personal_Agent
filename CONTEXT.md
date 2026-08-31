@@ -506,11 +506,41 @@ exists.
     Resolution: FR-402 spill-and-path. Costs one extra tool call, buys a
     bounded context.
 
-  FR-503 vs NFR-402
+  FR-503/504 vs NFR-402                    UPDATED 2026-08-31
     Browser automation is the largest token consumer in the system and will
     breach the cost target alone. This is why it sits at [S] behind FR-501/502:
     search plus text extraction covers most real requests at a fraction of the
     spend.
+    That last clause was an argument when written and is now a MEASUREMENT: the
+    search split scores 9/9 with web_search and 0/9 with it removed, so the
+    cheaper path demonstrably covers the cases that exist.
+    Costed 2026-08-31: Chromium into a 593 MB image, which pip.conf's no-index
+    forces to build time; and 4-6 tool schemas at ~580 chars each against 5,949
+    chars of remaining MAX_SCHEMA_CHARS, charged on EVERY request of every run
+    whether a browser is used or not.
+    Resolution: FR-503 and FR-504 stay UNMET, deliberately. They are built only
+    when a case exists that web_search plus fetch cannot solve, and then BOTH
+    together - FR-503 alone is the raw-DOM version this entry calls unaffordable
+    - with its own split and a control run.
+
+  FR-204 vs NFR-201, NFR-205 and reproducibility     ADDED 2026-08-31
+    "Install packages into the sandbox on request" cannot hold as written.
+    Three properties of the measured environment forbid it, and each exists
+    for a reason that outranks a [S]:
+      - /etc/pip.conf sets no-index. The Containerfile states the purpose
+        twice: every dependency must be baked at build time "or it does not
+        exist", which is also the security property - a server or library
+        cannot be introduced mid-run.
+      - The root filesystem is --read-only (NFR-201), so site-packages is
+        immutable while a run is in flight.
+      - Egress is allowlisted to the model host (NFR-205). PyPI is not
+        reachable, and a case declaring it would be declaring a different
+        measurement.
+    Implementing FR-204 at RUN time trades all three for a should-have.
+    Resolution: FR-204 is satisfied at BUILD time. A dependency is added to
+    the Containerfile and the image rebuilt, where the manifest records it and
+    every scored row states the image it ran on. It is NOT available at run
+    time, and that is a property being protected rather than a gap.
 
   NFR-802 vs FR-302 and NFR-201            ADDED 2026-08-23
     "All agent artifacts under ONE inspectable directory" cannot be satisfied
