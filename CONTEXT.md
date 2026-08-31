@@ -408,10 +408,12 @@ A requirement without a number is not testable. Targets are the point.
   --------  ---------------  ------------------------------------------------
   NFR-101   Latency          First assistant token within 3 s at p50 on an
                              interactive turn
-                             NOT MEASURABLE 2026-08-23: the OpenAI-compatible
-                             path sends no stream=True, so there is no first
-                             token - one block arrives at the end. The Anthropic
-                             path does stream.
+                             MEASURABLE 2026-08-31, UNMEASURED. The OpenAI-
+                             compatible path now streams and every model trace
+                             row carries first_token_s, which the harness
+                             medians into first_token_p50. What that median IS
+                             needs a live run and has not been taken, so the
+                             3 s target remains unverified rather than met.
   NFR-102   Overhead         Framework cost per loop iteration <= 250 ms,
                              excluding model and tool time
                              MEASURED 2026-08-23: 6.53 ms p95, n=140. Pinned

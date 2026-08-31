@@ -581,3 +581,37 @@ def test_the_harness_runs_as_a_script_not_only_as_an_import():
 
     assert done.returncode == 0, done.stderr[-500:]
     assert "ModuleNotFoundError" not in done.stderr
+
+
+# ================================================ NFR-101: first-token latency
+
+
+def test_the_p50_is_the_median_of_what_actually_streamed():
+    trace = [{"kind": "model", "first_token_s": s} for s in (0.4, 0.9, 3.1)]
+    from eval_harness import first_token_p50
+
+    assert first_token_p50(trace) == 0.9
+
+
+def test_an_even_count_averages_the_middle_two():
+    trace = [{"kind": "model", "first_token_s": s} for s in (1.0, 2.0)]
+    from eval_harness import first_token_p50
+
+    assert first_token_p50(trace) == 1.5
+
+
+def test_a_run_that_never_streamed_reports_None_not_zero():
+    """A zero would pull the median down while looking like NFR-101 was met."""
+    trace = [{"kind": "model", "first_token_s": None},
+             {"kind": "context", "chars": 10}]
+    from eval_harness import first_token_p50
+
+    assert first_token_p50(trace) is None
+
+
+def test_turns_that_did_not_stream_are_excluded_rather_than_counted_as_zero():
+    trace = [{"kind": "model", "first_token_s": None},
+             {"kind": "model", "first_token_s": 2.0}]
+    from eval_harness import first_token_p50
+
+    assert first_token_p50(trace) == 2.0

@@ -646,6 +646,22 @@ def peak_context_chars(trace) -> int:
     return max(sizes) if sizes else 0
 
 
+def first_token_p50(trace) -> float | None:
+    """Median seconds to the first streamed token, or None if nothing streamed.
+
+    NFR-101 is stated as a p50 and was recorded NOT MEASURABLE because the
+    OpenAI-compatible path returned one block at the end. None is reported rather
+    than 0.0: a run that never streamed has no latency, and a zero would pull the
+    median down while looking like the target was met.
+    """
+    seen = sorted(e["first_token_s"] for e in trace
+                  if e.get("kind") == "model" and e.get("first_token_s") is not None)
+    if not seen:
+        return None
+    mid = len(seen) // 2
+    return round(seen[mid] if len(seen) % 2 else (seen[mid - 1] + seen[mid]) / 2, 3)
+
+
 def previous_run(out: Path) -> Path | None:
     """The most recent EARLIER run over the same population, or None.
 
@@ -1215,6 +1231,8 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # Planning, with its COST stated apart from its effect (FR-101, FR-105).
         # `plan_denied` records what the read-only gate refused during research - it is
         # how the pytest-refusal defect was found, in all twelve planning runs.
+        # NFR-101, which had no number at all until the OpenAI path streamed.
+        "first_token_p50": first_token_p50(trace) if trace else None,
         "compact_count": state.get("compact_count", 0),
         "compact_removed_pct": [t.get("removed_pct") for t in trace
                                 if t.get("kind") == "compact"],

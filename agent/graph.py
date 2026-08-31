@@ -198,6 +198,9 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
             "ms": round(elapsed * 1000, 3),
             "cache_read_tokens": reply.cache_read_tokens,
             "stop_reason": reply.stop_reason,
+            # NFR-101 is a p50 over these. None when nothing streamed, which is
+            # the honest answer rather than a zero that would flatter the median.
+            "first_token_s": reply.first_token_s,
         })
 
     # The model's own prose is capped like a tool result: one 52,866-char reply

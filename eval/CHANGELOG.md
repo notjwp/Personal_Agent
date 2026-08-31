@@ -148,6 +148,67 @@ correct code passes 51/51, inverted code fails 1.
 
 ---
 
+## Stage 2b - streaming on the OpenAI-compatible path (NFR-101) (2026-08-31)
+
+Offline, no quota. 528 -> 544 tests.
+
+### What was actually blocked
+
+NFR-101 asks for a first token within 3 s at p50. CONTEXT.md had recorded it **NOT
+MEASURABLE** since 2026-08-23, and the reason was not instrumentation: the
+OpenAI-compatible path sent no `stream=True`, so there was no first token to time. One
+block arrived at the end. The Anthropic path streamed all along.
+
+### The shape
+
+`_assemble()` collapses the delta stream into the SAME object shape the non-streaming
+path produces, and `from_openai_message()` is then called unchanged. Two parsers would
+be two things to keep agreeing; there is one.
+
+`AGENT_STREAM` defaults on and restores the old single-block path exactly when off -
+the fallback if an endpoint streams badly rather than not at all.
+
+### Four traps, each with the test that catches it
+
+| trap | what goes wrong | test |
+|---|---|---|
+| fragments grouped by arrival, not `index` | two interleaved calls splice one's arguments into the other, and the result parses often enough to look like a model error | `..._grouped_by_index_not_arrival` |
+| `id`/`name` reassigned on every fragment | they arrive ONLY on a call's first fragment; later ones carry None, producing a nameless call | `..._not_overwritten_by_empties` |
+| usage chunk skipped | it rides a FINAL chunk with no `choices`, so the obvious `if not chunk.choices: continue` drops it and every run reports 0 billed tokens | `..._choiceless_chunk_is_not_dropped` |
+| `finish_reason` lost | a `length` scored as `done` is exactly the defect `04bcde9` fixed, reintroduced through a new path | `..._length_finish_reason_survives_streaming` |
+
+**Verified in both directions.** Three mutations were applied to a correct assembler
+and each was caught by the test written for it:
+
+| mutation | result |
+|---|---|
+| group by arrival order | 1 failed, 189 passed |
+| move the usage read below the choices guard | 1 failed, 189 passed |
+| assign `id` unconditionally | 4 failed, 186 passed |
+
+### Making NFR-101 a number rather than a claim
+
+Streaming alone does not measure anything. `Reply.first_token_s` is recorded on every
+`model` trace row and the harness medians it into `first_token_p50` on the run row.
+
+A turn that did not stream reports **None, never 0.0** - a zero would pull the median
+down while looking like the 3 s target was met, and that is the shape of an accidental
+false pass this project has already had to retract once.
+
+### What is NOT claimed
+
+**The p50 is unmeasured.** Nothing here has spoken to a live endpoint. Every test above
+drives hand-built chunk objects, which proves the assembly is correct and proves
+NOTHING about latency. NFR-101 moves from NOT MEASURABLE to MEASURABLE-AND-UNMEASURED,
+and the 3 s target is unverified rather than met.
+
+**The dev guard has not been run.** Streaming changes how a reply arrives on the path
+every scored run uses, and the offline equivalence test (same deltas -> same blocks as
+the whole message) is an argument, not a measurement. A 15-case dev guard at 3 runs is
+the check, and it costs roughly a day of the free tier.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

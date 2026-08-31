@@ -11,6 +11,7 @@ uses it. The OpenAI-compatible provider translates at its own boundary and nowhe
 else, so no other file learns that a second provider exists.
 """
 import json
+import time
 from dataclasses import dataclass
 
 from agent import config as settings
@@ -23,6 +24,9 @@ class Reply:
     billed_tokens: int
     cache_read_tokens: int
     stop_reason: str | None
+    # NFR-101 is stated in seconds and was recorded NOT MEASURABLE because the
+    # OpenAI path returned one block at the end. None means nothing streamed.
+    first_token_s: float | None = None
 
 
 class MalformedToolCall(RuntimeError):
@@ -128,6 +132,82 @@ def _call_anthropic(messages, system, tools, on_text) -> Reply:
 
 # ---------------------------------------------------- openai-compatible (NIM)
 
+
+class _Fragment:
+    """One tool call rebuilt from its deltas, shaped like the SDK's own object.
+
+    Assembled into the non-streaming shape rather than parsed separately, so
+    from_openai_message() stays the ONE place a reply becomes content blocks.
+    Two parsers would be two things to keep agreeing.
+    """
+
+    def __init__(self):
+        self.id = ""
+        self.function = _Fragment._Function()
+
+    class _Function:
+        def __init__(self):
+            self.name = ""
+            self.arguments = ""
+
+
+class _Assembled:
+    def __init__(self, content, tool_calls):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+def _assemble(stream, on_text, started):
+    """Collapse a delta stream into one message, a finish reason and usage.
+
+    Fragments are grouped by `index`, NOT by arrival order: a model emitting two
+    calls interleaves their deltas, and concatenating in arrival order splices
+    one call's arguments into another. `id` and `name` arrive only on a call's
+    first fragment, so both are written once and never overwritten with "".
+    """
+    text: list[str] = []
+    calls: dict[int, _Fragment] = {}
+    finish = None
+    usage = None
+    first = None
+
+    for chunk in stream:
+        # Usage rides a FINAL chunk that carries no choices. Skipping it leaves
+        # billed_tokens at 0, which silently corrupts every cost number.
+        if getattr(chunk, "usage", None):
+            usage = chunk.usage
+        if not getattr(chunk, "choices", None):
+            continue
+        choice = chunk.choices[0]
+        if getattr(choice, "finish_reason", None):
+            finish = choice.finish_reason
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        if getattr(delta, "content", None):
+            if first is None:
+                first = time.monotonic() - started
+            text.append(delta.content)
+            if on_text:
+                on_text(delta.content)
+        for part in (getattr(delta, "tool_calls", None) or []):
+            if first is None:
+                first = time.monotonic() - started
+            slot = calls.setdefault(getattr(part, "index", 0) or 0, _Fragment())
+            if getattr(part, "id", None):
+                slot.id = part.id
+            fn = getattr(part, "function", None)
+            if fn is None:
+                continue
+            if getattr(fn, "name", None):
+                slot.function.name = fn.name
+            if getattr(fn, "arguments", None):
+                slot.function.arguments += fn.arguments
+
+    ordered = [calls[i] for i in sorted(calls)]
+    return _Assembled("".join(text), ordered), finish, usage, first
+
+
 def _call_openai_compatible(messages, system, tools, on_text) -> Reply:
     import openai
 
@@ -154,24 +234,37 @@ def _call_openai_compatible(messages, system, tools, on_text) -> Reply:
                        messages=to_openai_messages(system, messages))
         if tools:
             request["tools"] = to_openai_tools(tools)
-        response = client.chat.completions.create(**request)
+        started = time.monotonic()
+        if settings.STREAM:
+            # include_usage is not optional here: without it the stream carries no
+            # token counts at all and every run reports 0.
+            stream = client.chat.completions.create(
+                **request, stream=True, stream_options={"include_usage": True})
+            message, finish, usage, first_token = _assemble(stream, on_text, started)
+        else:
+            response = client.chat.completions.create(**request)
+            choice = response.choices[0]
+            message, finish, usage, first_token = (
+                choice.message, choice.finish_reason, response.usage, None)
     except Exception as exc:
         _reraise_classified(exc)
         raise
-    choice = response.choices[0]
-    blocks = from_openai_message(choice.message)
 
-    if on_text:
+    blocks = from_openai_message(message)
+
+    if on_text and not settings.STREAM:
         for block in blocks:
             if block["type"] == "text":
                 on_text(block["text"])
 
-    usage = response.usage
     return Reply(
         blocks=blocks,
         billed_tokens=(usage.prompt_tokens + usage.completion_tokens) if usage else 0,
         cache_read_tokens=0,        # no prompt caching on this path
-        stop_reason=choice.finish_reason,
+        # A streamed finish_reason is the SAME field, and it must survive: a
+        # `length` scored as `done` is the defect 04bcde9 fixed.
+        stop_reason=finish,
+        first_token_s=first_token,
     )
 
 

@@ -2707,3 +2707,184 @@ def test_the_warning_arrives_before_the_kill(tmp_workspace, monkeypatch):
     import agent.graph as g
 
     assert g.WARN_AFTER < min(g.REPEAT_LIMIT.values())
+
+# ============================================== Stage 2b: streaming (NFR-101)
+
+
+class _Delta:
+    """One streamed chunk, shaped exactly like the SDK's."""
+
+    def __init__(self, content=None, tool_calls=None, finish=None, usage=None):
+        self.usage = usage
+        if content is None and tool_calls is None and finish is None:
+            self.choices = []            # the usage-only final chunk
+            return
+        delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+        self.choices = [SimpleNamespace(delta=delta, finish_reason=finish)]
+
+
+def _part(index, call_id=None, name=None, arguments=None):
+    return SimpleNamespace(
+        index=index, id=call_id,
+        function=SimpleNamespace(name=name, arguments=arguments))
+
+
+def _usage(prompt=11, completion=7):
+    return SimpleNamespace(prompt_tokens=prompt, completion_tokens=completion)
+
+
+def test_streamed_text_is_concatenated_in_order():
+    from agent.provider import _assemble
+
+    chunks = [_Delta(content="Hel"), _Delta(content="lo "), _Delta(content="world")]
+    message, _, _, _ = _assemble(iter(chunks), None, 0.0)
+
+    assert message.content == "Hello world"
+
+
+def test_on_text_sees_each_delta_as_it_arrives():
+    """The whole point of NFR-101: the caller is fed progressively, not once at
+    the end."""
+    from agent.provider import _assemble
+
+    seen = []
+    _assemble(iter([_Delta(content="a"), _Delta(content="b")]), seen.append, 0.0)
+
+    assert seen == ["a", "b"]
+
+
+def test_a_tool_calls_arguments_survive_being_split_mid_json():
+    """Arguments arrive in fragments that are not valid JSON on their own."""
+    from agent.provider import _assemble, from_openai_message
+
+    chunks = [
+        _Delta(tool_calls=[_part(0, call_id="c1", name="read_file", arguments="")]),
+        _Delta(tool_calls=[_part(0, arguments='{"pa')]),
+        _Delta(tool_calls=[_part(0, arguments='th": "a')]),
+        _Delta(tool_calls=[_part(0, arguments='.py"}')]),
+        _Delta(finish="tool_calls"),
+    ]
+    message, finish, _, _ = _assemble(iter(chunks), None, 0.0)
+    blocks = from_openai_message(message)
+
+    assert finish == "tool_calls"
+    assert blocks == [{"type": "tool_use", "id": "c1", "name": "read_file",
+                       "input": {"path": "a.py"}}]
+
+
+def test_two_interleaved_tool_calls_are_grouped_by_index_not_arrival():
+    """THE TRAP. A model emitting two calls interleaves their deltas. Grouping by
+    arrival order splices one call's arguments into the other, and the result is
+    still valid JSON often enough to look like a model error."""
+    from agent.provider import _assemble, from_openai_message
+
+    chunks = [
+        _Delta(tool_calls=[_part(0, call_id="a", name="read_file", arguments='{"path"')]),
+        _Delta(tool_calls=[_part(1, call_id="b", name="run_shell", arguments='{"cmd"')]),
+        _Delta(tool_calls=[_part(0, arguments=': "one.py"}')]),
+        _Delta(tool_calls=[_part(1, arguments=': "ls"}')]),
+    ]
+    blocks = from_openai_message(_assemble(iter(chunks), None, 0.0)[0])
+
+    assert blocks == [
+        {"type": "tool_use", "id": "a", "name": "read_file", "input": {"path": "one.py"}},
+        {"type": "tool_use", "id": "b", "name": "run_shell", "input": {"cmd": "ls"}},
+    ]
+
+
+def test_id_and_name_arrive_once_and_are_not_overwritten_by_empties():
+    """Later fragments carry id=None and name=None. Assigning them unconditionally
+    produces a nameless tool call."""
+    from agent.provider import _assemble
+
+    chunks = [
+        _Delta(tool_calls=[_part(0, call_id="keep", name="read_file", arguments="{}")]),
+        _Delta(tool_calls=[_part(0, arguments="")]),
+    ]
+    message, _, _, _ = _assemble(iter(chunks), None, 0.0)
+
+    assert message.tool_calls[0].id == "keep"
+    assert message.tool_calls[0].function.name == "read_file"
+
+
+def test_usage_on_a_final_choiceless_chunk_is_not_dropped():
+    """Usage rides a last chunk carrying no choices. Skipping it leaves
+    billed_tokens at 0 and silently corrupts every cost number in the project."""
+    from agent.provider import _assemble
+
+    chunks = [_Delta(content="hi"), _Delta(usage=_usage(prompt=100, completion=5))]
+    _, _, usage, _ = _assemble(iter(chunks), None, 0.0)
+
+    assert usage is not None
+    assert usage.prompt_tokens + usage.completion_tokens == 105
+
+
+def test_a_length_finish_reason_survives_streaming():
+    """04bcde9 established that a truncated reply is not a finished one. A stream
+    that loses finish_reason scores a cut-off reply as done all over again."""
+    from agent.provider import _assemble
+
+    chunks = [_Delta(content="half a sen"), _Delta(finish="length")]
+    _, finish, _, _ = _assemble(iter(chunks), None, 0.0)
+
+    assert finish == "length"
+
+
+def test_streaming_and_not_streaming_produce_identical_blocks():
+    """The equivalence that makes this safe to turn on: same reply, same blocks."""
+    from agent.provider import _assemble, from_openai_message
+
+    whole = SimpleNamespace(
+        content="thinking",
+        tool_calls=[SimpleNamespace(
+            id="c1", function=SimpleNamespace(
+                name="read_file", arguments='{"path": "a.py"}'))])
+    chunks = [
+        _Delta(content="think"), _Delta(content="ing"),
+        _Delta(tool_calls=[_part(0, call_id="c1", name="read_file", arguments='{"path": ')]),
+        _Delta(tool_calls=[_part(0, arguments='"a.py"}')]),
+    ]
+    streamed, _, _, _ = _assemble(iter(chunks), None, 0.0)
+
+    assert from_openai_message(streamed) == from_openai_message(whole)
+
+
+def test_unparseable_streamed_arguments_still_raise_MalformedToolCall():
+    """Assembly must not quietly repair a broken call - that is the one thing
+    from_openai_message refuses to do, and streaming must not route around it."""
+    from agent.provider import MalformedToolCall, _assemble, from_openai_message
+
+    chunks = [_Delta(tool_calls=[_part(0, call_id="c", name="read_file",
+                                       arguments="{not json")])]
+    message, _, _, _ = _assemble(iter(chunks), None, 0.0)
+
+    with pytest.raises(MalformedToolCall):
+        from_openai_message(message)
+
+
+def test_time_to_first_token_is_recorded_so_NFR_101_has_a_number():
+    """CONTEXT.md records NFR-101 as NOT MEASURABLE because one block arrived at
+    the end. A first-token time is what changes that."""
+    import time
+
+    from agent.provider import _assemble
+
+    started = time.monotonic()
+    _, _, _, first = _assemble(iter([_Delta(content="x")]), None, started)
+
+    assert first is not None and first >= 0.0
+
+
+def test_a_stream_with_no_content_reports_no_first_token():
+    from agent.provider import _assemble
+
+    _, _, _, first = _assemble(iter([_Delta(finish="stop")]), None, 0.0)
+
+    assert first is None, "None means nothing streamed, not zero seconds"
+
+
+def test_streaming_is_on_by_default_and_can_be_turned_off():
+    from agent import config
+
+    assert config.STREAM is True
+    assert config._env("AGENT_STREAM", "0") == "0"
