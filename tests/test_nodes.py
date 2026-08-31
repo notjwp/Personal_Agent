@@ -2888,3 +2888,36 @@ def test_streaming_is_on_by_default_and_can_be_turned_off():
 
     assert config.STREAM is True
     assert config._env("AGENT_STREAM", "0") == "0"
+
+
+def test_a_bare_APIError_is_infrastructure_not_an_agent_failure():
+    """Measured: three real-humanize runs died on `APIError: Service temporarily
+    overloaded` and were scored 0/3. Infrastructure failure is not a score."""
+    from agent.provider import ProviderUnavailable, _reraise_classified
+
+    class APIError(Exception):
+        pass
+
+    with pytest.raises(ProviderUnavailable):
+        _reraise_classified(APIError("Service temporarily overloaded"))
+
+
+def test_a_bad_request_is_still_OURS_and_still_scored():
+    """The other direction. Excusing our own bug as an outage inflates the score,
+    and a blocked run is retried rather than investigated."""
+    from agent.provider import _reraise_classified
+
+    class BadRequestError(Exception):
+        pass
+
+    assert _reraise_classified(BadRequestError("bad tool schema")) is None
+
+
+def test_auth_failure_outranks_the_retryable_table():
+    from agent.provider import ProviderMisconfigured, _reraise_classified
+
+    class AuthenticationError(Exception):
+        pass
+
+    with pytest.raises(ProviderMisconfigured):
+        _reraise_classified(AuthenticationError("no key"))

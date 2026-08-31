@@ -62,7 +62,14 @@ RETRYABLE = ("RateLimitError", "APITimeoutError", "APIConnectionError",
              # A 404 on the model endpoint is RETRYABLE, not fatal: measured mid-cycle, an
              # endpoint blinked and returned NotFoundError for a model that existed before
              # and after. Treating it as fatal would score the outage as agent failure.
-             "NotFoundError")
+             "NotFoundError",
+             # The BASE class, and it is here because it carries no status_code: every
+             # attributable status already has its own class above or in FATAL, so a
+             # bare APIError is the SDK saying it could not attribute the failure.
+             # Streaming makes it common - create() returns before the body, so a
+             # mid-stream "Service temporarily overloaded" arrives unmapped and three
+             # real-humanize runs were scored 0/3 for an outage.
+             "APIError")
 FATAL = ("AuthenticationError", "PermissionDeniedError")
 
 
