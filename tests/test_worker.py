@@ -372,7 +372,7 @@ def test_a_different_host_is_not_paced(tmp_workspace, monkeypatch):
     assert slept == [], "pacing is PER host; one slow host must not stall another"
 
 
-def test_the_worker_cap_refuses_past_max(queue, monkeypatch):
+def test_the_worker_cap_refuses_past_max(tmp_workspace, monkeypatch):
     """FR-607."""
     from agent import config, worker
 
@@ -384,7 +384,7 @@ def test_the_worker_cap_refuses_past_max(queue, monkeypatch):
     assert worker.claim() is None, "a second claim past the cap must be refused"
 
 
-def test_concluding_frees_a_slot(queue, monkeypatch):
+def test_concluding_frees_a_slot(tmp_workspace, monkeypatch):
     from agent import config, worker
 
     monkeypatch.setattr(config, "MAX_WORKERS", 1)
@@ -396,7 +396,7 @@ def test_concluding_frees_a_slot(queue, monkeypatch):
     assert worker.claim() is not None
 
 
-def test_a_dead_worker_does_not_deadlock_the_cap(queue, monkeypatch):
+def test_a_dead_worker_does_not_deadlock_the_cap(tmp_workspace, monkeypatch):
     """THE TRAP THIS ORDERING EXISTS FOR. A `running` row whose worker died still
     counts against the cap, so without recover() running FIRST one crash blocks the
     queue permanently."""

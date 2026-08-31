@@ -4,9 +4,41 @@
 attributes on `agent.config` itself, which only works because every module reads
 `config.WORKSPACE` late rather than binding the name at import time.
 """
+import importlib.util
+import pathlib
+import sys
+
 import pytest
 
 from agent import config
+
+# `eval/` is not a package, so the harness is loaded by path. Registered HERE
+# rather than in test_harness.py: a test importing `eval_harness` used to pass
+# only when that file happened to be collected first, so running its own file
+# alone failed. Ordering is not isolation.
+if "eval_harness" not in sys.modules:
+    _PATH = pathlib.Path(__file__).resolve().parent.parent / "eval" / "harness.py"
+    _spec = importlib.util.spec_from_file_location("eval_harness", _PATH)
+    _harness = importlib.util.module_from_spec(_spec)
+    sys.modules["eval_harness"] = _harness
+    _spec.loader.exec_module(_harness)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state(tmp_path, monkeypatch):
+    """Every test gets its own agent home. AUTOUSE - isolation is opt-OUT.
+
+    Ported from Hermes, which makes its hermetic environment autouse rather
+    than a fixture each test must remember to request. Ours was opt-in, and a
+    test that forgot it wrote to the REAL TASKS_DB: three tests passed alone
+    and failed together, which reads as a code bug and is not one.
+    """
+    home = tmp_path / "_state"
+    monkeypatch.setattr(config, "AGENT_HOME", home)
+    monkeypatch.setattr(config, "STATE_DB", home / "state.db")
+    monkeypatch.setattr(config, "MEMORY_DB", home / "memory.db")
+    monkeypatch.setattr(config, "TASKS_DB", home / "tasks.db")
+    monkeypatch.setattr(config, "PROFILE", home / "AGENT.md")
 
 
 @pytest.fixture
