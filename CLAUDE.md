@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, web search, measurement rig. **601 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, web search, measurement rig. **605 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -105,6 +105,12 @@ Ordered by how often they have caught something.
   a single `real-*` run takes 10-20 minutes and can block on `APITimeoutError`.
 - **A 30-run scored pass costs ~1.1M tokens and saturates the free tier for the day.** Budget one
   scored run per day; after that the tier rejects ~2 of 3 requests.
+
+- **A capability you do not have leaves no trace, so traces cannot tell you it is
+  missing.** Seven Hermes modules ranked by keyword and tested against recorded
+  runs found 0 useful; reading our own code for gaps found nine real tool defects
+  in an afternoon. `read_file` never logged a binary read because it never refused
+  one. Find the gap first, then look for their code that fills it.
 
 **Rig and environment**
 
@@ -219,7 +225,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 601 tests, no API key, no network
+pytest                            # 605 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

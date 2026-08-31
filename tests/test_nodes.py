@@ -3103,3 +3103,43 @@ def test_an_ordinary_edit_is_unchanged(tmp_workspace):
 
     assert 'edited' in edit_file('plain.py', 'x = 1', 'x = 2')
     assert target.read_text(encoding='utf-8') == 'x = 2' + chr(10)
+
+# ========================= binaries: the two places the guard was still missing
+
+
+def test_write_file_refuses_to_overwrite_any_binary_not_just_documents(
+        tmp_workspace):
+    """The first guard covered container documents only. Measured: write_file over
+    an existing PNG replaced it with the string "oops" and reported success."""
+    image = tmp_workspace / 'logo.png'
+    original = bytes([0x89]) + b'PNG-real-image-data'
+    image.write_bytes(original)
+
+    assert 'refused' in write_file('logo.png', 'oops')
+    assert image.read_bytes() == original
+
+
+def test_write_file_may_still_create_a_new_binary_path(tmp_workspace):
+    """Only an overwrite destroys something. Creating a file with that name stays
+    the model's business."""
+    assert 'wrote' in write_file('new.png', 'fresh')
+
+
+def test_search_files_skips_binaries(tmp_workspace):
+    """Measured: a .o and a .zip containing the search term each matched, emitted a
+    line of mojibake, and - sorting before the real hit - pushed it down the list.
+    Against MATCH_CAP they crowd out genuine matches entirely."""
+    (tmp_workspace / 'real.py').write_text('def parse(x):' + chr(10), encoding='utf-8')
+    (tmp_workspace / 'build.o').write_bytes(bytes(range(256)) * 4 + b'parse')
+    (tmp_workspace / 'archive.zip').write_bytes(bytes([0x50, 0x4B]) + b'parse')
+
+    out = search_files('parse')
+
+    assert 'real.py' in out
+    assert 'build.o' not in out
+    assert 'archive.zip' not in out
+
+
+def test_search_files_still_finds_text_matches(tmp_workspace):
+    (tmp_workspace / 'a.py').write_text('needle here' + chr(10), encoding='utf-8')
+    assert 'a.py' in search_files('needle')

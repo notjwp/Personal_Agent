@@ -654,6 +654,48 @@ code a defect. `write_file` keeps its own, because it has no binary guard.
 
 ---
 
+## The binary guard was missing in two more places (2026-08-31)
+
+601 -> 605 tests. No quota. Same method as the four before: read our own code,
+find the gap, then reach for their code.
+
+| | measured |
+|---|---|
+| `search_files` | a `.o` and a `.zip` containing the term each matched and emitted a line of mojibake - and, sorting alphabetically, both came BEFORE the real hit. Against `MATCH_CAP` they crowd out genuine matches entirely |
+| `write_file` | overwriting an existing `logo.png` replaced it with the string `oops` and reported success |
+
+The second is a gap I left myself. The guard added earlier the same day covered
+container documents only, on the reasoning that a `.docx` is a zip - which is
+equally true of a `.png`, and I did not check.
+
+Both directions: narrowing `write_file` back to documents fails 1 test, letting
+`search_files` read binaries fails 1.
+
+### The day's tally, and what it says
+
+```
+read_file      dumped binary into the context window, no guard existed at all
+write_file     destroyed .docx silently, then .png silently
+edit_file      corrupted every non-UTF-8 file it touched
+edit_file      rewrote binaries as text
+run_shell      discarded a timed-out command's output
+run_shell      left orphaned processes holding the workspace
+search_files   returned binary garbage ranked above real matches
+```
+
+Nine defects in the tools the agent uses on every task, all found in one
+afternoon, none needing the provider. Two of them - `edit_file` corrupting
+non-UTF-8 files and `run_shell` losing timeout output - are the kind that cost
+real-repository passes without ever appearing as an error.
+
+**None had ever shown up in a trace**, which is the whole lesson. Ranking Hermes
+modules by keyword and testing them against recorded traces found 0 useful from 7.
+Reading our own code for gaps found nine in an afternoon. A capability we do not
+have cannot appear in traces - `read_file` never logged a binary read because it
+never refused one.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

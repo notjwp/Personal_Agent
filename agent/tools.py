@@ -130,14 +130,15 @@ def write_file(path: str, content: str) -> str:
     content: The complete new contents of the file.
     """
     target = config.WORKSPACE / path
-    # OVERWRITING one, not creating one. A .docx is a zip; plain text written over
-    # an existing one destroys it irrecoverably, and the agent cannot tell because
-    # the write succeeds. Creating a new file with that name is the model's
-    # business, so only an overwrite is refused.
-    if has_opaque_document_extension(path) and target.exists():
-        return (f"refused: {path} is a container document (zip or OLE), and writing "
-                f"plain text over it would destroy it. Edit the source it was "
-                f"generated from, or write to a new path.")
+    # OVERWRITING one, not creating one. Plain text written over an existing binary
+    # destroys it irrecoverably and the write SUCCEEDS, so the agent never learns.
+    # Measured on both a .docx and a .png. Creating a new file with that name stays
+    # the model's business, so only an overwrite is refused.
+    if target.exists() and (has_binary_extension(path)
+                            or has_opaque_document_extension(path)):
+        return (f"refused: {path} already exists and is a binary file. Writing "
+                f"plain text over it would destroy it. Write to a new path, or "
+                f"delete it first if that is what you mean.")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"wrote {path} ({len(content)} chars, {content.count(chr(10)) + 1} lines)"
@@ -384,6 +385,12 @@ def search_files(pattern: str, glob: str = "**/*", paths_only: bool = False) -> 
     hits, total, scanned = [], 0, 0
     for target in sorted(config.WORKSPACE.glob(glob)):
         if not target.is_file() or SKIP_DIRS & set(target.parts):
+            continue
+        # The same guard read_file has. Measured: a .o and a .zip containing the
+        # search term matched, emitted two lines of mojibake, and - sorting before
+        # the real hit - pushed it down the list. On a repository with many
+        # binaries they crowd out genuine matches against MATCH_CAP entirely.
+        if has_binary_extension(target.name):
             continue
         # .resolve() follows symlinks, so a link inside the workspace pointing
         # out resolves outside and is dropped here. Fails closed.
