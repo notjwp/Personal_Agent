@@ -555,10 +555,8 @@ def test_the_flag_is_cleared_so_one_truncation_costs_one_turn():
 def test_an_untruncated_reply_still_finishes():
     """`stop` is a genuine completion and must stay one - 29 runs today ended that
     way legitimately."""
-    # noop_nudged: _finished's only tool call is a read, so the read-only nudge
-    # would intercept first. This test is about `stop`, so spend it up front.
-    assert reflect(_finished(truncated=False, noop_nudged=True))["verdict"] == "done"
-    assert reflect(_finished(noop_nudged=True))["verdict"] == "done"
+    assert reflect(_finished(truncated=False))["verdict"] == "done"
+    assert reflect(_finished())["verdict"] == "done"
 
 
 def test_truncation_beats_the_verify_nudge(monkeypatch):
@@ -570,81 +568,3 @@ def test_truncation_beats_the_verify_nudge(monkeypatch):
     out = reflect(_finished(truncated=True, edited_unverified=True))
 
     assert "cut off" in out["messages"][-1]["content"]
-
-# ========== a run that reaches `done` having only READ (measured: 5 reads, done)
-
-
-def test_a_read_only_run_is_asked_once_before_it_may_finish():
-    """MEASURED 2026-09-01, broken-fixture run 1: read_file, search_files x3,
-    read_file, then `done` with the suite still red. _verify_nudge cannot see it -
-    nothing was edited, so edited_unverified was never set - and the Hermes
-    verification_stop.py has the same blind spot (`if not paths: return None`).
-    """
-    out = reflect(_finished())
-
-    assert out["verdict"] == "continue"
-    assert "not changed anything" in out["messages"][-1]["content"]
-
-
-def test_it_is_asked_ONCE_and_then_the_run_finishes():
-    """Bounded like Vellum bounds its equivalent: the nudge marks itself spent and
-    the sibling terminal path clears it. A nudge the model declines twice is a
-    loop, and this project has ended runs that way before.
-    """
-    # BOTH halves, because the first alone passes with the mark never SET:
-    # the nudge must spend itself, and a state carrying the mark must finish.
-    assert reflect(_finished())["noop_nudged"] is True
-    assert reflect(_finished(noop_nudged=True))["verdict"] == "done"
-
-
-def test_a_run_that_WROTE_is_never_asked():
-    assert reflect(_edited(noop_nudged=False))["verdict"] == "done"
-
-
-def test_the_write_is_found_ANYWHERE_in_the_history():
-    """Derived from the messages, not carried in the state. Vellums reason in
-    surface-completion-nudge: a signal read out of the history cannot be
-    invalidated by an array that gets rewritten. Here it also means a thread
-    resumed from a checkpoint written before this existed reads correctly rather
-    than nudging on every resume.
-    """
-    early = _finished()["messages"]
-    early.insert(1, {"role": "assistant", "content": [
-        {"type": "tool_use", "id": "t0", "name": "write_file",
-         "input": {"path": "a.py", "content": "x"}}]})
-
-    assert reflect(_finished(messages=early))["verdict"] == "done"
-
-
-def test_ANY_write_risk_tool_counts_not_a_hand_kept_list(monkeypatch):
-    """risk_of already classifies MCP and skill tools. A hand-kept name list is
-    how a tool added later silently stops counting - the defect that let
-    run_python ship with no TOOLS entry.
-    """
-    from agent import graph, policy
-
-    monkeypatch.setitem(policy.RISK, "mcp__deploy", "write")
-    messages = _finished()["messages"]
-    messages.insert(1, {"role": "assistant", "content": [
-        {"type": "tool_use", "id": "t0", "name": "mcp__deploy", "input": {}}]})
-
-    assert graph._wrote_anything(messages) is True
-    assert reflect(_finished(messages=messages))["verdict"] == "done"
-
-
-def test_it_can_be_turned_off(monkeypatch):
-    """Revertable without touching the loop, which is what makes it measurable."""
-    from agent import config
-
-    monkeypatch.setattr(config, "NOOP_NUDGE", False)
-    assert reflect(_finished())["verdict"] == "done"
-
-
-def test_the_nudge_does_not_DEMAND_an_edit():
-    """33 of 59 eval cases are not coding, and a personal-agent goal may correctly
-    need no edit at all. The wording must leave that open or it breaks the half of
-    the rig that never writes anything.
-    """
-    text = reflect(_finished())["messages"][-1]["content"]
-
-    assert "why no change was needed" in text

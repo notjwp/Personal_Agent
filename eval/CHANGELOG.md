@@ -887,6 +887,119 @@ see where it points.
 
 ---
 
+## MAX_TURNS was the binding failure, not the model (2026-09-01, late)
+
+| | dev | held out | `stuck` |
+|---|---|---|---|
+| cap 12 | 13/15 | - | 33% |
+| **cap 30** | **15/15** | **29/30** | **0%** |
+
+45 scored runs, 4 blocked and excluded. Zero `stuck` verdicts anywhere, against 25%
+historically. Median 42-54k tokens of a 200,000 budget, so nothing ran away - the
+constraint moved from turns to tokens, which is what the derivation predicted.
+
+### The evidence is a run, not a rate
+
+Four runs went past the old 13-turn ceiling:
+
+```
+missing-return-2    31 turns   PASS
+missing-return-0    30 turns   PASS
+add-endpoint-2      15 turns   PASS   first edit on call 13
+circular-import-0   15 turns   PASS
+float-division-2    24 turns   FAIL   over-edited into a broken pyproject.toml
+```
+
+`add-endpoint-2` made its first edit on call 13 - impossible under the old cap. That
+is the mechanism, not an inference from a pass rate.
+
+### Held out is a TIE and is reported as one
+
+29/30 before and after. Three runs gained the room they needed, one used it to break
+itself. The dev gain is real; the held-out gain is zero.
+
+### 12 was a fixture-era cost control
+
+Hermes caps a parent agent at 500 (`agent/iteration_budget.py`, subagents 250), Vellum
+at 200 (`maxStepsPerSession`). 30 is derived: at ~4.4k tokens a turn the token budget
+binds around turn 45, so 30 keeps BUDGET_TOKENS the real ceiling.
+
+### Three hypotheses the corpus killed
+
+Each came from ONE traced run and each was refuted by the recorded corpus:
+
+| | claim | measured |
+|---|---|---|
+| `_noop_nudge` | `done` with 0 edits | fired **0 of 30** |
+| `_drift_notice` | long read streak | fired **1 of 15** |
+| skill leak | `qz-testnames` poisons coding cases | **82%** pass contaminated vs **71%** clean |
+| verification ledger | ignored a green suite | **7 of 279**, 6 of them correct behaviour |
+
+`float-division-2` really was destroyed by `qz-testnames`: it ran `pytest -k check_` at
+call 2 before reading anything, fixed the real bug at call 7, saw all 8 tests pass at
+call 9, and then spent 14 turns reconfiguring `pyproject.toml` to match a convention
+belonging to a different fictional project. The mechanism is real in that run and absent
+across 525 others.
+
+### What is still open, with 105 runs behind it
+
+**37.6% of all failures never edit a single file** - 105 of 279. 62 end `stuck`, 25
+`done`, 13 `compact`. `_noop_nudge` was aimed at exactly this and placed in the `done`
+branch, so it covered 25 of 105 and fired never. The idea was sound; the placement made
+it dead code.
+
+---
+
+## Two guards built for measured failures, both inert, both reverted (2026-09-01)
+
+dev 13/15 -> 13/15. Nothing moved, so nothing is kept. 669 -> 655 tests.
+
+| guard | built for | fired |
+|---|---|---|
+| `_noop_nudge` | `done` reached with 0 edits | **0 in 30 runs** |
+| `_drift_notice` | a long read streak with no write | **1 in 15** |
+
+### exploration-drift did not transfer, and the reason is the shape
+
+Ported from Vellum's plugin of the same name. Their threshold is 25 read-only calls
+in an UNBOUNDED turn; theirs was written for 167 sequential bash calls with no
+user-facing text. Rescaled to 8 against our 13-turn cap - and it still almost never
+fires, because `run_shell` is write-risk and ends the streak, and this agent runs
+pytest every few calls:
+
+```
+run_shell run_shell run_shell read_file run_shell read_file x3 ...   streak 3
+search_files x2 read_file run_shell run_shell search_files x5 ...    streak 6
+```
+
+Rescaling the NUMBER was not enough; the interleaving is different in kind. A
+threshold that fires once in fifteen runs cannot move a pass rate, and the number
+confirms it did not.
+
+### The signal that was measured and then not used
+
+Across 9 `add-endpoint` runs the correlation was perfect: **every failure made 0
+edits in 13 calls, every pass made at least one.** The detector shipped was keyed on
+read-streak LENGTH instead, because that is the reference implementation's shape.
+Consulting their code is right; letting it choose the signal over one already
+verified here is not.
+
+### What the traces point at instead
+
+Passing runs make their first edit at call 9-13 of a 13-turn cap - finishing just in
+time - and failures are on the same trajectory having run out. Tokens agree: 53-60k
+of a 200,000 budget, so these runs are starved on TURNS, not spending badly. The cap
+is the next single change to test, and CLAUDE.md's own warning applies in reverse
+here: check whether the run is starved BEFORE raising a cap, and this one is.
+
+### add-endpoint is not a guard
+
+1/3, 3/3, 1/3, 1/3, 1/3 across five runs on code that differed by one flag. It has
+never been reliably 3/3. Anything that reads 15/15 as a stable dev baseline is
+reading noise.
+
+---
+
 ## The retry that was never wired, and a nudge turned back off (2026-09-01, later)
 
 649 -> 662 tests. Three measured dev runs, 45 scored rows, 0 blocked in the last two.

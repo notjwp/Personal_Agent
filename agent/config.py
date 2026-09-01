@@ -98,7 +98,18 @@ def openai_api_key() -> str:
 
 # --- budgets ---------------------------------------------------------------
 
-MAX_TURNS = 12
+# MEASURED 2026-09-01: at 12 this cap was the binding failure, not the model.
+# Raised to 30 and dev went 13/15 -> 15/15 with every `stuck` verdict gone (it was
+# 47% two runs earlier). Four of the fifteen runs went PAST the old ceiling and all
+# four passed - add-endpoint made its first edit on call 13, and missing-dep needed
+# 26 turns. Median spend was 54,098 of BUDGET_TOKENS, so tokens were never the
+# constraint; the runs were starved on turns while being told to stop.
+#
+# 30 is derived, not picked: at ~4.4k tokens a turn the token budget binds around
+# turn 45, so 30 keeps BUDGET_TOKENS the real ceiling. Hermes caps a parent agent at
+# 500 (agent/iteration_budget.py) and Vellum at 200 (maxStepsPerSession); 12 was a
+# fixture-era cost control that outlived its reason.
+MAX_TURNS = 30
 BUDGET_TOKENS = 200_000
 
 # WORKING seconds, accumulated by the nodes that spend time - not wall-clock
@@ -138,12 +149,6 @@ VERIFY_ON_STOP = _env("AGENT_VERIFY_ON_STOP", "off").strip().lower() not in (
     "0", "off", "false")
 MAX_VERIFY_NUDGES = 2
 
-# One nudge, once, when a run reaches `done` having only read. Vellum bounds
-# its equivalent the same way (surface-completion-nudge marks the conversation
-# and the sibling stop hook clears it), because a nudge the model declines
-# twice is a loop.
-NOOP_NUDGE = _env("AGENT_NOOP_NUDGE", "on").strip().lower() not in (
-    "0", "off", "false")
 
 # NFR-101. Stream the OpenAI-compatible reply so there IS a first token to
 # measure. Off restores the single-block path exactly, which is the fallback if

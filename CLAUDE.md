@@ -10,13 +10,13 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, web search, measurement rig. **662 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, web search, measurement rig. **655 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
 |---|---|
-| dev baseline | **13/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b`. 4 of 5 cases 3/3; `add-endpoint` flaps 1/3-3/3 on identical code and the old 15/15 was a favourable draw on it |
-| held out | **29/30** — the dev score was not overfitted |
+| dev baseline | **15/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b`, at `MAX_TURNS=30`. `add-endpoint` still flaps 1/3-3/3 at the old cap of 12 |
+| held out | **29/30** — unchanged by the cap raise; 3 runs needed 15-31 turns and 1 used the room to break itself |
 | real repositories | **4/10**; `real-humanize` 1 pass in 9 runs across four configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
@@ -56,8 +56,15 @@ Ordered by how often they have caught something.
   scored runs. 20/20 once `call_model` actually retried. Check the retry EXISTS, not
   that the taxonomy does.
 - **A guard built for a failure mode you saw once may never fire again.** `_noop_nudge`
-  targets a run that reaches `done` having only read - measured once in 15 rows - and
-  fired 0 times in the next 15. Tested and mutation-checked is not measured.
+  fired 0 times in 30 runs and `_drift_notice` 1 time in 15; both were reverted. Tested
+  and mutation-checked is not measured.
+- **Rescaling a borrowed threshold is not porting it.** Vellum's exploration-drift uses
+  25 read-only calls in an unbounded turn; at 8 against our 13-turn cap it still never
+  fired, because `run_shell` ends the streak and this agent runs pytest every few calls.
+  Check the SHAPE transfers, not just the number.
+- **Do not let a reference implementation pick your signal.** 0 edits in 13 calls
+  separated pass from fail 9 times out of 9 on `add-endpoint`; the detector shipped was
+  keyed on read-streak length because that is what theirs uses, and it measured nothing.
 
 - **Fixing one premature ending reveals the next.** Truncation ended runs at ~12 turns;
   fixing it exposed `MAX_SECONDS`; raising that exposed `BUDGET_TOKENS` at ~20 turns.
@@ -67,6 +74,16 @@ Ordered by how often they have caught something.
   ran out of output budget mid-sentence. Measured: 8 of 8 runs ending that way were
   scored `done`, and none passed. Any terminal check that ignores `stop_reason` will
   score a cut-off reply as success.
+- **The largest failure mode is a run that never edits anything.** 105 of 279 failing
+  runs (37.6%) made zero writes - 62 ended `stuck`, 25 `done`. Median 45,876 tokens of
+  200,000, so none were starved. A guard for this belongs where the RUNS end, not where
+  the design is tidiest: `_noop_nudge` sat in the `done` branch, covered 25 of 105, and
+  fired 0 times in 30 runs.
+- **MAX_TURNS was the binding failure, not the model.** 12 -> 30 took dev 13/15 -> 15/15
+  and eliminated `stuck` across 45 runs (25% historically). Hermes caps a parent at 500
+  (`agent/iteration_budget.py`), Vellum at 200. Before raising it, check the run is
+  STARVED: median spend was 42-54k of 200,000, so tokens never bound.
+
 - **A cap sized against one failure mode outlives it.** `MAX_SECONDS` was set for a
   hanging tool; tools take 9s of a 950s run and it was ending working runs instead.
   Re-derive a cap when the thing it bounds changes shape.
@@ -245,7 +262,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 662 tests, no API key, no network
+pytest                            # 655 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

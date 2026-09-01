@@ -452,9 +452,6 @@ def test_tool_exception_does_not_crash_the_run(fresh_app, tmp_workspace, monkeyp
     use_fake(monkeypatch, [
         tool_turn("read_file", path="does-not-exist.py"),
         text_turn("That file is missing."),
-        # A read-only run is asked once whether it meant to finish; the fake needs
-        # a reply for that turn or it runs out mid-run.
-        text_turn("Nothing to change - the file does not exist."),
     ])
     final = run(fresh_app, "loop-4")
     assert final["verdict"] == "done"
@@ -1271,8 +1268,7 @@ def test_reflect_says_done_on_the_last_step():
             {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}]},
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
                                       "content": "ok"}]},
-        {"role": "assistant", "content": [{"type": "text", "text": "all done"}]}],
-        noop_nudged=True)   # only read_file here; this test is about the cursor
+        {"role": "assistant", "content": [{"type": "text", "text": "all done"}]}])
     assert reflect(s)["verdict"] == "done"
 
 
@@ -1289,7 +1285,7 @@ def test_the_made_a_call_guard_survives_with_planning_off():
 # --- the gate, and the turn counter ----------------------------------------
 
 def test_planning_turns_are_not_charged_against_max_turns(tmp_workspace):
-    """The single most important number in this phase. MAX_TURNS is 12; if
+    """The single most important number in this phase. If
     research shared that counter it would starve the cases planning exists to
     help."""
     s = planning(approved=[], denied=[])
