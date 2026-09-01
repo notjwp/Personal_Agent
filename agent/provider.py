@@ -11,6 +11,7 @@ uses it. The OpenAI-compatible provider translates at its own boundary and nowhe
 else, so no other file learns that a second provider exists.
 """
 import json
+import random
 import time
 from dataclasses import dataclass
 
@@ -87,16 +88,61 @@ def _reraise_classified(exc: Exception) -> None:
         raise ProviderUnavailable(f"{name}: {exc}") from exc
 
 
+class _Spoken:
+    """Wraps on_text so a retry can tell whether the caller already saw output.
+
+    A stream that fails after emitting tokens cannot be retried - the second
+    attempt would repeat them into the transcript. The measured failures arrive
+    in 0.2-0.3s, before any token, so this refuses the unsafe case rather than
+    buffering the stream and forfeiting NFR-101.
+    """
+
+    def __init__(self, sink):
+        self._sink = sink
+        self.any = False
+
+    def say(self, text: str) -> None:
+        self.any = True
+        self._sink(text)
+
+
+def _pause(attempt: int) -> float:
+    """Exponential backoff with decorrelating jitter, Hermes retry_utils design.
+
+    The jitter is not decoration: a worker draining a queue and a scored run
+    retrying in lockstep re-collide on the same overloaded window.
+    """
+    delay = min(settings.RETRY_BASE * (2 ** (attempt - 1)), settings.RETRY_CAP)
+    return delay + random.uniform(0, delay / 2)
+
+
 def call_model(messages: list[dict], system: str, tools: list[dict],
                on_text=None) -> Reply:
-    """Run one model turn. The only place a provider SDK is imported."""
+    """Run one model turn. The only place a provider SDK is imported.
+
+    RETRYABLE listed the exceptions worth another attempt and nothing ever made
+    one - the classification was added, the retry was not. See config.
+    CALL_ATTEMPTS. Only ProviderUnavailable is retried: MalformedToolCall is a
+    real result and ProviderMisconfigured cannot be fixed by asking again.
+    """
     provider = settings.PROVIDER
     if provider == "anthropic":
-        return _call_anthropic(messages, system, tools, on_text)
-    if provider in ("nvidia", "openai"):
-        return _call_openai_compatible(messages, system, tools, on_text)
-    raise ValueError(
-        f"unknown AGENT_PROVIDER {provider!r}; expected anthropic, nvidia or openai")
+        call = _call_anthropic
+    elif provider in ("nvidia", "openai"):
+        call = _call_openai_compatible
+    else:
+        raise ValueError(
+            f"unknown AGENT_PROVIDER {provider!r}; expected anthropic, nvidia or openai")
+
+    for attempt in range(1, max(1, settings.CALL_ATTEMPTS) + 1):
+        spoken = _Spoken(on_text) if on_text else None
+        try:
+            return call(messages, system, tools, spoken.say if spoken else None)
+        except ProviderUnavailable:
+            if attempt >= max(1, settings.CALL_ATTEMPTS) or (spoken and spoken.any):
+                raise
+            time.sleep(_pause(attempt))
+    raise AssertionError("unreachable")
 
 
 # ------------------------------------------------------------------ anthropic

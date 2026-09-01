@@ -452,6 +452,9 @@ def test_tool_exception_does_not_crash_the_run(fresh_app, tmp_workspace, monkeyp
     use_fake(monkeypatch, [
         tool_turn("read_file", path="does-not-exist.py"),
         text_turn("That file is missing."),
+        # A read-only run is asked once whether it meant to finish; the fake needs
+        # a reply for that turn or it runs out mid-run.
+        text_turn("Nothing to change - the file does not exist."),
     ])
     final = run(fresh_app, "loop-4")
     assert final["verdict"] == "done"
@@ -1268,7 +1271,8 @@ def test_reflect_says_done_on_the_last_step():
             {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}]},
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
                                       "content": "ok"}]},
-        {"role": "assistant", "content": [{"type": "text", "text": "all done"}]}])
+        {"role": "assistant", "content": [{"type": "text", "text": "all done"}]}],
+        noop_nudged=True)   # only read_file here; this test is about the cursor
     assert reflect(s)["verdict"] == "done"
 
 
@@ -3276,3 +3280,114 @@ def test_the_matching_skill_BODY_reaches_the_system_prompt(
 
     assert 'Append -quartz to every version' in seen[0]['system'], (
         'the matching skill body must be in the prompt, not merely offered')
+
+# ============ RETRYABLE was a taxonomy with no retry behind it (measured 15/20)
+
+
+def _flaky(monkeypatch, outcomes):
+    """Drive call_model with a scripted sequence of failures then a Reply."""
+    from agent import provider
+
+    seen = {'calls': 0, 'sinks': []}
+
+    def fake(messages, system, tools, on_text):
+        seen['calls'] += 1
+        step = outcomes[seen['calls'] - 1]
+        if isinstance(step, str):          # text the stream emitted before dying
+            if on_text:
+                on_text(step)
+            raise provider.ProviderUnavailable('APIError: overloaded')
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    monkeypatch.setattr(provider, '_call_openai_compatible', fake)
+    monkeypatch.setattr(provider.settings, 'PROVIDER', 'nvidia')
+    monkeypatch.setattr(provider.settings, 'RETRY_BASE', 0.0)
+    monkeypatch.setattr(provider.settings, 'RETRY_CAP', 0.0)
+    return seen
+
+
+def _reply():
+    from agent import provider
+    return provider.Reply(blocks=[{'type': 'text', 'text': 'ok'}],
+                          billed_tokens=1, cache_read_tokens=0, stop_reason='stop')
+
+
+def test_a_transient_provider_failure_is_RETRIED(monkeypatch):
+    """The measured defect: 5 of 20 calls raised APIError in 0.2-0.3s - too fast
+    for the SDK to have retried - and call_model gave up on the first one."""
+    from agent import provider
+
+    unavailable = provider.ProviderUnavailable('APIError: overloaded')
+    seen = _flaky(monkeypatch, [unavailable, unavailable, _reply()])
+    monkeypatch.setattr(provider.settings, 'CALL_ATTEMPTS', 6)
+
+    assert provider.call_model([], 'sys', []).blocks[0]['text'] == 'ok'
+    assert seen['calls'] == 3, 'it must keep trying, not give up on the first'
+
+
+def test_the_attempt_budget_is_FINITE(monkeypatch):
+    from agent import provider
+
+    unavailable = provider.ProviderUnavailable('APIError: overloaded')
+    seen = _flaky(monkeypatch, [unavailable] * 20)
+    monkeypatch.setattr(provider.settings, 'CALL_ATTEMPTS', 4)
+
+    with pytest.raises(provider.ProviderUnavailable):
+        provider.call_model([], 'sys', [])
+    assert seen['calls'] == 4
+
+
+def test_a_stream_that_ALREADY_SPOKE_is_not_retried(monkeypatch):
+    """Retrying after tokens reached the caller would repeat them into the
+    transcript. A partial answer is worse than an excluded run."""
+    from agent import provider
+
+    seen = _flaky(monkeypatch, ['Here is the ', _reply()])
+    monkeypatch.setattr(provider.settings, 'CALL_ATTEMPTS', 6)
+    spoken = []
+
+    with pytest.raises(provider.ProviderUnavailable):
+        provider.call_model([], 'sys', [], on_text=spoken.append)
+    assert seen['calls'] == 1, 'emitted tokens make a retry unsafe'
+    assert spoken == ['Here is the ']
+
+
+def test_a_MISCONFIGURED_provider_is_not_retried(monkeypatch):
+    """Asking again cannot supply a key. Fifteen of these in a row look exactly
+    like an agent that can do nothing."""
+    from agent import provider
+
+    seen = _flaky(monkeypatch, [provider.ProviderMisconfigured('no key')] * 9)
+    monkeypatch.setattr(provider.settings, 'CALL_ATTEMPTS', 6)
+
+    with pytest.raises(provider.ProviderMisconfigured):
+        provider.call_model([], 'sys', [])
+    assert seen['calls'] == 1
+
+
+def test_a_MALFORMED_tool_call_is_not_retried(monkeypatch):
+    """The model DID answer and answered badly. That is a result, and retrying
+    it would quietly convert a scoreable failure into a different one."""
+    from agent import provider
+
+    seen = _flaky(monkeypatch, [provider.MalformedToolCall('bad json')] * 9)
+    monkeypatch.setattr(provider.settings, 'CALL_ATTEMPTS', 6)
+
+    with pytest.raises(provider.MalformedToolCall):
+        provider.call_model([], 'sys', [])
+    assert seen['calls'] == 1
+
+
+def test_the_backoff_GROWS_and_is_capped_and_jittered():
+    from agent import provider
+
+    first = [provider._pause(1) for _ in range(40)]
+    later = [provider._pause(3) for _ in range(40)]
+    base, cap = provider.settings.RETRY_BASE, provider.settings.RETRY_CAP
+
+    assert min(later) > max(first), 'attempt 3 must wait longer than attempt 1'
+    assert all(base <= d <= base * 1.5 for d in first)
+    assert all(d <= cap * 1.5 for d in [provider._pause(9) for _ in range(40)])
+    assert len(set(first)) > 1, 'jitter decorrelates concurrent retries'

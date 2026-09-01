@@ -53,6 +53,20 @@ MAX_TOKENS = 16_000      # on Anthropic this caps thinking AND response together
 REQUEST_TIMEOUT = float(_env("AGENT_REQUEST_TIMEOUT", "120"))
 MAX_ATTEMPTS = 3
 
+# Attempts at the WHOLE call, above whatever the SDK retries internally.
+# MEASURED against NVIDIA on 2026-09-01: 15 of 20 calls through call_model()
+# survived, and the five failures were `APIError: Service temporarily overloaded`
+# returning in 0.2-0.3s - too fast for the SDK to have retried them at all,
+# because a bare APIError carries no status_code and the SDK only retries codes
+# it can attribute. 75% per call compounds to 0.3% over a 20-turn run, which is
+# why six launch attempts produced zero scored runs.
+CALL_ATTEMPTS = int(_env("AGENT_CALL_ATTEMPTS", "6"))
+
+# The endpoint recovers in SECONDS - a retry 2s later succeeded repeatedly - so
+# this caps low. Backoff sized for a capacity bounce, not a rate limit.
+RETRY_BASE = float(_env("AGENT_RETRY_BASE", "1.0"))
+RETRY_CAP = float(_env("AGENT_RETRY_CAP", "8.0"))
+
 
 def _clean(value: str | None) -> str:
     """Strip whitespace and surrounding quotes.
@@ -115,9 +129,21 @@ MAX_COMPACTIONS = int(_env("AGENT_MAX_COMPACTIONS", "3"))
 # that declared `done` and failed, 31 never ran the tests at all and 15 edited
 # AFTER their last test run - 47% ended on an unverified change. Hermes ships
 # theirs off; we have the measurement they presumably did not.
-VERIFY_ON_STOP = _env("AGENT_VERIFY_ON_STOP", "on").strip().lower() not in (
+# OFF, which is what Hermes ships: hermes_cli/config_defaults.py sets
+# "verify_on_stop": False and TWO one-time migrations (config_migrations.py
+# _migrate_to_31/_32) turn it off on existing installs, because "the
+# verification narrative was more noise than signal". Measured here the same
+# way: on took dev 15/15 -> 12/15, with the stuck share 25% -> 47%.
+VERIFY_ON_STOP = _env("AGENT_VERIFY_ON_STOP", "off").strip().lower() not in (
     "0", "off", "false")
 MAX_VERIFY_NUDGES = 2
+
+# One nudge, once, when a run reaches `done` having only read. Vellum bounds
+# its equivalent the same way (surface-completion-nudge marks the conversation
+# and the sibling stop hook clears it), because a nudge the model declines
+# twice is a loop.
+NOOP_NUDGE = _env("AGENT_NOOP_NUDGE", "on").strip().lower() not in (
+    "0", "off", "false")
 
 # NFR-101. Stream the OpenAI-compatible reply so there IS a first token to
 # measure. Off restores the single-block path exactly, which is the fallback if

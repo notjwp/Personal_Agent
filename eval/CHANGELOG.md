@@ -887,6 +887,96 @@ see where it points.
 
 ---
 
+## The retry that was never wired, and a nudge turned back off (2026-09-01, later)
+
+649 -> 662 tests. Three measured dev runs, 45 scored rows, 0 blocked in the last two.
+
+### Why six launch attempts had produced zero scored runs
+
+Not the endpoint. `RETRYABLE` in `provider.py` listed five exception names, and
+NOTHING EVER RETRIED THEM - the classification had been added, the retry had not.
+The SDK's own `max_retries` does not cover a bare `APIError`, which carries no
+`status_code`; a mid-stream overload arrives exactly that way, and the file's own
+comment already said three `real-humanize` runs were scored 0/3 for it.
+
+The tell was in the timings: every failure returned in 0.2-0.3s, too fast for three
+attempts with backoff.
+
+| | survived | wall clock |
+|---|---|---|
+| before | **15/20** | 57s |
+| after | **20/20** | 88s |
+
+75% per call is 0.3% over a 20-turn run. `call_model` now retries
+`ProviderUnavailable` six times with jittered backoff - Hermes's `retry_utils`
+design, resized: their base 5s / cap 120s is sized for a rate limit, this endpoint
+bounces back in about a second.
+
+It does NOT retry a stream that already emitted tokens (the second attempt would
+repeat them into the transcript), nor `MalformedToolCall` (a real result that must
+be scored) nor `ProviderMisconfigured` (asking again cannot supply a key).
+
+### VERIFY_ON_STOP back OFF - kept
+
+Turned on the previous cycle on the strength of 637 rows where 47% of failures ended
+on an unverified edit. The evidence was real and the remedy was wrong.
+
+| | dev | done | stuck |
+|---|---|---|---|
+| historic (n=222) | 15/15 | 73% | 25% |
+| ON | **12/15** | 53% | **47%** |
+| OFF | **13/15** | 67% | 33% |
+
+Hermes reached the same place from real use rather than from a number:
+`hermes_cli/config_defaults.py:262` ships `verify_on_stop: False`, and TWO one-time
+migrations (`config_migrations.py` `_migrate_to_31`/`_32`) turn it off on existing
+installs because "the verification narrative was more noise than signal". Reading
+their default answered in minutes what a tuning cycle had cost a day.
+
+### _noop_nudge - shipped UNMEASURED, and that is the finding
+
+`broken-fixture` run 1 made five tool calls - `read_file`, `search_files` x3,
+`read_file` - and declared `done` with the suite red. `_verify_nudge` cannot see it:
+nothing was edited, so `edited_unverified` was never set. Hermes's
+`verification_stop.py` has the SAME blind spot (`if not paths: return None`), so
+porting it would not have helped; their cover for this is
+`trailing_continue_intent`, a regex on the message tail.
+
+`policy.risk_of` gives a better signal than a regex here - it already classifies MCP
+and skill tools - so the check is "did any write-risk tool ever get called".
+
+**Derived from the message history, not carried in the state.** The first version
+added a `mutated: bool` field and broke 17 tests. Vellum derives its equivalent from
+history content because a rewritten message array cannot invalidate it; here the
+argument is sharper still - a thread resumed from a checkpoint written before this
+existed has no such key and would nudge on every resume. Dropping the field fixed 13
+of the 17 failures outright.
+
+**It fired 0 times in the next 15 runs.** It is tested, mutation-checked four ways,
+and has produced no measured effect. Kept only because the mode it targets was real
+when observed; it is one honest step from `learn`, which was called 0 times in 15
+sessions, and should be reverted if a later run still never fires it.
+
+### add-endpoint is not a guard
+
+Three runs today on identical code: 1/3, 3/3, 1/3. Its full history is
+2/3 3/3 2/3 1/1 1/3 3/3 2/3 2/3 3/3. All three failures today hit the 13-turn cap
+having written files, so the new nudge never fired on them.
+
+**The 15/15 headline was a favourable draw on a flapping case.** "15/15 -> 12/15"
+overstated the regression; the honest guard is 4 of 5 dev cases at 3/3 with
+`add-endpoint` reported as variable.
+
+### Process, recorded because it cost an hour
+
+Two harnesses ran at once - a `nohup` launch that Git Bash's `ps` did not show
+(Windows processes need `ps -W`), so the "relaunch" was a second driver. Each waited
+on the other's container. Later the harness was piped through `head -25`, which
+SIGPIPEs it mid-case; the standing lesson names `tail` and `timeout`, and `head` is
+the same defect. Both left orphaned containers.
+
+---
+
 ## The agent was told it fixes broken code, on every task (2026-08-31)
 
 640 -> 649 tests. No quota. Two changes, both aimed at the half of this project

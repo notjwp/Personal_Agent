@@ -10,12 +10,12 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, web search, measurement rig. **649 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, web search, measurement rig. **662 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
 |---|---|
-| dev baseline | **15/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b` |
+| dev baseline | **13/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b`. 4 of 5 cases 3/3; `add-endpoint` flaps 1/3-3/3 on identical code and the old 15/15 was a favourable draw on it |
 | held out | **29/30** — the dev score was not overfitted |
 | real repositories | **4/10**; `real-humanize` 1 pass in 9 runs across four configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
@@ -48,6 +48,16 @@ Ordered by how often they have caught something.
   the thing ran before attributing anything to it.
 
 **The loop and the model**
+
+- **A retryable classification with no retry behind it is a comment.** `RETRYABLE`
+  listed five exception names and nothing ever made a second attempt; the SDK does not
+  retry a bare `APIError` because it carries no status_code. Measured: 15 of 20 calls
+  survived, which is 0.3% over a 20-turn run, and six launch attempts produced zero
+  scored runs. 20/20 once `call_model` actually retried. Check the retry EXISTS, not
+  that the taxonomy does.
+- **A guard built for a failure mode you saw once may never fire again.** `_noop_nudge`
+  targets a run that reaches `done` having only read - measured once in 15 rows - and
+  fired 0 times in the next 15. Tested and mutation-checked is not measured.
 
 - **Fixing one premature ending reveals the next.** Truncation ended runs at ~12 turns;
   fixing it exposed `MAX_SECONDS`; raising that exposed `BUDGET_TOKENS` at ~20 turns.
@@ -235,7 +245,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 649 tests, no API key, no network
+pytest                            # 662 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

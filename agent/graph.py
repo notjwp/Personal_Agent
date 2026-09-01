@@ -27,7 +27,7 @@ from langgraph.types import RunnableConfig, interrupt
 from agent import config as settings
 from agent import memory, skills
 from agent.context import boundaries, compact_messages, context_chars, shrink
-from agent.policy import classify
+from agent.policy import classify, risk_of
 from agent.provider import call_model
 from agent import registry
 from agent.tools import toolset
@@ -104,6 +104,7 @@ class AgentState(TypedDict):
     plan_turns: int           # counted apart from `turns`; see config.PLAN_MAX_TURNS
     compact_count: int        # compactions so far; capped by config.MAX_COMPACTIONS
     edited_unverified: bool   # a write happened with no test since
+    noop_nudged: bool         # the read-only-run nudge has been spent
     verify_nudges: int        # bounded by MAX_VERIFY_NUDGES
     truncated: bool           # last reply hit the output cap (stop_reason=length)
     summarised: bool          # the turn cap has already asked for a wrap-up
@@ -512,7 +513,7 @@ def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
                 "messages": state["messages"] + [
                     {"role": "user", "content": TRUNCATED_HINT}],
             }
-        nudge = _verify_nudge(state)
+        nudge = _verify_nudge(state) or _noop_nudge(state)
         if nudge is not None:
             return nudge
         return {"verdict": "done"}
@@ -544,6 +545,66 @@ TRUNCATED_HINT = (
     "[System: your previous reply was cut off by the output length limit. "
     "Do not restart or repeat it. Stop explaining and make the next tool call "
     "now - edit the file you were reasoning about, or run the tests.]")
+
+
+# A run that reaches `done` having only READ has not finished, it has
+# researched. MEASURED 2026-09-01: broken-fixture run 1 made five tool calls -
+# read_file, search_files x3, read_file - and declared done with the suite still
+# red. _verify_nudge cannot see it, because nothing was edited and
+# edited_unverified was never set; Hermes's verification_stop.py has the same
+# blind spot (`if not paths: return None`).
+#
+# The last clause is load-bearing: a personal-agent goal may legitimately need
+# no edit, and a nudge that demands one would break the half of the rig that is
+# not coding.
+NOOP_HINT = (
+    "[You are about to finish, but you have not changed anything - every tool "
+    "call so far has only read. If this task needs an edit, make it now. If you "
+    "have genuinely finished, say what you found and why no change was needed.]")
+
+
+def _wrote_anything(messages: list[dict]) -> bool:
+    """Whether any write-risk tool was ever CALLED in this history.
+
+    Derived from the history rather than carried in the state, which is Vellum's
+    reason in surface-completion-nudge: a signal read out of the messages cannot
+    be invalidated by an array that gets rewritten. Here it also means a thread
+    resumed from a checkpoint written before this existed reads correctly instead
+    of nudging on every resume.
+
+    risk_of, not a tool-name list: it already classifies MCP and skill tools, and
+    a hand-kept set is how a tool added later silently stops counting.
+    """
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (isinstance(block, dict) and block.get("type") == "tool_use"
+                    and risk_of(block.get("name", "")) == "write"):
+                return True
+    return False
+
+
+def _noop_nudge(state: AgentState):
+    """Ask once when a run would finish without having written anything.
+
+    Shaped after Vellum's surface-completion-nudge: check at the moment the turn
+    would otherwise end, push a notice, continue, and mark it spent so a model
+    that declines is never asked twice.
+    """
+    if not settings.NOOP_NUDGE or state.get("noop_nudged"):
+        return None
+    if _wrote_anything(state["messages"]):
+        return None
+    return {
+        "verdict": "continue",
+        "noop_nudged": True,
+        "messages": state["messages"] + [
+            {"role": "user", "content": NOOP_HINT}],
+    }
 
 
 def _verify_nudge(state: AgentState):
