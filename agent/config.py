@@ -234,6 +234,15 @@ SKILLS_INDEX_CHARS = 1_600
 # Below MAX_RESULT_CHARS so a long document spills rather than arriving whole.
 SKILL_BODY_CHARS = 6_000
 
+# The best-matching skill's body is injected outright rather than offered.
+# MEASURED on 22 authoring runs where a skill was in the index: the agent called
+# load_skill in 59% of them, and those passed 12 of 13 - against 1 of 9 when it
+# did not. 92% versus 11%, decided by whether the model elected to open a file it
+# had already been told about. Skill bodies here are 421-624 bytes, so injecting
+# one costs less than a single tool result.
+AUTO_SKILL = _env("AGENT_AUTO_SKILL", "on").strip().lower() not in (
+    "0", "off", "false")
+
 # --- authoring (Phase O) ----------------------------------------------------
 
 # Separate from SKILLS_ENABLED so loading-on/authoring-off is measurable.

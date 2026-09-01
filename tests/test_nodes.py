@@ -421,7 +421,7 @@ def test_full_loop_offline(fresh_app, tmp_workspace, monkeypatch):
     assert len(seen) == 4, "one model call per turn"
     for req in seen:
         assert req["tools"], "tools must be sent every turn"
-        assert "You fix broken code" in req["system"], "the system prompt must be sent"
+        assert "You are a personal agent" in req["system"], "the system prompt must be sent"
     assert len(seen[-1]["messages"]) > len(seen[0]["messages"]), "history accumulates"
 
 
@@ -3153,3 +3153,126 @@ def test_search_files_skips_binaries(tmp_workspace):
 def test_search_files_still_finds_text_matches(tmp_workspace):
     (tmp_workspace / 'a.py').write_text('needle here' + chr(10), encoding='utf-8')
     assert 'a.py' in search_files('needle')
+
+# ================================ posture: one loop, two briefs (Hermes's design)
+
+
+def test_an_empty_workspace_is_not_a_code_workspace(tmp_workspace):
+    """A personal agent is not a coding agent that also remembers things."""
+    from agent.graph import is_code_workspace
+
+    assert is_code_workspace() is False
+
+
+def test_prose_alone_is_not_a_code_workspace(tmp_workspace):
+    from agent.graph import is_code_workspace
+
+    (tmp_workspace / 'notes.txt').write_text('shopping list', encoding='utf-8')
+    assert is_code_workspace() is False
+
+
+def test_a_STRAY_SOURCE_FILE_is_not_enough(tmp_workspace):
+    """The documented decision, now asserted. A .py file proves nothing - a scratch
+    script, a downloaded snippet, a generated report all look like this. A project
+    manifest or a test directory proves someone is MAINTAINING something.
+
+    Found by mutation: adding `any(root.glob("*.py"))` passed every other test."""
+    from agent.graph import is_code_workspace
+
+    (tmp_workspace / 'scratch.py').write_text('print(1)', encoding='utf-8')
+    (tmp_workspace / 'report.js').write_text('console.log(1)', encoding='utf-8')
+    assert is_code_workspace() is False
+
+
+def test_a_project_manifest_makes_it_one(tmp_workspace):
+    from agent.graph import is_code_workspace
+
+    (tmp_workspace / 'pyproject.toml').write_text('[project]', encoding='utf-8')
+    assert is_code_workspace() is True
+
+
+def test_a_tests_directory_makes_it_one(tmp_workspace):
+    """Deliberately not a language check - a stray .py file proves nothing, a test
+    directory proves someone is maintaining something."""
+    from agent.graph import is_code_workspace
+
+    (tmp_workspace / 'tests').mkdir()
+    assert is_code_workspace() is True
+
+
+def test_an_unreadable_workspace_stays_general(tmp_workspace, monkeypatch):
+    """Fails to the general posture. Guessing "coding" would tell a personal
+    request to go and run pytest."""
+    from agent import config
+    from agent.graph import is_code_workspace
+
+    monkeypatch.setattr(config, 'WORKSPACE', tmp_workspace / 'gone')
+    assert is_code_workspace() is False
+
+
+def test_the_coding_brief_is_ABSENT_from_a_general_workspace(
+        fresh_app, tmp_workspace, monkeypatch):
+    """MEASURED CAUSE. SOUL.md opened with "You fix broken code" and was sent on
+    EVERY task - including the recall cases where the user states a deploy key.
+    Those splits score 46% and 15%; the coding splits score 74-97%."""
+    seen = use_fake(monkeypatch, [
+        tool_turn('run_shell', command='echo hi'),
+        text_turn('Noted.')])
+    run(fresh_app, 'posture-general')
+
+    system = seen[0]['system']
+    assert 'personal agent' in system
+    assert 'pytest' not in system.lower(), 'a general turn must not be told to test'
+    assert 'code workspace' not in system
+
+
+def test_the_coding_brief_IS_added_in_a_code_workspace(
+        fresh_app, tmp_workspace, monkeypatch):
+    (tmp_workspace / 'pyproject.toml').write_text('[project]', encoding='utf-8')
+    seen = use_fake(monkeypatch, [
+        tool_turn('run_shell', command='pytest -q'),
+        text_turn('Fixed.')])
+    run(fresh_app, 'posture-coding')
+
+    system = seen[0]['system']
+    assert 'personal agent' in system, 'the general brief still applies'
+    assert 'code workspace' in system
+    assert 'green suite is the definition of done' in system
+
+
+def test_the_posture_is_recorded_in_the_trace(fresh_app, tmp_workspace, monkeypatch):
+    """A pass rate cannot be attributed to a posture nobody logged."""
+    (tmp_workspace / 'pyproject.toml').write_text('[project]', encoding='utf-8')
+    use_fake(monkeypatch, [
+        tool_turn('run_shell', command='pytest -q'),
+        text_turn('Fixed.')])
+    trace = []
+    fresh_app.invoke(state(), {'configurable': {
+        'thread_id': 'posture-trace', 'autonomous': True, 'trace': trace}})
+
+    assert any(e.get('kind') == 'posture' and e.get('name') == 'coding'
+               for e in trace)
+
+def test_the_matching_skill_BODY_reaches_the_system_prompt(
+        fresh_app, tmp_workspace, monkeypatch):
+    """The opening() tests call the function directly, so removing the graph
+    wiring entirely left them all passing. Found by mutation."""
+    from agent import config
+
+    library = tmp_workspace / 'lib'
+    (library / 'qz-release').mkdir(parents=True)
+    (library / 'qz-release' / 'SKILL.md').write_text(
+        '---' + chr(10) + 'name: qz-release' + chr(10)
+        + 'description: Use when asked to cut, tag or prepare a release.' + chr(10)
+        + '---' + chr(10) + 'Append -quartz to every version.' + chr(10),
+        encoding='utf-8')
+    monkeypatch.setattr(config, 'SKILLS_DIRS', (library,))
+
+    seen = use_fake(monkeypatch, [
+        tool_turn('run_shell', command='echo hi'), text_turn('Done.')])
+    goal = [{'role': 'user', 'content': 'Cut release 4.14.0'}]
+    fresh_app.invoke(state(messages=goal), {'configurable': {
+        'thread_id': 'skill-open', 'autonomous': True, 'trace': []}})
+
+    assert 'Append -quartz to every version' in seen[0]['system'], (
+        'the matching skill body must be in the prompt, not merely offered')

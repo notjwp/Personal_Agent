@@ -34,6 +34,7 @@ from agent.tools import toolset
 
 SOUL = Path(__file__).resolve().parent.parent / "prompts" / "SOUL.md"
 PLAN = Path(__file__).resolve().parent.parent / "prompts" / "PLAN.md"
+CODING = Path(__file__).resolve().parent.parent / "prompts" / "CODING.md"
 COMPACT_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "COMPACT.md"
 STEPS = Path(__file__).resolve().parent.parent / "prompts" / "STEPS.md"
 
@@ -41,6 +42,39 @@ STEPS = Path(__file__).resolve().parent.parent / "prompts" / "STEPS.md"
 # adopting a plan needs no second model call.
 _STEP = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+(.{3,})$")
 
+# Files that mean "this workspace is source someone expects you to change".
+# Deliberately NOT a language list: a .py file proves nothing, a project manifest
+# or a test directory proves someone is maintaining something.
+CODE_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt",
+                "package.json", "Cargo.toml", "go.mod", "pom.xml",
+                "build.gradle", "Gemfile", "composer.json", "Makefile",
+                "tests", "test", ".git")
+
+
+def is_code_workspace() -> bool:
+    """Whether to add the coding brief. Deterministic - no model call.
+
+    Hermes selects a ContextProfile the same way and injects a coding brief only
+    in that posture; ours is two files instead of a profile registry because we
+    have two postures and they have a plugin system.
+
+    Why this matters here, measured: SOUL.md opened with "You fix broken code"
+    and was sent on EVERY task - including the recall cases where the user states
+    a deploy key and the authoring cases where a standing rule should be learned.
+    Those splits score 46% and 15%; the coding splits score 74-97%.
+
+    ONE level deep only. Walking the tree costs I/O on every turn and a marker
+    buried three directories down is somebody's vendored dependency, not the
+    workspace's own shape.
+    """
+    root = settings.WORKSPACE
+    try:
+        return any((root / marker).exists() for marker in CODE_MARKERS)
+    except OSError:
+        return False                      # unreadable workspace: stay general
+
+
+NEWLINES = '\n\n'
 DENIAL_TEMPLATE = "Denied by policy: {reason}. Find another approach."
 SPILL_MARKER = "[full output: "
 
@@ -139,6 +173,16 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
     cfg = config.get("configurable", {})
     system = SOUL.read_text(encoding="utf-8")   # CE-05: read here, not at import
 
+    # The posture. A personal agent is not a coding agent that also remembers
+    # things - the coding brief is added only where it applies, so a "what did I
+    # tell you about the deploy key" turn is not told to run pytest.
+    if is_code_workspace():
+        coding = CODING.read_text(encoding="utf-8")
+        system = system + '\n\n' + coding
+        trace = cfg.get("trace")
+        if trace is not None:
+            trace.append({"kind": "posture", "name": "coding"})
+
     # Section 4.1 step 3 is explicit that this goes in the SYSTEM PROMPT and not
     # into the message list, which "pollutes history and creates gaps" - the same
     # placement memory and skills already use.
@@ -174,10 +218,22 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
     # provider that re-sends and re-charges the prompt every single turn.
     catalogue = skills.index()
     if catalogue:
-        system = f"{system}\n\n{catalogue}"
+        system = system + NEWLINES + catalogue
         trace = cfg.get("trace")
         if trace is not None:
             trace.append({"kind": "skills", "chars": len(catalogue)})
+
+    # Level 1 offers; this OPENS. Measured on 22 authoring runs: the agent called
+    # load_skill in 59% of the runs that had a skill in the index, and those passed
+    # 12 of 13 against 1 of 9 when it did not. The index was never the problem -
+    # electing to act on it was. Same correction as `learn`, which asked and was
+    # called 0 times in 15 sessions.
+    opened = skills.opening(_goal(state["messages"]))
+    if opened:
+        system = system + NEWLINES + opened
+        trace = cfg.get("trace")
+        if trace is not None:
+            trace.append({"kind": "skill_opened", "chars": len(opened)})
 
     # Rebuilt per turn rather than bound at import: which tools exist depends on
     # what activated for THIS run, and CE-05 forbids deciding that at import.

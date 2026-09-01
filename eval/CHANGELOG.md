@@ -887,6 +887,107 @@ see where it points.
 
 ---
 
+## The agent was told it fixes broken code, on every task (2026-08-31)
+
+640 -> 649 tests. No quota. Two changes, both aimed at the half of this project
+that had never been tuned.
+
+### The split nobody was looking at
+
+| | | |
+|---|---|---|
+| personal | `authoring` | **15%** |
+| | `authoring-tiny` | **14%** |
+| | `recall` | **46%** |
+| | `skills` | **52%** |
+| web | `web` | 100% |
+| | `search` | 50% |
+| code | `heldout` | 97% |
+| | `multibug` | 90% |
+| | `dev` | 74% |
+| | `real` | 21% |
+
+**33 of the 59 eval cases are not coding.** The rig already covers an all-rounder;
+the project had only ever been aimed at the coding half - and CONTEXT.md 1 says
+the repo-repair pass rate IS the headline number, which is the spec doing the
+narrowing.
+
+### 1. The posture split
+
+`SOUL.md` opened with *"You fix broken code"* and was sent on EVERY task,
+including the recall cases where the user states a deploy key and the authoring
+cases where a standing rule should be learned.
+
+It now opens *"You are a personal agent working for one person"*, and the coding
+brief lives in `prompts/CODING.md`, appended only when the workspace looks like
+source someone maintains - a project manifest, a `tests/` directory, a `.git`.
+
+Hermes's `agent/coding_context.py` selects a ContextProfile the same way and
+injects its brief only in that posture. Two files here rather than a profile
+registry, because we have two postures and they have a plugin system.
+
+`is_code_workspace()` is deterministic, one level deep, and FAILS TO GENERAL on an
+unreadable workspace - guessing "coding" tells a personal request to run pytest.
+
+### 2. The matching skill is OPENED, not offered
+
+The measured cause of 15%, from 22 authoring runs that had a skill in the index:
+
+```
+agent called load_skill : 13 runs   passed 12, failed 1
+agent did NOT           :  9 runs   passed  1, failed 8
+```
+
+**92% against 11%, decided by whether the model elected to open a file it had
+already been told about** - and it elected to in 59% of runs. The extraction
+worked, the index was there. The DECISION was the defect, which is this project's
+oldest lesson: deterministic injection works, agent choice does not. `learn` asked
+and was called 0 times in 15 sessions.
+
+Neither reference implementation relies on that choice: Hermes loads skills by
+slash command, Vellum tracks explicit `<loaded_skill>` markers. Both have a human
+in the loop; our authoring cases need autonomous recall, which is a MEMORY problem
+- and memory injection is the thing this project already measured at 0/18 -> 15/18.
+
+Bodies are 421-624 bytes, less than one tool result. Matching reuses the
+rarest-word scoring that took memory recall 2/6 -> 5/6, and refuses on a tie or no
+rare overlap: injecting the WRONG skill is worse than injecting none, because the
+agent then follows a convention that does not apply. Swept over the fixture
+library: **9/9, including all three goals where it correctly injects nothing.**
+
+A three-character floor, not four: `len(w) > 3` dropped `cut`, `tag` and `txt`, so
+"Cut release 4.14.0" shared one rare word with the release skill, tied, and got
+nothing. Four scores 6/9 and mismatches twice.
+
+### ALL THREE mutations passed the first time
+
+| mutation | first | after fixing the tests |
+|---|---|---|
+| 4-character floor | **passed** | 1 failed |
+| inject on a tie | **passed** | 1 failed |
+| never open the skill | **passed** | 1 failed |
+
+Every one was a test of mine that could not fail:
+
+- The tie test used TWO skills, so the shared word appeared in 2 of 2, exceeded
+  the furniture ceiling, and was dropped before the tie branch was ever reached.
+  It returned None for the wrong reason. Six skills now.
+- The floor test also shared `release`, a long word, so it matched either way.
+  The words it shares are now three letters and nothing else.
+- Nothing asserted the body reaches the SYSTEM PROMPT - only that `opening()`
+  returns it - so deleting the graph wiring left every test green.
+
+That is the sixth time today, and the pattern is the same each time: a test that
+asserts the right property against a fixture too small to exercise it.
+
+### Unmeasured
+
+Six behaviour changes are now stacked without a scored run. This one has a
+falsifiable prediction, which the others do not: it should move `authoring` and
+`recall`, and leave `dev` alone.
+
+---
+
 ## Rig verification (Phase A)
 
 Measured in the container (`python:3.12-slim`, pytest 9.1.1, flask 3.1.3),

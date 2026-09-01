@@ -173,6 +173,77 @@ def index() -> str:
     return text
 
 
+BLANK = '\n\n'
+
+
+def best_match(goal: str) -> dict | None:
+    """The one skill whose description this goal is about, or None.
+
+    Scored on the RAREST shared words, which is the same correction that took
+    memory recall from 2/6 to 5/6: matching on every word lets `file`, `the` and
+    `add` outvote `release` or `dependency`. A word appearing in most skill
+    descriptions discriminates nothing and is dropped.
+
+    Returns None on a tie or on no rare overlap at all - injecting the WRONG
+    skill is worse than injecting none, because the agent then follows a
+    convention that does not apply.
+    """
+    entries = catalogue()
+    if not entries:
+        return None
+
+    def words(text):
+        # THREE characters, not four. `len(w) > 3` dropped `cut`, `tag` and `txt`,
+        # and "Cut release 4.14.0" then shared only one rare word with the release
+        # skill - a tie, so nothing was injected. Swept over the eight fixture
+        # skills and nine goals: this scores 9/9 with no wrong match, where a
+        # 4-character floor scored 6 and mismatched twice.
+        return {w for w in "".join(ch if ch.isalnum() else " "
+                                   for ch in text).lower().split() if len(w) > 2}
+
+    described = {name: words(f"{e['name']} {e['description']}")
+                 for name, e in entries.items()}
+    # How many skills each word appears in. A word in most of them is furniture.
+    spread: dict = {}
+    for bag in described.values():
+        for word in bag:
+            spread[word] = spread.get(word, 0) + 1
+    ceiling = max(1, len(entries) // 2)
+
+    asked = words(goal)
+    scores = {}
+    for name, bag in described.items():
+        rare = [w for w in asked & bag if spread[w] <= ceiling]
+        if rare:
+            scores[name] = len(rare)
+    if not scores:
+        return None
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return None                       # a tie is not a match
+    return entries[ranked[0][0]]
+
+
+def opening(goal: str) -> str:
+    """The matching skill's body, ready for the system prompt, or empty.
+
+    The counterpart to memory.context_for: injected by a RULE rather than
+    requested. `load_skill` stays available for the others.
+    """
+    if not config.AUTO_SKILL:
+        return ""
+    skill = best_match(goal)
+    if not skill:
+        return ""
+    try:
+        body = load_skill(skill["name"])
+    except Exception:
+        return ""                        # a broken skill must not end the run
+    header = "# The skill for this task" + BLANK + (
+        "Opened for you because it matches what you were asked. Follow it.")
+    return header + BLANK + body
+
+
 def _resolve(skill: dict, filename: str) -> Path:
     """A bundled file inside this skill's own directory, or an error.
 

@@ -482,3 +482,127 @@ def test_the_description_says_WHEN_not_what_the_agent_happened_to_be_doing(monke
     description = skills.catalogue()["conventions"]["description"]
     assert "b.txt" not in description and "beta" not in description
     assert "CONVENTIONS.md" in description
+
+# =================== the matching skill is OPENED, not offered (measured 92/11)
+
+
+def _library(tmp_path, monkeypatch, *entries):
+    """Build a skill library from (name, description) pairs."""
+    from agent import config
+
+    root = tmp_path / 'lib'
+    for name, description in entries:
+        directory = root / name
+        directory.mkdir(parents=True)
+        (directory / 'SKILL.md').write_text(
+            '---' + chr(10) + f'name: {name}' + chr(10)
+            + f'description: {description}' + chr(10) + '---' + chr(10)
+            + f'The body of {name}.' + chr(10), encoding='utf-8')
+    monkeypatch.setattr(config, 'SKILLS_DIRS', (root,))
+    return root
+
+
+def test_the_matching_skill_is_found(tmp_path, monkeypatch):
+    from agent import skills
+
+    _library(tmp_path, monkeypatch,
+             ('qz-release', 'Use when asked to cut, tag or prepare a release.'),
+             ('qz-deps', 'Use when asked to record a dependency.'))
+
+    assert skills.best_match('Cut release 4.14.0')['name'] == 'qz-release'
+    assert skills.best_match('Record a dependency on attrs')['name'] == 'qz-deps'
+
+
+def test_an_unrelated_goal_matches_NOTHING(tmp_path, monkeypatch):
+    """Injecting the WRONG skill is worse than injecting none - the agent then
+    follows a convention that does not apply."""
+    from agent import skills
+
+    _library(tmp_path, monkeypatch,
+             ('qz-release', 'Use when asked to cut, tag or prepare a release.'),
+             ('ashgrove-config', 'Use when asked to create or edit a config file'
+                                 ' for an Ashgrove service.'))
+
+    assert skills.best_match('What is the weather like today?') is None
+    assert skills.best_match('Write a shopping list to notes.txt') is None
+
+
+def test_a_tie_is_not_a_match(tmp_path, monkeypatch):
+    """Two skills equally entitled to the goal: inject neither.
+
+    SIX skills, not two. With two, `spread` for the shared word is 2 and the
+    ceiling is 1, so the word is dropped as furniture and the function returns
+    None before the tie branch is ever reached - the first version of this test
+    passed with the tie check DELETED. Found by mutation.
+    """
+    from agent import skills
+
+    _library(tmp_path, monkeypatch,
+             ('alpha-thing', 'Use when polishing a widget.'),
+             ('beta-thing', 'Use when polishing a widget.'),
+             ('gamma-one', 'Use when filing invoices.'),
+             ('delta-one', 'Use when booking travel.'),
+             ('epsilon-one', 'Use when drafting letters.'),
+             ('zeta-one', 'Use when sorting photographs.'))
+
+    assert skills.best_match('polishing a widget') is None
+
+
+def test_a_THREE_letter_word_still_counts(tmp_path, monkeypatch):
+    """A four-character floor dropped `cut`, `tag` and `txt`, and "Cut release"
+    then shared one rare word with the release skill - a tie, so nothing was
+    injected. Swept over the fixture library: a 3-character floor scores 9/9 with
+    no wrong match, a 4-character floor scores 6 and mismatches twice."""
+    from agent import skills
+
+    # The ONLY shared words are three letters long. With a 4-character floor the
+    # goal shares nothing and no skill is injected; the first version of this test
+    # also shared `release`, so it passed either way. Found by mutation.
+    _library(tmp_path, monkeypatch,
+             ('qz-release', 'Use when asked to cut or tag a version.'),
+             ('qz-deps', 'Use when asked to record a dependency.'),
+             ('qz-lint', 'Use when asked to check formatting.'),
+             ('qz-mail', 'Use when asked to send correspondence.'))
+
+    assert skills.best_match('cut and tag it')['name'] == 'qz-release'
+
+
+def test_opening_returns_the_body_ready_for_the_prompt(tmp_path, monkeypatch):
+    from agent import skills
+
+    _library(tmp_path, monkeypatch,
+             ('qz-release', 'Use when asked to cut, tag or prepare a release.'))
+    opened = skills.opening('Cut release 4.14.0')
+
+    assert 'The body of qz-release' in opened
+    assert 'Follow it' in opened
+
+
+def test_opening_is_empty_when_nothing_matches(tmp_path, monkeypatch):
+    from agent import skills
+
+    _library(tmp_path, monkeypatch,
+             ('qz-release', 'Use when asked to cut, tag or prepare a release.'))
+    assert skills.opening('What is the weather like today?') == ''
+
+
+def test_it_can_be_turned_off(tmp_path, monkeypatch):
+    """Revertable without touching the loop, which is what makes it measurable."""
+    from agent import config, skills
+
+    _library(tmp_path, monkeypatch,
+             ('qz-release', 'Use when asked to cut, tag or prepare a release.'))
+    monkeypatch.setattr(config, 'AUTO_SKILL', False)
+
+    assert skills.opening('Cut release 4.14.0') == ''
+
+
+def test_a_broken_skill_does_not_end_the_run(tmp_path, monkeypatch):
+    from agent import skills
+
+    _library(tmp_path, monkeypatch,
+             ('qz-release', 'Use when asked to cut, tag or prepare a release.'))
+    monkeypatch.setattr(skills, 'load_skill',
+                        lambda *a, **k: (_ for _ in ()).throw(OSError('gone')))
+
+    assert skills.opening('Cut release 4.14.0') == ''

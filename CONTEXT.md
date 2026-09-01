@@ -832,6 +832,17 @@ re-argue a decision that has already been measured.
     prompts/
       SOUL.md          system prompt, version controlled (NFR-603)
       PLAN.md          the planning instruction, same rule
+      CODING.md        A STATED DEVIATION. SOUL.md opened "You fix broken code"
+                       and was sent on EVERY task, including the 33 of 59 eval
+                       cases that are not coding at all - authoring 15%, recall
+                       46%, skills 52%. SOUL.md is now the general brief and the
+                       coding half lives here, appended only when the workspace
+                       carries a project manifest, a tests/ directory or a .git.
+                       A second file rather than a conditional inside SOUL.md
+                       because NFR-603 says a prompt is a version-controlled
+                       FILE: a posture selected by branching inside one file
+                       cannot be diffed or reverted independently, and this one
+                       is measured separately.
     tests/             test_policy, test_context, test_reflect are the three §12
                        allowed. EIGHT stated deviations, each to the same standard
                        - the component's failure is SILENT or is where consent
