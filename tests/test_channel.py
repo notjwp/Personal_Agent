@@ -394,3 +394,55 @@ def test_the_migration_adds_the_channel_columns(tmp_path, monkeypatch):
         assert {"reply_to", "reply_ref", "subject",
                 "delivered_at", "attempts"} <= cols
         upgraded.execute("SELECT key, value FROM channel_state").fetchall()
+
+# ============================================================== the preflight
+
+
+def test_the_check_probes_BOTH_halves(channel):
+    """A mailbox that reads and cannot send is the worst outcome: the agent
+    accepts work and answers none of it. This project has watched a proxy report
+    Running for two hours while failing every request."""
+    channel.box = [(1, _mail("me@example.com", "old", "x"))]
+    report = channel.check()
+
+    assert any("imap" in line for line in report)
+    assert any("smtp" in line for line in report)
+    assert not any(line.startswith("FAIL") for line in report)
+
+
+def test_the_check_SENDS_and_QUEUES_nothing(channel):
+    from agent import worker
+
+    channel.box = [(1, _mail("me@example.com", "do this", "please"))]
+    channel.check()
+
+    assert channel.outbox == []
+    assert worker.tasks() == []
+
+
+def test_the_check_REPORTS_an_empty_allowlist(channel, monkeypatch):
+    from agent import config
+
+    monkeypatch.setattr(config, "EMAIL_ALLOW", frozenset())
+    report = channel.check()
+
+    assert any(line.startswith("FAIL") and "authorises nobody" in line
+               for line in report)
+
+
+def test_the_check_WARNS_that_a_first_run_adopts_the_inbox(channel):
+    """The surprising behaviour, said before it happens rather than after."""
+    channel.box = [(1, _mail("me@example.com", "old", "x"))]
+
+    assert any("adopt" in line for line in channel.check())
+
+
+def test_an_unreachable_mailbox_is_a_FAIL_not_a_crash(channel, monkeypatch):
+    def dead():
+        raise channel.ChannelUnavailable("imap: authentication failed")
+
+    monkeypatch.setattr(channel, "_imap", dead)
+    report = channel.check()
+
+    assert any(line.startswith("FAIL") and "authentication failed" in line
+               for line in report)

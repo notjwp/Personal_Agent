@@ -278,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="drain the task queue; runs until interrupted")
     parser.add_argument("--channel", action="store_true",
                         help="listen on email; queues messages and answers them")
+    parser.add_argument("--channel-check", action="store_true",
+                        help="probe the mailbox and report; sends nothing")
     parser.add_argument("--review", action="store_true",
                         help="show what needs attention, and queue a review of it")
     parser.add_argument("--schedule", nargs=2, metavar=("CRON", "GOAL"),
@@ -409,6 +411,14 @@ def _dispatch(args, app, parser) -> int:
         print("run it with:   python -m agent --worker")
         print("watch it with: python -m agent --tasks")
         return 0
+
+    if args.channel_check:
+        from agent import channel
+
+        lines = channel.check()
+        for line in lines:
+            print(line)
+        return 1 if any(l.startswith("FAIL") for l in lines) else 0
 
     if args.channel:
         # A SEPARATE process from --worker on purpose: this one only queues and

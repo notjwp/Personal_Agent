@@ -237,6 +237,57 @@ def deliver() -> int:
     return sent
 
 
+def check() -> list[str]:
+    """Probe both halves of the channel and report. Sends and queues nothing.
+
+    Two connections, because a mailbox that reads and cannot send is the worst
+    outcome: the agent would accept work and answer none of it. This project has
+    watched a proxy report Running for two hours while failing every request -
+    a preflight has to perform the operation the dependent code performs.
+    """
+    lines = []
+    if not config.EMAIL_USER or not config.EMAIL_PASSWORD:
+        return ["FAIL  set AGENT_EMAIL_USER and AGENT_EMAIL_PASSWORD"]
+    if not config.EMAIL_ALLOW:
+        lines.append("FAIL  AGENT_EMAIL_ALLOW is empty, which authorises nobody")
+    else:
+        lines.append(f"ok    {len(config.EMAIL_ALLOW)} address(es) authorised")
+
+    try:
+        box = _imap()
+        try:
+            status, data = box.uid("search", None, "ALL")
+            held = len((data[0] or b"").split()) if status == "OK" else 0
+            with worker._connect() as conn:
+                mark = _uid_mark(conn)
+            lines.append(f"ok    imap {config.IMAP_HOST} - {held} message(s) in INBOX")
+            lines.append(f"ok    high-water mark {mark}"
+                         + (" (a first run will adopt the inbox and answer none of it)"
+                            if mark == 0 else ""))
+        finally:
+            try:
+                box.logout()
+            except (imaplib.IMAP4.error, OSError):
+                pass
+    except ChannelUnavailable as exc:
+        lines.append(f"FAIL  {exc}")
+
+    try:
+        server = smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT,
+                                  timeout=config.CHANNEL_TIMEOUT)
+        try:
+            server.login(config.EMAIL_USER, config.EMAIL_PASSWORD)
+            lines.append(f"ok    smtp {config.SMTP_HOST} - login accepted")
+        finally:
+            try:
+                server.quit()
+            except (smtplib.SMTPException, OSError):
+                pass
+    except (smtplib.SMTPException, OSError) as exc:
+        lines.append(f"FAIL  smtp: {exc}")
+    return lines
+
+
 def run_channel(once: bool = False, poll: float | None = None) -> int:
     """Read the mailbox and pay outstanding replies until stopped.
 
