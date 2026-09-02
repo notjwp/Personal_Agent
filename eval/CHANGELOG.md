@@ -887,6 +887,57 @@ see where it points.
 
 ---
 
+## The model was inventing tools that do not exist (2026-09-02)
+
+**Hypothesis:** nothing tells the model how to LIST a directory, so it invents
+`ls`. **Change:** `run_shell`'s docstring, which said only "Use this to run
+tests", now says it is for looking around too; `search_files` stops claiming
+`ls` and `find`, which contradicted it. **Result:** mechanism confirmed, pass
+rate unmeasured. **Status: kept, and the pass-rate half is still owed.**
+
+### The discriminator
+
+| | n | pass |
+|---|---|---|
+| never invented a tool | 636 | **65.3%** |
+| invented one | 88 | **34.1%** |
+
+A 31-point gap across the whole corpus. The invented names are shell commands
+arriving as TOOL names - `ls` 70, `grep` 14, `find` 11 - plus mangled variants
+(`'ls -la'`, `grep ... </parameter`) that are the same three commands with
+arguments crammed into the name field. 81 of 108 are clean identifiers, so this
+is an affordance gap and not a parser bug.
+
+CLAUDE.md already records the earlier half: 67% of `run_shell` was doing
+`search_files`'s job via 1,266 `find`, 755 `grep`, 708 `ls`. Those went THROUGH
+run_shell. These escape it.
+
+### Measured on authoring, and that was the wrong choice
+
+| author-release | n | pass | invented |
+|---|---|---|---|
+| before | 21 | 2/21 (10%) | **14/21 (67%)** |
+| after | 3 | 0/3 | **0/3** |
+
+Invention went 67% -> 0% and the case still failed, because `author-release`
+never failed on directory listing - it fails on applying the `qz-release` skill.
+authoring was picked for having the HIGHEST invention rate, not for its failures
+being CAUSED by invention. Those are different things, and conflating them is
+the same error as measuring `_noop_nudge` on a split where its mode is rare.
+
+The split where a denied call actually costs the run is `real`: 10 of 15 no-edit
+`stuck` runs there die on `failures >= 3`, with `ls`/`grep`/`find` among the
+denials. That measurement is still owed.
+
+### Two hypotheses killed before any code was written
+
+| claim | measured |
+|---|---|
+| context flood on real repos | `max_result_chars` median 4,784, worst 11,340 - shrink is working |
+| re-reading the same file | duplicate reads median **0** on both passes and failures |
+
+---
+
 ## MAX_TURNS was the binding failure, not the model (2026-09-01, late)
 
 | | dev | held out | `stuck` |

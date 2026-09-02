@@ -241,10 +241,11 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
 # every `ls`.
 @tool(risk="write")
 def run_shell(command: str, timeout: int = 120) -> str:
-    """Run a shell command in the workspace. Returns the exit code, stdout and
-    stderr separately. Use this to run tests.
+    """Run any shell command in the workspace. Returns the exit code, stdout
+    and stderr separately. Use it to run the tests, and to look around: `ls`,
+    `ls -la` and `find` are shell commands, not tools - call them through here.
 
-    command: The command to run.
+    command: The command to run, e.g. 'pytest -q' or 'ls -la src'.
     timeout: Seconds before the command is killed. Default 120.
     """
     # Models emit schema-invalid arguments - this one arrived as the string "120s".
@@ -360,7 +361,7 @@ SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "node_modules", ".venv",
 @tool(risk="read")
 def search_files(pattern: str, glob: str = "**/*", paths_only: bool = False) -> str:
     """Find where something appears in the workspace. Returns path:line: matches,
-    never whole files. **Use this instead of run_shell with grep, find or ls** -
+    never whole files. **Use this instead of run_shell with grep** -
     it is bounded, so it cannot flood your context the way a raw grep across a
     large repository will. Use read_file once this has told you which file and
     which line to look at.

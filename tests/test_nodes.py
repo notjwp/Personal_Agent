@@ -1913,7 +1913,7 @@ HAND_WRITTEN_SCHEMAS = {'read_file': {'name': 'read_file',
  'search_files': {'name': 'search_files',
                   'description': 'Find where something appears in the workspace. '
                                  'Returns path:line: matches, never whole files. **Use '
-                                 'this instead of run_shell with grep, find or ls** - '
+                                 'this instead of run_shell with grep** - '
                                  'it is bounded, so it cannot flood your context the '
                                  'way a raw grep across a large repository will. Use '
                                  'read_file once this has told you which file and '
@@ -2019,13 +2019,15 @@ HAND_WRITTEN_SCHEMAS = {'read_file': {'name': 'read_file',
                                                                            '120.'}},
                                  'required': ['code']}},
  'run_shell': {'name': 'run_shell',
-               'description': 'Run a shell command in the workspace. Returns the exit '
-                              'code, stdout and stderr separately. Use this to run '
-                              'tests.',
+               'description': 'Run any shell command in the workspace. Returns the '
+                              'exit code, stdout and stderr separately. Use it to run '
+                              'the tests, and to look around: `ls`, `ls -la` and '
+                              '`find` are shell commands, not tools - call them '
+                              'through here.',
                'input_schema': {'type': 'object',
                                 'properties': {'command': {'type': 'string',
-                                                           'description': 'The command '
-                                                                          'to run.'},
+                                                           'description': "The command to run, "
+                                                                          "e.g. 'pytest -q' or 'ls -la src'."},
                                                'timeout': {'type': 'integer',
                                                            'description': 'Seconds '
                                                                           'before the '
