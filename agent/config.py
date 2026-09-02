@@ -123,6 +123,29 @@ BUDGET_TOKENS = 200_000
 # median run can reach max_turns; 1800 only helps the slow tail and costs 20%.
 MAX_SECONDS = int(_env("AGENT_MAX_SECONDS", "1500"))
 
+# --- the email channel (see CONTEXT.md 12) ---------------------------------
+
+# Credentials for the mailbox the agent reads and answers from. An app
+# password, never the account password - and .env is gitignored.
+EMAIL_USER = _clean(_env("AGENT_EMAIL_USER", ""))
+EMAIL_PASSWORD = _clean(_env("AGENT_EMAIL_PASSWORD", ""))
+
+# DEFAULT DENY. Comma-separated addresses, lowercased for comparison because
+# the local part is case-sensitive by RFC and by nobody in practice. Empty
+# authorises nobody: a mailbox with credentials and no allowlist would take
+# instructions from every spammer who finds the address.
+EMAIL_ALLOW = frozenset(
+    part.strip().lower()
+    for part in _clean(_env("AGENT_EMAIL_ALLOW", "")).split(",") if part.strip())
+
+IMAP_HOST = _clean(_env("AGENT_IMAP_HOST", "imap.gmail.com"))
+IMAP_PORT = int(_env("AGENT_IMAP_PORT", "993"))
+SMTP_HOST = _clean(_env("AGENT_SMTP_HOST", "smtp.gmail.com"))
+SMTP_PORT = int(_env("AGENT_SMTP_PORT", "465"))
+
+CHANNEL_POLL = float(_env("AGENT_CHANNEL_POLL", "30"))
+CHANNEL_TIMEOUT = float(_env("AGENT_CHANNEL_TIMEOUT", "30"))
+
 # Fires on CONTEXT SIZE, not cumulative spend: spent_tokens only grows, so a
 # spend-based trigger would fire every turn forever once crossed. 45,000 is
 # where the old trigger effectively fired; derivation in eval/CHANGELOG.md.

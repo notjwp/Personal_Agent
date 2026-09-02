@@ -104,6 +104,33 @@ TASKS: list[tuple[str, list[str]]] = [
                )""",
         ],
     ),
+    (
+        # v3: a task can arrive from a chat and owes it a reply, added 2026-09-02.
+        #
+        # An outbound reply is a ROW WITH A STATE, not a function call. Hermes
+        # learned that the expensive way - gateway/delivery_ledger.py exists
+        # because a send that fails must not lose the message, and a poison row
+        # must not spin. `delivered_at` is that ledger at the size this project
+        # needs: NULL means still owed, and `attempts` bounds the retry.
+        "channel",
+        [
+            # reply_to is WHERE to answer (an address), reply_ref is WHAT to
+            # answer (the Message-ID), so the reply threads in the mail client
+            # instead of arriving as a fresh conversation.
+            "ALTER TABLE tasks ADD COLUMN reply_to TEXT",
+            "ALTER TABLE tasks ADD COLUMN reply_ref TEXT",
+            "ALTER TABLE tasks ADD COLUMN subject TEXT",
+            "ALTER TABLE tasks ADD COLUMN delivered_at REAL",
+            "ALTER TABLE tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+            # The high-water mark of what has been SEEN. One row, so a restart
+            # does not replay the inbox - which would re-run finished work and,
+            # on a first run, answer every message you have ever received.
+            """CREATE TABLE IF NOT EXISTS channel_state (
+                   key   TEXT PRIMARY KEY,
+                   value TEXT NOT NULL
+               )""",
+        ],
+    ),
 ]
 
 

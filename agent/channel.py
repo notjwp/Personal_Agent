@@ -1,0 +1,260 @@
+"""Email intake and delivery: the agent becomes something you can write to.
+
+The whole file rests on one decision - A MESSAGE MAPS TO A TASK, and a task id
+IS a thread id. Nothing here invents a second identity space, a second queue or a
+second liveness check; worker.py already has all three, and Vellum's runtime is
+171k lines largely because delivery, sessions and identity grew up separately
+there.
+
+Three designs are taken from Hermes's email adapter and none is lifted - theirs
+is 1,510 lines across six mail providers:
+
+- DEFAULT DENY on who may write (gateway/authz_mixin.py). The moment a message
+  can arrive from outside the terminal, "who is asking" is a security question,
+  and policy.classify() assumes one trusted local user. An address is trivially
+  forged, so this is a filter on a mailbox you control, NOT authentication.
+- A FIRST RUN MARKS THE EXISTING INBOX SEEN rather than answering it. Theirs
+  logs "%d existing messages skipped" for the same reason: without it, starting
+  the listener replies to every message you have ever received.
+- AN OUTBOUND REPLY IS A ROW WITH A STATE (gateway/delivery_ledger.py). A send
+  that fails must not lose the answer and a poison row must not spin.
+"""
+import email.message
+import email.utils
+import imaplib
+import smtplib
+import time
+
+from agent import config, worker
+
+# Gmail truncates nothing, but a runaway answer is still worth bounding: this is
+# a reply to a person, not a log.
+MAX_BODY = 8000
+
+# Past this many failed sends a reply is abandoned rather than retried forever.
+# Hermes caps attempts for the same reason: a poison row that cannot be
+# delivered must not occupy the sweep on every tick.
+MAX_ATTEMPTS = 5
+
+# IMAP flags the agent's own replies so a mail client that syncs them back into
+# the mailbox cannot be read as a new instruction.
+SUBJECT_TAG = "[agent]"
+
+
+class ChannelUnavailable(RuntimeError):
+    """The mail server could not be reached. The caller retries; no row is lost."""
+
+
+def configured() -> bool:
+    return bool(config.EMAIL_USER and config.EMAIL_PASSWORD and config.EMAIL_ALLOW)
+
+
+def allowed(sender: str) -> bool:
+    """Whether this address may task the agent. DEFAULT DENY.
+
+    An empty allowlist authorises nobody, which is the only safe reading: a
+    mailbox with credentials and no allowlist would take instructions from
+    anyone who can find the address, including every spammer.
+
+    A From header is forged trivially. This is a filter, not authentication, and
+    the security rests on the mailbox itself being yours.
+    """
+    _, address = email.utils.parseaddr(sender or "")
+    return bool(address) and address.lower() in config.EMAIL_ALLOW
+
+
+def _imap() -> imaplib.IMAP4_SSL:
+    try:
+        box = imaplib.IMAP4_SSL(config.IMAP_HOST, config.IMAP_PORT,
+                                timeout=config.CHANNEL_TIMEOUT)
+        box.login(config.EMAIL_USER, config.EMAIL_PASSWORD)
+        box.select("INBOX")
+        return box
+    except (imaplib.IMAP4.error, OSError) as exc:
+        raise ChannelUnavailable(f"imap: {exc}") from exc
+
+
+def _uid_mark(conn) -> int:
+    row = conn.execute(
+        "SELECT value FROM channel_state WHERE key='uid'").fetchone()
+    return int(row["value"]) if row else 0
+
+
+def _remember_uid(conn, value: int) -> None:
+    conn.execute("INSERT INTO channel_state (key, value) VALUES ('uid', ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(value),))
+
+
+def _body_of(message: email.message.Message) -> str:
+    """The plain-text body, first part only, quoted history dropped.
+
+    A reply carries the whole prior thread beneath it; feeding that back would
+    re-send the agent its own last answer as a fresh instruction every round.
+    """
+    part = message
+    if message.is_multipart():
+        for candidate in message.walk():
+            if candidate.get_content_type() == "text/plain":
+                part = candidate
+                break
+    try:
+        raw = part.get_payload(decode=True) or b""
+        text = raw.decode(part.get_content_charset() or "utf-8", errors="replace")
+    except (LookupError, ValueError):
+        return ""
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(">") or stripped.startswith("On ") and "wrote:" in stripped:
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def intake() -> list[str]:
+    """Turn new authorised messages into queued tasks. Returns their ids.
+
+    THE FIRST RUN ANSWERS NOTHING. With no high-water mark recorded, every
+    message already in the mailbox is marked seen and skipped - otherwise
+    starting the listener replies to your entire inbox history.
+
+    The mark advances for every message SEEN, authorised or not; a message from
+    a stranger that did not advance it would be re-read forever and the listener
+    would never reach the next one.
+    """
+    box = _imap()
+    try:
+        status, data = box.uid("search", None, "ALL")
+        if status != "OK":
+            raise ChannelUnavailable(f"imap search: {status}")
+        uids = [int(u) for u in (data[0] or b"").split()]
+        if not uids:
+            return []
+
+        with worker._connect() as conn:
+            mark = _uid_mark(conn)
+            if mark == 0:                 # first run: adopt the inbox, answer none
+                _remember_uid(conn, max(uids))
+                return []
+
+        queued, highest = [], mark
+        for uid in sorted(u for u in uids if u > mark):
+            highest = max(highest, uid)
+            status, fetched = box.uid("fetch", str(uid), "(RFC822)")
+            if status != "OK" or not fetched or not isinstance(fetched[0], tuple):
+                continue
+            message = email.message_from_bytes(fetched[0][1])
+            subject = (message.get("Subject") or "").strip()
+            if SUBJECT_TAG in subject:
+                continue                  # our own reply, synced back into the box
+            if not allowed(message.get("From", "")):
+                continue
+            goal = _body_of(message) or subject
+            if not goal:
+                continue
+            task_id = worker.submit(goal)
+            _, address = email.utils.parseaddr(message.get("From", ""))
+            with worker._connect() as conn:
+                conn.execute(
+                    "UPDATE tasks SET reply_to=?, reply_ref=?, subject=? WHERE id=?",
+                    (address, message.get("Message-ID"), subject, task_id))
+            queued.append(task_id)
+
+        if highest != mark:
+            with worker._connect() as conn:
+                _remember_uid(conn, highest)
+        return queued
+    finally:
+        try:
+            box.logout()
+        except (imaplib.IMAP4.error, OSError):
+            pass
+
+
+def owed() -> list[dict]:
+    """Finished tasks that came from a mailbox and have not been answered."""
+    with worker._connect() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM tasks WHERE reply_to IS NOT NULL AND delivered_at IS NULL "
+            "AND status IN ('done','failed') AND attempts < ? "
+            "ORDER BY finished_at", (MAX_ATTEMPTS,))]
+
+
+def _reply(task: dict) -> email.message.EmailMessage:
+    body = (task.get("detail") or task.get("verdict") or "").strip()
+    if task.get("status") == "failed" and not body:
+        body = "That did not work, and the run left no explanation."
+    note = email.message.EmailMessage()
+    note["From"] = config.EMAIL_USER
+    note["To"] = task["reply_to"]
+    original = (task.get("subject") or "your request").strip()
+    note["Subject"] = f"{SUBJECT_TAG} {original}"
+    if task.get("reply_ref"):
+        # Threads the answer under the question instead of starting a new
+        # conversation. Both headers: clients disagree about which they honour.
+        note["In-Reply-To"] = task["reply_ref"]
+        note["References"] = task["reply_ref"]
+    note.set_content(f"{body or 'Done.'}\n\n--\ntask {task['id']}\n"[:MAX_BODY])
+    return note
+
+
+def deliver() -> int:
+    """Send every owed reply. Returns how many landed.
+
+    ATTEMPTS ARE COUNTED BEFORE THE SEND, not after. A crash between sending and
+    recording would otherwise leave the row owed and re-send on every tick - the
+    failure mode is a person receiving the same answer forty times.
+    """
+    pending = owed()
+    if not pending:
+        return 0
+    try:
+        server = smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT,
+                                  timeout=config.CHANNEL_TIMEOUT)
+        server.login(config.EMAIL_USER, config.EMAIL_PASSWORD)
+    except (smtplib.SMTPException, OSError) as exc:
+        raise ChannelUnavailable(f"smtp: {exc}") from exc
+
+    sent = 0
+    try:
+        for task in pending:
+            with worker._connect() as conn:
+                conn.execute("UPDATE tasks SET attempts=attempts+1 WHERE id=?",
+                             (task["id"],))
+            try:
+                server.send_message(_reply(task))
+            except (smtplib.SMTPException, OSError):
+                continue                  # the row stays owed; the sweep retries
+            with worker._connect() as conn:
+                conn.execute("UPDATE tasks SET delivered_at=? WHERE id=?",
+                             (time.time(), task["id"]))
+            sent += 1
+    finally:
+        try:
+            server.quit()
+        except (smtplib.SMTPException, OSError):
+            pass
+    return sent
+
+
+def run_channel(once: bool = False, poll: float | None = None) -> int:
+    """Read the mailbox and pay outstanding replies until stopped.
+
+    Deliberately NOT a second worker: this loop only queues and answers. Running
+    the tasks stays with `--worker`, so a channel that dies cannot strand a
+    running graph, and a worker that dies cannot lose a person's reply.
+    """
+    if not configured():
+        raise ChannelUnavailable(
+            "set AGENT_EMAIL_USER, AGENT_EMAIL_PASSWORD and AGENT_EMAIL_ALLOW")
+    gap = config.CHANNEL_POLL if poll is None else poll
+    served = 0
+    while True:
+        try:
+            served += len(intake())
+            deliver()
+        except ChannelUnavailable:
+            pass                          # an outage is not a reason to exit
+        if once:
+            return served
+        time.sleep(gap)

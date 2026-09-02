@@ -437,7 +437,12 @@ A requirement without a number is not testable. Targets are the point.
   NFR-204   Isolation        All execution in a container with no host mounts
                              besides the workspace
   NFR-205   Security         Sandbox network egress restricted to a configured
-                             domain allowlist
+                             domain allowlist. AMENDED 2026-09-02: the email
+                             channel adds the configured IMAP and SMTP hosts
+                             (imap.gmail.com and smtp.gmail.com by default),
+                             stated here rather than left implicit - a row that
+                             cannot name its egress is the AGENT_EGRESS defect
+                             again.
   NFR-301   Recoverability   A process kill at any instant loses at most one
                              node of work
   NFR-302   Correctness      Resume produces no duplicated side effects
@@ -827,6 +832,30 @@ re-argue a decision that has already been measured.
                        vendored: applied to source it destroys type annotations
                        (`spent_tokens: int` -> `spent_tokens: ***`).
       skills.py        agentskills.io loading, and extraction at finish
+      channel.py       A STATED DEVIATION, created 2026-09-02. Email intake and
+                       delivery (IMAP in, SMTP out), so the agent is something
+                       you can WRITE TO rather than something you invoke. Email
+                       over a chat platform because it needs no bot
+                       registration, no OAuth callback and no new dependency -
+                       imaplib and smtplib are stdlib, and pip.conf sets
+                       no-index so anything else would have to be baked into
+                       the image.
+
+                       It earns a module because it is a trust BOUNDARY, not a
+                       feature: the moment a message can arrive from outside
+                       the terminal, "who is asking" is a security question,
+                       and policy.classify() assumes one trusted local user.
+                       Default deny - config.EMAIL_ALLOW empty authorises
+                       nobody. A From header is forged trivially, so the
+                       allowlist is a FILTER and the security rests on the
+                       mailbox being yours.
+
+                       A message maps to a TASK and a task id IS a thread id,
+                       so no second identity space exists - Vellum's runtime is
+                       171k lines largely because delivery, sessions and
+                       identity grew up separately there. Channels were never a
+                       stated non-goal; 11 lists voice, marketplaces, vector
+                       search, fine-tuning and Windows-native only.
       provider.py      earned by a SECOND implementation: Anthropic plus any
                        OpenAI-compatible endpoint (CE-01)
     prompts/
@@ -844,7 +873,7 @@ re-argue a decision that has already been measured.
                        cannot be diffed or reverted independently, and this one
                        is measured separately.
     tests/             test_policy, test_context, test_reflect are the three §12
-                       allowed. EIGHT stated deviations, each to the same standard
+                       allowed. NINE stated deviations, each to the same standard
                        - the component's failure is SILENT or is where consent
                        is decided: test_nodes (every deterministic node, §10),
                        test_cli and test_tui (the approval prompt), test_harness
@@ -854,8 +883,11 @@ re-argue a decision that has already been measured.
                        indistinguishable from a bad day), test_worker (a queue
                        that hands one task to two workers, or leaves a crashed
                        worker's row saying `running` forever, raises nothing -
-                       it just does the work twice, or never). Do not add an
-                       eighth without meeting that bar.
+                       it just does the work twice, or never), test_channel
+                       (an authorisation boundary fails SILENTLY and in the
+                       wrong direction - a channel that answers a stranger
+                       looks exactly like one that works). Do not add a
+                       tenth without meeting that bar.
     eval/
       harness.py       runner and scorer
       tasks.jsonl      fixture cases, flagged by split

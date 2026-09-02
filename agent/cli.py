@@ -276,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="queue a task and print its id, without running it")
     parser.add_argument("--worker", action="store_true",
                         help="drain the task queue; runs until interrupted")
+    parser.add_argument("--channel", action="store_true",
+                        help="listen on email; queues messages and answers them")
     parser.add_argument("--review", action="store_true",
                         help="show what needs attention, and queue a review of it")
     parser.add_argument("--schedule", nargs=2, metavar=("CRON", "GOAL"),
@@ -406,6 +408,26 @@ def _dispatch(args, app, parser) -> int:
         print(f"queued {task_id}")
         print("run it with:   python -m agent --worker")
         print("watch it with: python -m agent --tasks")
+        return 0
+
+    if args.channel:
+        # A SEPARATE process from --worker on purpose: this one only queues and
+        # answers, so a channel outage cannot strand a running graph and a dead
+        # worker cannot lose somebody's reply.
+        from agent import channel
+
+        if not channel.configured():
+            print("set AGENT_EMAIL_USER, AGENT_EMAIL_PASSWORD and",
+                  "AGENT_EMAIL_ALLOW first.", file=sys.stderr)
+            print("AGENT_EMAIL_ALLOW is a DEFAULT-DENY allowlist of addresses:",
+                  file=sys.stderr)
+            print("empty authorises nobody.", file=sys.stderr)
+            return 2
+        print(f"listening on {settings.EMAIL_USER}; "
+              f"{len(settings.EMAIL_ALLOW)} address(es) authorised")
+        print("the first pass adopts the existing inbox and answers none of it")
+        print("run the tasks with: python -m agent --worker")
+        channel.run_channel()
         return 0
 
     if args.worker:
