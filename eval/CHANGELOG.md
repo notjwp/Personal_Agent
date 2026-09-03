@@ -887,6 +887,78 @@ see where it points.
 
 ---
 
+## real 10/17, and the no-edit bucket is gone from it (2026-09-03)
+
+The measurement the previous cycle owed. `real` cases already carry
+`max_turns=30`, so the cap raise did not touch them - the docstring fix is the
+only change since this split was last measured.
+
+| | before | now |
+|---|---|---|
+| pass rate | **22%** (92 runs) | **10/17** |
+| invented a tool | 12% (11/92) | **2 of 18** |
+| never edited anything | **64%** (46/72) | **1 of 18** |
+
+```
+real-cachetools       3/3        real-click      1/3
+real-markdown         3/3        real-rich       1/3
+real-more-itertools   2/3        real-humanize   0/3
+```
+
+All six cases measured, three runs each. The previous 4/10 rested on four of six
+and CLAUDE.md flagged it; this does not.
+
+### What the number is NOT
+
+This is not a controlled A/B. The baseline is pooled across many configurations,
+and this run is the first with `MAX_TURNS=30` as the config default - the case
+cap was already 30, but an interaction cannot be ruled out. The honest claim is
+**10/17 with the docstring fix in place**, not "the fix caused +37 points".
+
+### real-humanize changed shape without changing outcome
+
+| | before (n=35) | now (n=3) |
+|---|---|---|
+| made zero edits | 26 | **0** |
+| died on `failures >= 3` | 26 | 1 |
+
+All three runs now edit and die on `budget` at 341-411k tokens instead of being
+killed by denial cascades at 7-22 turns. Still 0/3, and 1 pass in 13 runs across
+six configurations - consistent with the case turning on arithmetic the model
+gets wrong, which no prompt fixes.
+
+---
+
+## A severed stream was scored as a failed case (2026-09-03)
+
+A run interrupted mid-stream wrote `status: ok, turns 0, tokens 0` and counted
+against the score. `RemoteProtocolError: peer closed connection without sending
+complete message body (incomplete chunked read)`.
+
+The SDK wraps httpx on a normal request, but a stream fails while it is being
+ITERATED - after `create()` returned - so httpx raises through unwrapped and
+`RETRYABLE` never saw it. Vellum names the same thing: a transport abort has
+`status === undefined` because the SDK never saw an HTTP response.
+
+Hermes carries a type list AND a substring list, because the exception can
+arrive wrapped in something whose name no longer says transport. Both are here.
+
+**What was deliberately NOT taken** is Vellum's structural rule, "no HTTP status
+means transport". A `TypeError` in our own code has no status either, and
+excusing a real defect as an outage costs more than one mis-scored row. The
+harness scores a crashed agent ON PURPOSE ("a crashed agent IS a result"), so
+the fix belongs upstream in the classifier and nowhere near that branch.
+
+### The mutation that mattered
+
+T1 - deleting the entire type list - PASSED at first. The severed-stream test's
+message contained "incomplete chunked read", so the substring fallback caught it
+and the names were doing nothing. A second test uses transport type names with
+NO marker in the message; T1 now fails. Fifth time this shape has appeared: a
+test that passes for the wrong reason.
+
+---
+
 ## The model was inventing tools that do not exist (2026-09-02)
 
 **Hypothesis:** nothing tells the model how to LIST a directory, so it invents

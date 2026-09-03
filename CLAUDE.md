@@ -10,14 +10,14 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **693 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **699 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
 |---|---|
 | dev baseline | **15/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b`, at `MAX_TURNS=30`. `add-endpoint` still flaps 1/3-3/3 at the old cap of 12 |
 | held out | **29/30** — unchanged by the cap raise; 3 runs needed 15-31 turns and 1 used the room to break itself |
-| real repositories | **4/10**; `real-humanize` 1 pass in 9 runs across four configurations |
+| real repositories | **10/17**, all six cases x 3 runs - the first real number not resting on a subset. `real-humanize` 0/3, 1 pass in 13 runs across six configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
 | NFR-101 first token | streams; p50 **unmeasured**, needs a live run |
@@ -49,6 +49,12 @@ Ordered by how often they have caught something.
 
 **The loop and the model**
 
+- **A transport error below the SDK is not a failed case.** A stream fails while it is
+  ITERATED, after `create()` returned, so httpx raises through unwrapped and the SDK's
+  error table never sees it. Measured: an interrupted run wrote `status: ok, turns 0,
+  tokens 0` and scored as a failure. Classify by type AND by message (Hermes does both
+  because the exception arrives wrapped) - but NOT by "has no HTTP status", because our
+  own TypeError has none either and a masked bug costs more than a mis-scored row.
 - **A retryable classification with no retry behind it is a comment.** `RETRYABLE`
   listed five exception names and nothing ever made a second attempt; the SDK does not
   retry a bare `APIError` because it carries no status_code. Measured: 15 of 20 calls
@@ -268,7 +274,7 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue   # resume an i
 python eval/harness.py --case fix-import --runs 3                  # one case, repeated
 
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
-pytest                            # 693 tests, no API key, no network
+pytest                            # 699 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

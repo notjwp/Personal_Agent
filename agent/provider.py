@@ -70,7 +70,24 @@ RETRYABLE = ("RateLimitError", "APITimeoutError", "APIConnectionError",
              # Streaming makes it common - create() returns before the body, so a
              # mid-stream "Service temporarily overloaded" arrives unmapped and three
              # real-humanize runs were scored 0/3 for an outage.
-             "APIError")
+             "APIError",
+             # TRANSPORT, below the SDK. The SDK wraps httpx errors on a normal
+             # request, but a stream fails while it is being ITERATED - after
+             # create() returned - so httpx raises through unwrapped. Measured:
+             # a severed stream arrived as RemoteProtocolError, missed this
+             # table, and was scored as a failed case with turns 0, tokens 0.
+             # Names from Hermes _TRANSIENT_TRANSPORT_ERRORS.
+             "RemoteProtocolError", "LocalProtocolError", "ReadError",
+             "ConnectError", "ConnectTimeout", "ReadTimeout", "PoolTimeout")
+
+# The same failures when something has WRAPPED them and the type name no longer
+# says so. Hermes carries both a type list and this substring list for exactly
+# that; Vellum reaches the same place structurally - a transport abort has no
+# HTTP status, because the SDK never saw a response.
+TRANSPORT_MARKERS = ("incomplete chunked read", "peer closed connection",
+                     "response ended prematurely", "unexpected eof",
+                     "remoteprotocolerror", "localprotocolerror")
+
 FATAL = ("AuthenticationError", "PermissionDeniedError")
 
 
@@ -85,6 +102,11 @@ def _reraise_classified(exc: Exception) -> None:
     if name in FATAL:
         raise ProviderMisconfigured(f"{name}: {exc}") from exc
     if name in RETRYABLE:
+        raise ProviderUnavailable(f"{name}: {exc}") from exc
+    # Deliberately NOT "anything without a status_code": our own TypeError has
+    # none either, and excusing a real bug as an outage is worse than one
+    # mis-scored row. Names and known markers only.
+    if any(marker in str(exc).lower() for marker in TRANSPORT_MARKERS):
         raise ProviderUnavailable(f"{name}: {exc}") from exc
 
 

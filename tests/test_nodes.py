@@ -3389,3 +3389,86 @@ def test_the_backoff_GROWS_and_is_capped_and_jittered():
     assert all(base <= d <= base * 1.5 for d in first)
     assert all(d <= cap * 1.5 for d in [provider._pause(9) for _ in range(40)])
     assert len(set(first)) > 1, 'jitter decorrelates concurrent retries'
+
+# ===== a severed stream was scored as a failed case (measured 2026-09-03)
+
+
+def _classify(exc):
+    """What _reraise_classified does with this exception."""
+    from agent import provider
+
+    try:
+        provider._reraise_classified(exc)
+    except Exception as raised:
+        return type(raised).__name__
+    return None                           # not ours; the caller re-raises it
+
+
+def test_a_SEVERED_STREAM_is_an_outage_not_a_failed_case():
+    """The SDK wraps httpx on a normal request, but a stream fails while it is
+    being ITERATED - after create() returned - so httpx raises through unwrapped.
+    Measured: RemoteProtocolError missed the table and was recorded as a failed
+    case with turns 0 and tokens 0, which is a score for something never run.
+    """
+    class RemoteProtocolError(Exception):
+        pass
+
+    severed = RemoteProtocolError(
+        'peer closed connection without sending complete message body (incomplete chunked read)')
+
+    assert _classify(severed) == 'ProviderUnavailable'
+
+
+def test_a_transport_error_is_caught_by_its_TYPE_with_no_marker_in_the_message():
+    """Separate from the test above, which passes on the message alone: deleting
+    the whole type list left that one green. A transport failure whose text says
+    nothing recognisable must still be an outage.
+    """
+    for kind, text in (('ConnectTimeout', 'timed out'),
+                       ('ReadTimeout', ''),
+                       ('PoolTimeout', 'no connection available'),
+                       ('ConnectError', 'All connection attempts failed'),
+                       ('ReadError', '')):
+        exc = type(kind, (Exception,), {})(text)
+        assert _classify(exc) == 'ProviderUnavailable', kind
+
+
+def test_a_WRAPPED_transport_error_is_caught_by_its_MESSAGE():
+    """Hermes carries a type list AND a substring list because the exception can
+    arrive wrapped in something whose name no longer says transport."""
+    class SomeWrapper(Exception):
+        pass
+
+    for text in ('incomplete chunked read',
+                 'peer closed connection',
+                 'Response ended prematurely',
+                 'Unexpected EOF'):
+        assert _classify(SomeWrapper(text)) == 'ProviderUnavailable', text
+
+
+def test_OUR_OWN_BUG_is_still_scored_and_not_excused():
+    """The guard against making this worse. A TypeError has no HTTP status
+    either, so a structural 'anything without a status_code is transport' rule
+    would excuse real defects as outages - and a masked bug costs more than one
+    mis-scored row. The harness scores a crashed agent deliberately.
+    """
+    for bug in (TypeError('NoneType is not subscriptable'),
+                KeyError('messages'),
+                ValueError('invalid literal'),
+                AttributeError('no attribute blocks')):
+        assert _classify(bug) is None, bug
+
+
+def test_a_MALFORMED_tool_call_is_still_a_RESULT():
+    """It means the model answered and answered badly. Excusing it would convert
+    a scoreable failure into an excluded run."""
+    from agent import provider
+
+    assert _classify(provider.MalformedToolCall('bad json')) is None
+
+
+def test_a_rejected_key_stays_FATAL():
+    class AuthenticationError(Exception):
+        pass
+
+    assert _classify(AuthenticationError('401')) == 'ProviderMisconfigured'
