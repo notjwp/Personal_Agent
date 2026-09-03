@@ -45,6 +45,24 @@ class ChannelUnavailable(RuntimeError):
     """The mail server could not be reached. The caller retries; no row is lost."""
 
 
+class ChannelRefused(ChannelUnavailable):
+    """The credentials were rejected. Retrying cannot help, so the loop stops.
+
+    A SUBCLASS, so every existing handler still catches it and no row is lost -
+    only run_channel singles it out. Hermes marks the same failure
+    retryable=False because "bad or revoked credentials can never self-heal".
+    """
+
+
+# Only markers a server sends for a REJECTED LOGIN. Deliberately narrow: an
+# ambiguous error must stay retryable, because stopping on a transient one is a
+# listener that is off when it is most needed. Hermes classifies SMTP by type
+# and leaves IMAP4.error alone for exactly this reason - imaplib gives us only
+# the server text, so these are the unambiguous strings and nothing else.
+_REFUSED = ("authenticationfailed", "invalid credentials",
+            "authenticate failed", "login failed")
+
+
 def configured() -> bool:
     return bool(config.EMAIL_USER and config.EMAIL_PASSWORD and config.EMAIL_ALLOW)
 
@@ -71,6 +89,9 @@ def _imap() -> imaplib.IMAP4_SSL:
         box.select("INBOX")
         return box
     except (imaplib.IMAP4.error, OSError) as exc:
+        text = str(exc).lower()
+        if any(marker in text for marker in _REFUSED):
+            raise ChannelRefused(f"imap: {exc}") from exc
         raise ChannelUnavailable(f"imap: {exc}") from exc
 
 
@@ -212,6 +233,8 @@ def deliver() -> int:
         server = smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT,
                                   timeout=config.CHANNEL_TIMEOUT)
         server.login(config.EMAIL_USER, config.EMAIL_PASSWORD)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise ChannelRefused(f"smtp: {exc}") from exc
     except (smtplib.SMTPException, OSError) as exc:
         raise ChannelUnavailable(f"smtp: {exc}") from exc
 
@@ -304,6 +327,8 @@ def run_channel(once: bool = False, poll: float | None = None) -> int:
         try:
             served += len(intake())
             deliver()
+        except ChannelRefused:
+            raise                         # a rejected password cannot self-heal
         except ChannelUnavailable:
             pass                          # an outage is not a reason to exit
         if once:

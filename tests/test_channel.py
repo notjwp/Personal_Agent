@@ -446,3 +446,102 @@ def test_an_unreachable_mailbox_is_a_FAIL_not_a_crash(channel, monkeypatch):
 
     assert any(line.startswith("FAIL") and "authentication failed" in line
                for line in report)
+
+# ================================== a rejected password cannot self-heal
+
+
+def test_a_REJECTED_password_stops_the_listener(channel, monkeypatch):
+    """It used to retry every 30 seconds forever, silently. Hermes marks the
+    same failure retryable=False: bad credentials never self-heal."""
+    def refused():
+        raise channel.ChannelRefused(
+            "imap: b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)'")
+
+    monkeypatch.setattr(channel, "_imap", refused)
+    with pytest.raises(channel.ChannelRefused):
+        channel.run_channel(once=True)
+
+
+def _real_imap(monkeypatch, error):
+    """Drive the REAL _imap() against a server that raises `error`.
+
+    Deliberately not using the channel fixture: it replaces _imap with a fake,
+    so a test that used it would be classifying nothing.
+    """
+    import imaplib
+
+    from agent import channel as mod
+    from agent import config
+
+    monkeypatch.setattr(config, "EMAIL_USER", "agent@example.com")
+    monkeypatch.setattr(config, "EMAIL_PASSWORD", "app-password")
+
+    def raising(*a, **k):
+        raise error
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", raising)
+    return mod
+
+
+def test_imap_classifies_a_rejected_login_as_REFUSED(monkeypatch):
+    import imaplib
+
+    mod = _real_imap(monkeypatch, imaplib.IMAP4.error(
+        "b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)'"))
+
+    with pytest.raises(mod.ChannelRefused):
+        mod._imap()
+
+
+@pytest.mark.parametrize("blip", [
+    "connection reset by peer",
+    "[UNAVAILABLE] Temporary System Problem",
+    "socket error: EOF",
+    "[SERVERBUG] Internal error occurred",
+    "[OVERQUOTA] Account is over quota",
+])
+def test_a_TRANSIENT_imap_error_still_RETRIES(monkeypatch, blip):
+    """The guard against making this worse. A listener that exits on a network
+    blip is off exactly when it is most needed, so anything ambiguous keeps
+    retrying - which is why the marker list is narrow."""
+    import imaplib
+
+    mod = _real_imap(monkeypatch, imaplib.IMAP4.error(blip))
+
+    with pytest.raises(mod.ChannelUnavailable) as caught:
+        mod._imap()
+    assert not isinstance(caught.value, mod.ChannelRefused), blip
+
+
+def test_a_transient_outage_does_NOT_stop_the_listener(channel, monkeypatch):
+    def blip():
+        raise channel.ChannelUnavailable("imap: connection reset by peer")
+
+    monkeypatch.setattr(channel, "_imap", blip)
+
+    assert channel.run_channel(once=True) == 0
+
+
+def test_smtp_classifies_a_rejected_login_by_TYPE(channel, monkeypatch):
+    """Hermes: SMTPAuthenticationError is unambiguous, unlike IMAP4.error."""
+    import smtplib
+
+    from agent import channel as mod
+
+    task_id = _queued(channel)
+    _finish(task_id)
+
+    class Rejecting(_FakeSMTP):
+        def login(self, *a):
+            raise smtplib.SMTPAuthenticationError(535, b"bad password")
+
+    monkeypatch.setattr("smtplib.SMTP_SSL",
+                        lambda *a, **k: Rejecting(mod.outbox))
+    with pytest.raises(mod.ChannelRefused):
+        mod.deliver()
+
+
+def test_ChannelRefused_IS_a_ChannelUnavailable(channel):
+    """A subclass, so every existing handler still catches it and no row is
+    lost - only run_channel singles it out."""
+    assert issubclass(channel.ChannelRefused, channel.ChannelUnavailable)

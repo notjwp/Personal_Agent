@@ -437,7 +437,13 @@ def _dispatch(args, app, parser) -> int:
               f"{len(settings.EMAIL_ALLOW)} address(es) authorised")
         print("the first pass adopts the existing inbox and answers none of it")
         print("run the tasks with: python -m agent --worker")
-        channel.run_channel()
+        try:
+            channel.run_channel()
+        except channel.ChannelRefused as exc:
+            print(f"{exc}", file=sys.stderr)
+            print("credentials rejected - for Gmail this must be an app password,",
+                  "not the account password.", file=sys.stderr)
+            return 2
         return 0
 
     if args.worker:
