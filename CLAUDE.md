@@ -20,6 +20,7 @@ read-only root filesystem, and without the `mcp` package installed.
 | real repositories | **10/17**, all six cases x 3 runs - the first real number not resting on a subset. `real-humanize` 0/3, 1 pass in 13 runs across six configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
+| personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **3.3%** (n=60). Earlier figures of 46%/52%/16% averaged the ABLATION arm in |
 | NFR-101 first token | streams; p50 **unmeasured**, needs a live run |
 
 ## Standing lessons, each paid for once
@@ -80,11 +81,15 @@ Ordered by how often they have caught something.
   ran out of output budget mid-sentence. Measured: 8 of 8 runs ending that way were
   scored `done`, and none passed. Any terminal check that ignores `stop_reason` will
   score a cut-off reply as success.
-- **The largest failure mode is a run that never edits anything.** 105 of 279 failing
-  runs (37.6%) made zero writes - 62 ended `stuck`, 25 `done`. Median 45,876 tokens of
-  200,000, so none were starved. A guard for this belongs where the RUNS end, not where
-  the design is tidiest: `_noop_nudge` sat in the `done` branch, covered 25 of 105, and
-  fired 0 times in 30 runs.
+- **The no-edit bucket was two different things wearing one label.** 105 of 279 failing
+  runs made zero writes, but per split: `real` 64% and `dev` 53% were runs CUT OFF by the
+  turn cap - both now ~0 after the cap raise and the run_shell docstring. `search` is
+  100% no-edit and always will be: its cases are QUESTIONS, so not editing is correct.
+  Never aggregate a bucket across splits whose cases want different things.
+- **An ablation arm averaged into the headline reads as a capability gap.** `recall 46%`
+  and `skills 52%` were quoted for days as the weak half of this project. Separated, the
+  real arms are 85.7% and 94.4% and the controls are 0% and 8.6% - the split was WORKING
+  and the control was proving it. Check whether a split has an ablation before quoting it.
 - **MAX_TURNS was the binding failure, not the model.** 12 -> 30 took dev 13/15 -> 15/15
   and eliminated `stuck` across 45 runs (25% historically). Hermes caps a parent at 500
   (`agent/iteration_budget.py`), Vellum at 200. Before raising it, check the run is

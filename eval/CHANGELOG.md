@@ -887,6 +887,52 @@ see where it points.
 
 ---
 
+## Three numbers this project was quoting were wrong (2026-09-04)
+
+No code changed. Reading the traces to PLAN the remaining work corrected the record,
+and the corrections change what the work is.
+
+### recall and skills were never broken
+
+| split | ablation (capability OFF) | real arm |
+|---|---|---|
+| `recall` | 0.0% (n=18) | **85.7%** (n=21) |
+| `skills` | 8.6% (n=35) | **94.4%** (n=36) |
+| `authoring` | 47.8% (n=23) | **3.3%** (n=60) |
+
+`recall 46%` and `skills 52%` averaged a deliberate control arm into the headline. The
+control was doing its job - memory off scores 0%, skill loading off scores 8.6% - and
+averaging it in made a working capability read as a gap. Quoted for days, including in
+CLAUDE.md, against this project's own rule about partial denominators.
+
+**The personal half is one split, not four, and it is worse than reported: authoring at
+3.3%, not 16%.**
+
+### The no-edit bucket was two failures wearing one label
+
+| split | before | after |
+|---|---|---|
+| `real` | 46 of 72 (64%) | **1 of 18** |
+| `dev` | 31 of 59 (53%) | **0 of 0** - last run 15/15 |
+| `authoring` | 6 of 67 (9%) | never had it |
+| `search` | 9 of 9 (100%) | correct behaviour |
+
+`real` and `dev` were runs cut off by the turn cap, and both cleared. `search` cases are
+QUESTIONS: not editing is the right answer there, and its 100% is a different thing with
+the same name. Aggregating the bucket across splits produced a 37.6% figure that pointed
+at no single fixable cause.
+
+### The auto-skill has never been measured
+
+`skills.opening()` shipped in 254215f and 165 of 168 authoring/skills runs predate it.
+Zero `skill_opened` trace events exist anywhere. The matcher is correct offline - 9 of 10
+fixture goals match the right skill - so it is unmeasured, not broken.
+
+The effect it targets is still the largest in the corpus: a run that loaded a skill
+passes **95.8%** (n=48), one that did not passes **10.0%** (n=10).
+
+---
+
 ## real 10/17, and the no-edit bucket is gone from it (2026-09-03)
 
 The measurement the previous cycle owed. `real` cases already carry
