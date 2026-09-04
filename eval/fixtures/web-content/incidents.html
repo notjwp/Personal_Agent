@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Quartzite — incident log</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 46rem; }
+  li { margin: .3rem 0; }
+  button { font: inherit; padding: .3rem .7rem; margin-top: .8rem; }
+  #more[hidden] { display: none; }
+</style>
+
+<h1>Incident log</h1>
+<p>Most recent first. Older entries load on demand.</p>
+
+<ul id="log">
+  <li>INC-4412 — 2026-08-30 — proxy timeouts in eu-west-1 — resolved</li>
+  <li>INC-4409 — 2026-08-28 — elevated 5xx on the billing API — resolved</li>
+  <li>INC-4401 — 2026-08-22 — delayed webhook delivery — resolved</li>
+</ul>
+
+<button id="more">Load older incidents</button>
+
+<script>
+  // The older entries exist only after the click, and they are assembled here
+  // rather than fetched, so there is no second URL to request instead.
+  const OLDER = [
+    ["INC-4388", "2026-08-11", "cache eviction storm", "resolved"],
+    ["INC-4377", "2026-08-03", "certificate expiry on the edge", "resolved"],
+    ["INC-4361", "2026-07-24", "region-wide outage in ap-south-1", "resolved"],
+  ];
+
+  document.getElementById("more").addEventListener("click", (event) => {
+    const log = document.getElementById("log");
+    for (const [id, when, what, state] of OLDER) {
+      const li = document.createElement("li");
+      li.textContent = id + " — " + when + " — " + what + " — " + state;
+      log.appendChild(li);
+    }
+    event.target.hidden = true;
+  });
+</script>

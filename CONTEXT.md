@@ -530,6 +530,23 @@ exists.
     together - FR-503 alone is the raw-DOM version this entry calls unaffordable
     - with its own split and a control run.
 
+    TRIGGER TESTED 2026-09-04, AND IT DID NOT FIRE. Three cases were written to
+    need a rendering engine - a total computed client-side from a shipped array,
+    a value revealed only by submitting a form, and entries appended on a click -
+    and `fetch` alone scored 9/9 on them. The dashboard case took five turns:
+    fetch, fetch, fetch raw, write. The agent read the REGIONS array out of the
+    <script> tag and did the arithmetic itself.
+      This is the third prediction of a capability floor that measured wrong in
+      the same direction; the web split was expected to score 0 without a fetch
+      tool and scored 18/18.
+      A STATIC FIXTURE CANNOT PRODUCE THIS TRIGGER. Anything a browser computes
+      from shipped JS, an agent with run_shell and Python computes from the same
+      source. A real trigger needs state the client cannot derive - a server-side
+      session, an authenticated round-trip, a canvas render - and NFR-205 points
+      egress at a static http.server by design.
+    The cases are KEPT as `split: browser`, a standing gate. They cost nothing
+    until run, and if a model ever stops reading JS by hand this is what shows it.
+
   FR-204 vs NFR-201, NFR-205 and reproducibility     ADDED 2026-08-31
     "Install packages into the sandbox on request" cannot hold as written.
     Three properties of the measured environment forbid it, and each exists

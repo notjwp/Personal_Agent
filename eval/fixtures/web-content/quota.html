@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Quartzite — quota lookup</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 40rem; }
+  input, button { font: inherit; padding: .3rem .5rem; }
+  #result { margin-top: 1rem; font-weight: 600; }
+</style>
+
+<h1>Quota lookup</h1>
+<p>Enter an account tier to see its monthly request quota.</p>
+
+<form id="lookup">
+  <label>Tier <input id="tier" placeholder="e.g. bronze" autocomplete="off"></label>
+  <button type="submit">Look up</button>
+</form>
+
+<p id="result">No tier submitted yet.</p>
+
+<script>
+  // The quota table is derived, not listed: each tier's quota is the base times
+  // its multiplier, and neither the product nor a lookup table appears in the
+  // source. Submitting the form is what produces the number on the page.
+  const BASE = 12500;
+  const MULTIPLIER = { bronze: 2, silver: 6, gold: 17, platinum: 40 };
+
+  document.getElementById("lookup").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const tier = document.getElementById("tier").value.trim().toLowerCase();
+    const out = document.getElementById("result");
+    if (!(tier in MULTIPLIER)) {
+      out.textContent = "Unknown tier: " + tier;
+      return;
+    }
+    out.textContent = tier + " tier quota: " + (BASE * MULTIPLIER[tier]) +
+                      " requests per month";
+  });
+</script>

@@ -887,6 +887,44 @@ see where it points.
 
 ---
 
+## FR-503/504's trigger was tested and did not fire (2026-09-04)
+
+Phase 3 of the browser plan. **No browser was built, and that is the result.**
+
+Three cases, each written so the page ships INPUTS and never the answer:
+
+| case | what a fetch sees | answer | score |
+|---|---|---|---|
+| `browser-dashboard` | an empty table and a dash | 744 | **3/3** |
+| `browser-quota` | "No tier submitted yet" | 212500 | **3/3** |
+| `browser-incidents` | 3 of 6 incidents | INC-4361 | **3/3** |
+
+`fetch` alone scored 9/9. The dashboard case took five turns - fetch, fetch,
+fetch raw, write - reading the REGIONS array out of the <script> tag and doing
+the arithmetic itself.
+
+### Why a static fixture cannot produce this trigger
+
+Anything a browser computes from shipped JS, an agent with run_shell and Python
+computes from the same source. Hiding the answer behind a click or a form only
+hides it from a PARSER, not from a reader. A real trigger needs state the client
+cannot derive - a server-side session, an authenticated round-trip, a canvas
+render - and NFR-205 points egress at a static http.server by design.
+
+Third time this project has predicted a capability floor and been wrong the same
+way: the web split was expected to score 0 without a fetch tool and scored 18/18.
+
+### What this saves
+
+Chromium into an image already at 1.61 GB, and 4-6 tool schemas at ~580 chars
+charged on EVERY turn of EVERY run whether a browser is used or not. 8.2 costed
+that in August and the cost has only risen since.
+
+The cases are kept as `split: browser` - a standing gate that costs nothing until
+run.
+
+---
+
 ## FR-408 built: keyword 0/40 -> gte-base 37/40 on the recall corpus (2026-09-04)
 
 Phase 2. **Kept on the corpus evidence, NOT on a split delta - the split shows
