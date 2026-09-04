@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **708 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **712 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -185,6 +185,12 @@ Ordered by how often they have caught something.
   exit so a hang looks like progress; `timeout` kills the client but leaves the container running,
   and the orphan corrupts the shared workspace mid-case. Three runs were lost that way. Use
   `--continue`.
+- **`.env` reached only containers.** The harness passed it in with `--env-file` and
+  nothing else ever read it, so the CLI, a plain shell without exports and a Windows
+  scheduled task all started with no API key and exited at once. Loading it belongs in
+  the ENTRY POINT (`agent/__main__.py`, under `if __name__ == "__main__"`), because
+  config.py resolves every tunable at import time and CE-05 forbids the library doing
+  disk I/O on import.
 - **A default that asserts the safe answer is how a row comes to claim a condition nobody checked.**
   `AGENT_EGRESS` defaulted to `"restricted"` and nothing ever set it, so every trace row ever
   written claimed restricted egress. Where a fallback describes what was measured, it says
@@ -296,7 +302,7 @@ python eval/harness.py --case fix-import --runs 3                  # one case, r
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
 powershell -File scripts/install-tasks.ps1        # run --channel and --worker at logon
 powershell -File scripts/install-tasks.ps1 -Remove
-pytest                            # 708 tests, no API key, no network
+pytest                            # 712 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

@@ -14,11 +14,15 @@
 [CmdletBinding()]
 param(
     [switch]$Remove,
-    [string]$ProjectDir = (Split-Path -Parent $PSScriptRoot),
-    [string]$Python = (Get-Command python).Source
+    [string]$ProjectDir,
+    [string]$Python
 )
 
 $ErrorActionPreference = "Stop"
+
+# NOT param defaults: $PSScriptRoot is empty during param binding on PS 5.1.
+if (-not $ProjectDir) { $ProjectDir = Split-Path -Parent $PSScriptRoot }
+if (-not $Python)     { $Python = (Get-Command python).Source }
 $tasks = @("PersonalAgent Channel", "PersonalAgent Worker")
 
 if ($Remove) {

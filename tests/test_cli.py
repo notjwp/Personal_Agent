@@ -275,3 +275,55 @@ def test_ask_human_routes_a_plan_payload_to_the_plan_prompt(monkeypatch):
     what lets the graph keep a single suspension mechanism."""
     answers(monkeypatch, "a")
     assert cli.ask_human(PLAN_PAUSE) == "accept"
+
+# ===== .env reached only containers, so anything else started with no API key
+
+
+def _load(tmp_path, text):
+    from agent.__main__ import _load_env
+
+    env = tmp_path / '.env'
+    env.write_text(text, encoding='utf-8')
+    return _load_env(env)
+
+
+def test_env_file_populates_the_environment(tmp_path, monkeypatch):
+    """Until this existed only the harness passed .env in, via --env-file. A
+    scheduled task or a plain shell started with no key and exited at once."""
+    monkeypatch.delenv('AGENT_DEMO_KEY', raising=False)
+    assert _load(tmp_path, 'AGENT_DEMO_KEY=abc123' + chr(10)) == 1
+
+    import os
+    assert os.environ['AGENT_DEMO_KEY'] == 'abc123'
+
+
+def test_a_REAL_variable_wins_over_the_file(tmp_path, monkeypatch):
+    """The harness exports overrides per case-run; a file that clobbered them
+    would silently measure something other than what was asked for."""
+    import os
+
+    monkeypatch.setenv('AGENT_DEMO_KEY', 'from-the-shell')
+    _load(tmp_path, 'AGENT_DEMO_KEY=from-the-file' + chr(10))
+
+    assert os.environ['AGENT_DEMO_KEY'] == 'from-the-shell'
+
+
+def test_comments_blanks_and_quotes(tmp_path, monkeypatch):
+    """Docker's --env-file does not strip quotes, so files written for it carry
+    them."""
+    import os
+
+    for name in ('AGENT_DEMO_A', 'AGENT_DEMO_B'):
+        monkeypatch.delenv(name, raising=False)
+    body = chr(10).join(['# a comment', '', 'AGENT_DEMO_A="quoted"',
+                         'AGENT_DEMO_B=plain', 'not-a-pair'])
+
+    assert _load(tmp_path, body) == 2
+    assert os.environ['AGENT_DEMO_A'] == 'quoted'
+    assert os.environ['AGENT_DEMO_B'] == 'plain'
+
+
+def test_a_missing_env_file_is_not_an_error(tmp_path):
+    from agent.__main__ import _load_env
+
+    assert _load_env(tmp_path / 'nope.env') == 0
