@@ -263,6 +263,21 @@ MEMORY_EPISODES = 3
 # constraint, and NEVER for identity or preference. Ours has exactly two kinds
 # already: AGENT.md, which does not go through search() and so never decays, and
 # episodes, which are events. One window is therefore the honest first version.
+# Semantic recall (FR-408). MEASURED on eval/fixtures/recall-corpus.jsonl:
+# keyword alone scores recall@3 of 0/40 where the query and the episode are
+# worded differently, and fused with this lane it scores 32/40. On the older
+# six-pair corpus it changed nothing, which is why it was reverted once - see
+# CONTEXT.md 8.2.
+SEMANTIC_RECALL = _env("AGENT_SEMANTIC_RECALL", "on").strip().lower() not in (
+    "0", "off", "false")
+
+# Baked into the image at /opt/minilm; there is no download path at run time.
+EMBED_MODEL = Path(_env("AGENT_EMBED_MODEL", "/opt/minilm"))
+
+# How deep each lane goes before fusion. Both lanes must offer more than the
+# final cut or fusion has nothing to reorder.
+SEMANTIC_DEPTH = int(_env("AGENT_SEMANTIC_DEPTH", "20"))
+
 MEMORY_STALE_DAYS = float(_env("AGENT_MEMORY_STALE_DAYS", "30"))
 MEMORY_STALE_DECAY = float(_env("AGENT_MEMORY_STALE_DECAY", "0.5"))
 

@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **712 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **713 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -22,6 +22,7 @@ read-only root filesystem, and without the `mcp` package installed.
 | search split | **9/9** with `web_search`, **0/9** with it removed |
 | personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **11/11** - every case 3/3 - on the committed defaults, from 3.3% (n=60). Extraction on, caps unchanged, `author-release` winnable. Earlier 46%/52%/16% averaged the ABLATION arm in |
 | NFR-101 first token | streams; p50 **unmeasured**, needs a live run |
+| memory recall | `eval/measure_recall.py`, 170 episodes / 40 paraphrase pairs: keyword **0/40**, gte-base dense-first **37/40 (92%)**. The `recall` SPLIT shows no difference - both arms 18/18 - because its homes hold three episodes |
 
 ## Standing lessons, each paid for once
 
@@ -144,6 +145,15 @@ Ordered by how often they have caught something.
   the query builder ranked candidate words by document frequency ascending, so words
   appearing in NO episode sorted first and ate the slots. The dead terms shortened
   the query, and the shortening was the whole effect. Fixed, it scored 3/6.
+- **Quantisation is measured per model, never assumed to transfer.** MiniLM int8 scored
+  identical to fp32 at a quarter the size; gte-base int8 loads, runs, raises nothing and
+  scores **1/40** against 37/40. A broken quantisation looks exactly like a working one.
+- **Model size predicts retrieval accuracy backwards here.** On the recall corpus both
+  335M models scored BELOW gte-base at 109M, and bge-small at 33M below MiniLM at 23M.
+  Benchmark the candidates; do not rank them by parameter count.
+- **A lane that scores zero still takes slots.** Reciprocal-rank fusion of keyword (0/40)
+  with dense scored 12/40 where dense alone scored 23/40. Order beats weighting: a lane
+  with no signal must not displace one that has any.
 - **A probe against the answer set is not a probe against the corpus.** An embedding
   ranked the right episode 1 of 6 among the six known targets, and never reached the
   top 3 among the 35 episodes it would actually compete with.
@@ -302,7 +312,7 @@ python eval/harness.py --case fix-import --runs 3                  # one case, r
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
 powershell -File scripts/install-tasks.ps1        # run --channel and --worker at logon
 powershell -File scripts/install-tasks.ps1 -Remove
-pytest                            # 712 tests, no API key, no network
+pytest                            # 713 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

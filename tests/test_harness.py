@@ -825,3 +825,30 @@ def test_the_limit_is_small_enough_to_be_worth_having():
     import eval_harness
 
     assert eval_harness.BLOCKED_RUN_LIMIT <= 3
+
+def test_spawn_PINS_the_container_paths(monkeypatch, tmp_path):
+    """_SET_BY_SPAWN has always claimed spawn() sets these. It did not - it only
+    kept them out of the -e forwarding, while --env-file supplied them anyway.
+    A .env carrying host paths (normal now: the CLI reads it) then pointed every
+    scored container at a directory that does not exist inside it, and every
+    case reported setup-failed.
+    """
+    import eval.harness as h
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured['cmd'] = cmd
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(h.subprocess, 'run', fake_run)
+    monkeypatch.setattr(h, 'await_exclusive_workspace', lambda: True)
+    monkeypatch.setattr(h, 'agent_home', lambda case, i: tmp_path)
+    monkeypatch.setattr(h, 'NETWORK', 'bridge')
+    h.spawn({'id': 'x', 'goal': 'g'}, 0, tmp_path)
+
+    joined = ' '.join(captured['cmd'])
+    assert 'AGENT_WORKSPACE=/workspace' in joined
+    assert 'AGENT_HOME=/state' in joined

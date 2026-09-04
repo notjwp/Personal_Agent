@@ -980,6 +980,13 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
         # split must start EMPTY or its control passes on knowledge it was testing for.
         "-e", "AGENT_SKILLS_DIR=/app/eval/fixtures/"
               + case.get("skills_dir", "skills-library"),
+        # EXPLICIT, not left to config.py's defaults. _SET_BY_SPAWN has always
+        # claimed spawn() sets these; it did not, and --env-file is not the
+        # forwarding path that list excludes. A .env carrying host paths - which
+        # is now normal, the CLI reads it - then pointed every scored container
+        # at a directory that does not exist inside it.
+        "-e", "AGENT_WORKSPACE=/workspace",
+        "-e", "AGENT_HOME=/state",
     ]
     # .env first, then the real environment, so an exported variable
     # deliberately overrides the file rather than the other way round.

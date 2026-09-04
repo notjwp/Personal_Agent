@@ -61,10 +61,42 @@ RUN pip install --no-cache-dir "textual==8.0.1" "rich==14.3.3"
 # no-index, so nothing installs at run time.
 RUN pip install --no-cache-dir "ddgs==9.16.0"
 
-# Semantic retrieval was built here and REVERTED. onnxruntime, tokenizers,
-# numpy and bge-small-en-v1.5 added 450 MB and, measured on the six recall
-# pairs, changed the score by nothing: 5/6 fused, 5/6 without. The win was in
-# the QUERY - see memory._terms. eval/CHANGELOG.md carries the ablation.
+# Semantic retrieval (FR-408). Built here, REVERTED once, and now REBUILT on a
+# corpus the first attempt did not have.
+#
+# The revert stands as measured: on the six recall pairs the dense lane changed
+# nothing, 5/6 either way, because those pairs SHARE RARE WORDS with their goals
+# and keyword already won. On eval/fixtures/recall-corpus.jsonl - 170 episodes,
+# 40 pairs worded differently - keyword scores 0/40 and fused scores 32/40.
+#
+# gte-base, chosen by measurement over five alternatives on that corpus:
+#
+#   gte-base      109M   r@3 37/40  92%   <- this
+#   bge-base      109M   r@3 32/40  80%
+#   mxbai-large   335M   r@3 31/40  78%
+#   bge-large     335M   r@3 30/40  75%
+#   MiniLM-L6      23M   r@3 24/40  60%
+#
+# SIZE DOES NOT BUY ACCURACY HERE: both 335M models score worse than gte-base
+# at 109M, and bge-small at 33M scores worse than MiniLM at 23M. Picking by
+# parameter count would have been wrong twice.
+#
+# fp32 and NOT the published int8 build: that one loads, runs, raises nothing
+# and scores 1/40. Quantisation was free for MiniLM and is not free here, which
+# is why it is measured per model rather than assumed.
+#
+# onnxruntime rather than sentence-transformers: the latter pulls torch, larger
+# than everything else in this image together, for a forward pass ONNX runs.
+RUN pip install --no-cache-dir \
+      "onnxruntime==1.23.2" "tokenizers==0.22.0" "numpy==2.3.4"
+
+# The model, baked like every other dependency: pip.conf below sets no-index and
+# NFR-205 allowlists egress to the model host, so a run cannot fetch this later.
+RUN python -c "import urllib.request as u, pathlib; \
+    d = pathlib.Path('/opt/minilm'); d.mkdir(parents=True, exist_ok=True); \
+    base = 'https://huggingface.co/thenlper/gte-base/resolve/main/'; \
+    [u.urlretrieve(base + r, d / n) for r, n in \
+     (('onnx/model.onnx', 'model.onnx'), ('tokenizer.json', 'tokenizer.json'))]"
 
 # The `missing-dep` case must be solvable with networking off: stage the wheel
 # but deliberately do NOT install it.

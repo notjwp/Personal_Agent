@@ -80,6 +80,15 @@ def write_episode(thread_id: str, goal: str, verdict: str | None, answer: str,
                 "INSERT INTO episodes_fts (rowid, goal, answer, files, commands)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (rowid, goal, answer, " ".join(files), " ".join(commands)))
+            # The GOAL alone, matching what search() matches on: an embedding of
+            # the whole row drifts toward whatever the answer happened to say.
+            vectors = embed([goal]) if config.SEMANTIC_RECALL else None
+            if vectors is not None:
+                conn.execute(
+                    "INSERT OR REPLACE INTO episode_vectors (episode_id, dims,"
+                    " vector) VALUES (?, ?, ?)",
+                    (rowid, vectors.shape[1],
+                     vectors[0].astype('float32').tobytes()))
         return rowid
     finally:
         conn.close()
@@ -143,7 +152,99 @@ def _terms(text: str, stats: dict | None = None) -> str:
 QUERY_TERMS = 2
 
 
-def search(query: str, limit: int | None = None) -> list[dict]:
+_SESSION = None
+_TOKENIZER = None
+
+
+def _embedder():
+    """The ONNX session and tokenizer, loaded once. None when unavailable.
+
+    Lazy because CE-05 forbids module-level I/O and because a 23 MB model must
+    not be loaded by a run that never retrieves. Failure returns None rather
+    than raising: no memory is a worse session, a crash is a lost one - the same
+    rule search() already applies to a malformed MATCH.
+    """
+    global _SESSION, _TOKENIZER
+    if _SESSION is not None:
+        return _SESSION, _TOKENIZER
+    try:
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        model = config.EMBED_MODEL / "model.onnx"
+        vocab = config.EMBED_MODEL / "tokenizer.json"
+        if not model.is_file() or not vocab.is_file():
+            return None, None
+        _TOKENIZER = Tokenizer.from_file(str(vocab))
+        _TOKENIZER.enable_truncation(max_length=256)
+        _SESSION = ort.InferenceSession(
+            str(model), providers=["CPUExecutionProvider"])
+        return _SESSION, _TOKENIZER
+    except Exception:
+        return None, None
+
+
+def embed(texts: list[str]):
+    """Unit-normalised mean-pooled embeddings, or None when the model is absent."""
+    session, tok = _embedder()
+    if session is None:
+        return None
+    import numpy as np
+
+    out = []
+    for start in range(0, len(texts), 32):
+        batch = texts[start:start + 32]
+        encoded = tok.encode_batch(batch)
+        width = max(len(e.ids) for e in encoded)
+        ids = np.zeros((len(batch), width), dtype=np.int64)
+        mask = np.zeros((len(batch), width), dtype=np.int64)
+        for row, e in enumerate(encoded):
+            ids[row, :len(e.ids)] = e.ids
+            mask[row, :len(e.attention_mask)] = e.attention_mask
+        feeds = {"input_ids": ids, "attention_mask": mask}
+        if "token_type_ids" in {i.name for i in session.get_inputs()}:
+            feeds["token_type_ids"] = np.zeros_like(ids)
+        hidden = session.run(None, feeds)[0]
+        weights = mask[..., None].astype(hidden.dtype)
+        pooled = (hidden * weights).sum(1) / np.clip(weights.sum(1), 1e-9, None)
+        pooled /= np.clip(np.linalg.norm(pooled, axis=1, keepdims=True), 1e-9, None)
+        out.append(pooled)
+    return np.vstack(out)
+
+
+def semantic(query: str, limit: int) -> list[int]:
+    """Episode ids by cosine similarity to `query`, best first.
+
+    Empty when the model is missing or nothing has been embedded, which is what
+    keeps this additive: search() falls back to the keyword ranking it has
+    always had.
+    """
+    if not config.SEMANTIC_RECALL:
+        return []
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT episode_id, vector FROM episode_vectors").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    if not rows:
+        return []
+
+    vectors = embed([query])
+    if vectors is None:
+        return []
+    import numpy as np
+
+    ids = [r["episode_id"] for r in rows]
+    matrix = np.vstack([np.frombuffer(r["vector"], dtype=np.float32) for r in rows])
+    order = np.argsort(-(matrix @ vectors[0]))
+    return [ids[i] for i in order[:limit]]
+
+
+def search(query: str, limit: int | None = None,
+           semantic_lane: bool = True) -> list[dict]:
     """Past episodes matching `query`, most relevant first. Keyword only.
 
     Stale episodes are DOWN-RANKED, not dropped: past MEMORY_STALE_DAYS a row
@@ -162,7 +263,10 @@ def search(query: str, limit: int | None = None) -> list[dict]:
     """
     terms = _terms(query, _document_frequency())
     if not terms:
-        return []
+        # No corpus word at all is precisely the case the dense lane exists for.
+        return _fuse([], query,
+                     limit if limit is not None else config.MEMORY_EPISODES,
+                     semantic_lane)
     conn = _connect()
     try:
         rows = conn.execute(
@@ -181,14 +285,56 @@ def search(query: str, limit: int | None = None) -> list[dict]:
             " LIMIT ?",
             (terms, time.time(), config.MEMORY_STALE_DAYS * 86400,
              config.MEMORY_STALE_DECAY,
-             limit if limit is not None else config.MEMORY_EPISODES)).fetchall()
-        return [dict(r) for r in rows]
+             config.SEMANTIC_DEPTH)).fetchall()
+        return _fuse([dict(r) for r in rows], query,
+                     limit if limit is not None else config.MEMORY_EPISODES,
+                     semantic_lane)
     except sqlite3.OperationalError:
         # A malformed MATCH must never take down the run. No memory is a worse
         # session; a crash is a lost one.
         return []
     finally:
         conn.close()
+
+def _fuse(keyword_rows: list[dict], query: str, limit: int,
+          use_dense: bool = True) -> list[dict]:
+    """Dense ranking first, then keyword rows it did not already offer.
+
+    NOT reciprocal-rank fusion, and the difference is measured. On
+    eval/fixtures/recall-corpus.jsonl, recall@3:
+
+        keyword only   0/40 paraphrase, 10/10 overlapping
+        dense only    23/40 paraphrase, 10/10 overlapping
+        RRF           12/40 paraphrase, 10/10 overlapping
+        this         23/40 paraphrase, 10/10 overlapping
+
+    RRF costs eleven pairs because a lane scoring 0/40 still offers twenty rows
+    and each takes a slot. Order beats weighting here: a lane with no signal
+    cannot displace one that has any, and keyword still contributes everything
+    dense missed - which is why it is kept rather than deleted.
+    """
+    if not use_dense:
+        return keyword_rows[:limit]
+    dense_ids = semantic(query, config.SEMANTIC_DEPTH)
+    if not dense_ids:
+        return keyword_rows[:limit]
+
+    seen = {row["id"]: row for row in keyword_rows}
+    missing = [i for i in dense_ids if i not in seen]
+    if missing:
+        conn = _connect()
+        try:
+            marks = ",".join("?" * len(missing))
+            for row in conn.execute(
+                    f"SELECT * FROM episodes WHERE id IN ({marks})", missing):
+                seen[row["id"]] = dict(row)
+        finally:
+            conn.close()
+
+    out = [seen[i] for i in dense_ids if i in seen]
+    ranked = {row["id"] for row in out}
+    out.extend(row for row in keyword_rows if row["id"] not in ranked)
+    return out[:limit]
 
 def profile() -> str:
     """The durable profile, or empty when nothing has been recorded."""
@@ -275,7 +421,7 @@ def context_for(goal: str) -> str:
     current = now()
     if current:
         parts.append(current)
-    for row in search(goal):
+    for row in search(goal, semantic_lane=config.SEMANTIC_RECALL):
         commands = json.loads(row["commands"] or "[]")
         line = f'- earlier you were asked: "{row["goal"]}"'
         if row["answer"]:

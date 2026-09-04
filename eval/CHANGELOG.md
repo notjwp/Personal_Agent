@@ -887,6 +887,82 @@ see where it points.
 
 ---
 
+## FR-408 built: keyword 0/40 -> gte-base 37/40 on the recall corpus (2026-09-04)
+
+Phase 2. **Kept on the corpus evidence, NOT on a split delta - the split shows
+none.**
+
+| | recall@1 | recall@3 |
+|---|---|---|
+| keyword, as shipped | 0/40 | **0/40** |
+| MiniLM-L6 dense-first | 16/40 | 24/40 |
+| **gte-base dense-first** | **27/40** | **37/40  (92%)** |
+
+| `recall` split | |
+|---|---|
+| dense on | **18/18** |
+| dense off | **18/18** |
+
+### The split cannot see this and that is the point
+
+Its six cases hold at most three episodes per home, which is the corpus 8.2
+already described as too small for the shortfall to appear. Both arms score
+18/18. Reverting on that would be using the instrument this whole phase existed
+to replace. The benefit is a real mailbox - hundreds of episodes, months of
+them - and no split tests that yet.
+
+### The model was chosen by measurement, and size predicted it BACKWARDS
+
+```
+gte-base      109M   r@3 37/40  92%   <- kept
+bge-base      109M   r@3 32/40  80%
+mxbai-large   335M   r@3 31/40  78%
+bge-large     335M   r@3 30/40  75%
+e5-base       109M   r@3 25/40  62%
+MiniLM-L6      23M   r@3 24/40  60%
+gte-small      33M   r@3 28/40  70%
+e5-small       33M   r@3 20/40  50%
+bge-small      33M   r@3 16/40  40%
+```
+
+Both 335M models score BELOW gte-base at 109M, and bge-small at 33M scores below
+MiniLM at 23M. Choosing by parameter count would have been wrong twice.
+
+### Quantisation is per-model, not free
+
+MiniLM int8 measured identical to fp32 at a quarter the size. gte-base int8
+loads, runs, raises nothing and scores **1/40**. Assuming the MiniLM result
+transferred would have shipped a 2% retrieval lane that looked healthy.
+
+### Three things measured wrong on the way
+
+**RRF.** A host probe said fused 32/40; the container said 12/40. The probe
+credited the keyword lane only for the TARGET episode - a boost the real code
+cannot give. Dense-first was measured at 23/40 against RRF's 12/40 on the same
+corpus: a lane scoring 0/40 still offers twenty rows and each takes a slot.
+
+**No similarity floor exists.** Correct matches score a median cosine of 0.320,
+WRONG matches 0.352, and nonsense queries reach 0.318. Every floor trades
+correct answers for rejected nonsense about 1:1. `context_for` therefore keeps
+the property it is tested on by passing `semantic_lane=False`... except it does
+not: measured, the dense lane costs nothing there, so it runs in both paths and
+the two tests that assert "nothing matched returns nothing" are pinned to the
+KEYWORD lane, where that property lives.
+
+**A .env with host paths broke the rig.** `_SET_BY_SPAWN` has always claimed
+spawn() sets AGENT_WORKSPACE and AGENT_HOME; it did not - it only kept them out
+of the `-e` forwarding, and `--env-file` is a different path. Every scored
+container took the host's `D:/agent-workspace` and reported setup-failed.
+spawn() now sets both explicitly and a test asserts the command contains them.
+
+### Cost
+
+Image **594 MB -> 1.61 GB**. Paid per scored run in disk and container start,
+not in tokens. `AGENT_SEMANTIC_RECALL=off` reverts the behaviour in one line;
+the image is the part that does not revert.
+
+---
+
 ## FR-408's gate fired: keyword recall is 0/40 on a corpus it has never had (2026-09-04)
 
 Phase 1 of the FR-408 plan. No code changed; a corpus was built and measured.

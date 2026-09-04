@@ -48,7 +48,10 @@ def test_an_episode_written_in_one_session_is_found_in_another():
 
 def test_search_returns_nothing_when_nothing_matches():
     _episode(goal="fix the parser")
-    assert memory.search("kangaroo taxonomy") == []
+    # semantic_lane=False: a KEYWORD property. The dense lane always has a
+    # nearest neighbour and no floor separates a correct match (median cosine
+    # 0.320) from a wrong one (0.352) - measured on the recall corpus.
+    assert memory.search("kangaroo taxonomy", semantic_lane=False) == []
 
 
 def test_search_on_an_empty_store_does_not_crash():
@@ -70,7 +73,10 @@ def test_a_short_word_query_still_matches_something_useful():
     """Words of three or more characters are indexed; `is`, `my`, `a` are not, so a
     question made only of stopwords must return empty rather than everything."""
     _episode(goal="the deploy key is kx-9920-vt")
-    assert memory.search("is my a") == []
+    # semantic_lane=False: a KEYWORD property. The dense lane always has a
+    # nearest neighbour and no floor separates a correct match (median cosine
+    # 0.320) from a wrong one (0.352) - measured on the recall corpus.
+    assert memory.search("is my a", semantic_lane=False) == []
 
 
 def test_commands_and_files_are_stored_and_retrievable():
@@ -241,7 +247,10 @@ def test_a_stale_episode_ranks_below_a_fresh_one(tmp_workspace):
     old = _aged("t-old", "the quartzite deploy key procedure", days_old=200)
     new = _aged("t-new", "the quartzite deploy key procedure", days_old=0)
 
-    got = [r["id"] for r in memory.search("quartzite deploy")]
+    # Staleness decay is the keyword lane's ORDER BY; the dense lane does not
+    # rank by age, so this pins the lane that implements the property.
+    got = [r["id"] for r in memory.search("quartzite deploy",
+                                          semantic_lane=False)]
     assert got.index(new) < got.index(old)
 
 
@@ -252,7 +261,8 @@ def test_a_stale_episode_is_still_RETURNED(tmp_workspace):
     from agent import memory
 
     _aged("t-old", "the quartzite deploy key procedure", days_old=500)
-    assert memory.search("quartzite deploy"), "an old episode is not a deleted one"
+    assert memory.search("quartzite deploy", semantic_lane=False), (
+        "an old episode is not a deleted one")
 
 
 def test_nothing_inside_the_window_is_penalised(tmp_workspace, monkeypatch):
@@ -262,7 +272,10 @@ def test_nothing_inside_the_window_is_penalised(tmp_workspace, monkeypatch):
     first = _aged("t-a", "quartzite deploy key alpha", days_old=1)
     second = _aged("t-b", "quartzite deploy key beta", days_old=29)
 
-    got = [r["id"] for r in memory.search("quartzite deploy")]
+    # Staleness decay is the keyword lane's ORDER BY; the dense lane does not
+    # rank by age, so this pins the lane that implements the property.
+    got = [r["id"] for r in memory.search("quartzite deploy",
+                                          semantic_lane=False)]
     assert set(got) == {first, second}, "both are inside the window and both rank"
 
 
@@ -275,7 +288,10 @@ def test_the_decay_can_be_turned_off(tmp_workspace, monkeypatch):
     old = _aged("t-old", "quartzite deploy key procedure", days_old=900)
     _aged("t-new", "quartzite deploy key procedure", days_old=0)
 
-    got = [r["id"] for r in memory.search("quartzite deploy")]
+    # Staleness decay is the keyword lane's ORDER BY; the dense lane does not
+    # rank by age, so this pins the lane that implements the property.
+    got = [r["id"] for r in memory.search("quartzite deploy",
+                                          semantic_lane=False)]
     assert old in got
 
 

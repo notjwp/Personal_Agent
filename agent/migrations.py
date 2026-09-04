@@ -67,6 +67,21 @@ MEMORY: list[tuple[str, list[str]]] = [
                    FROM episodes""",
         ],
     ),
+    (
+        # v3: one embedding per episode (FR-408), added 2026-09-04. A separate
+        # table rather than a column on `episodes`: a vector is not a field
+        # anyone SELECTs beside the goal, and keeping it out means every
+        # existing query is untouched.
+        "episode embeddings",
+        [
+            """CREATE TABLE IF NOT EXISTS episode_vectors (
+                   episode_id INTEGER PRIMARY KEY
+                       REFERENCES episodes(id) ON DELETE CASCADE,
+                   dims       INTEGER NOT NULL,
+                   vector     BLOB NOT NULL
+               )""",
+        ],
+    ),
 ]
 
 TASKS: list[tuple[str, list[str]]] = [
