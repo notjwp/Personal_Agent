@@ -20,7 +20,7 @@ read-only root filesystem, and without the `mcp` package installed.
 | real repositories | **10/17**, all six cases x 3 runs - the first real number not resting on a subset. `real-humanize` 0/3, 1 pass in 13 runs across six configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
-| personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **9/12** with extraction on - 9/9 of the winnable cases, `author-release` being an unwinnable fixture. Earlier 46%/52%/16% averaged the ABLATION arm in |
+| personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **9/12** with extraction on, and `author-release` 0/9 -> 3/3 once its fixture stated a rule that determined the check. Earlier 46%/52%/16% averaged the ABLATION arm in |
 | NFR-101 first token | streams; p50 **unmeasured**, needs a live run |
 
 ## Standing lessons, each paid for once
@@ -40,6 +40,11 @@ Ordered by how often they have caught something.
   counted as a failed case.
 - **Verify the rig in BOTH directions**: that passes are untampered, and that untouched fixtures
   still fail.
+- **A fixture must not contain its own answer - and it must also STATE one.**
+  `author-release` scored 0/9 because CONVENTIONS.md said the `-quartz` suffix belonged
+  in VERSION and then wrote `rel <version> ::` for the changelog, while the check
+  demanded `rel <version>-quartz ::`. The agent followed the rule as written. All three
+  verification directions passed the whole time. 0/9 -> 3/3 on four words.
 - **A fixture must not contain its own answer, and two-way verification will not catch it.** Verify
   three ways: untouched fails, a plausible answer *without* the knowledge fails, the correct answer
   passes.

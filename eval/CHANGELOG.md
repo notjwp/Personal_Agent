@@ -887,6 +887,49 @@ see where it points.
 
 ---
 
+## author-release was unwinnable: the rule did not determine the check (2026-09-04)
+
+**0/9 -> 3/3.** The only change is four words in a fixture.
+
+The agent had been getting it half right for nine runs:
+
+```
+VERSION      4.14.0-quartz          correct
+CHANGES.md   rel 4.14.0 :: ...      check wanted rel 4.14.0-quartz :: ...
+```
+
+CONVENTIONS.md said:
+
+```
+- `VERSION` holds the version with a `-quartz` suffix ...
+- `CHANGES.md` gains one line at the end, exactly `rel <version> :: <summary>`.
+```
+
+Scoping the suffix to VERSION in the first bullet and then writing `<version>`
+plainly in the second makes the plain form the natural reading. The agent followed
+the rule as written and the check rejected it.
+
+**The proof was already in the repo.** The `skills` split states the SAME convention
+unambiguously - `qz-release/SKILL.md` says `rel <version-with-suffix> :: <summary>`
+with a worked example. The authoring fixture had dropped the disambiguation its own
+sibling carried. CONVENTIONS.md now matches it.
+
+The example summary is `parser rewrite`, deliberately none of the three session
+summaries: a fixture must not hand over its own answer.
+
+### The history of this case is not comparable across this change
+
+Every `author-release` result before 2026-09-04 was scored against a rule that could
+not produce the required output. It was 0/9 in the three-arm extraction comparison
+and dragged that split's ceiling to 9/12; the ceiling is 12/12 from here.
+
+**A fixture must not contain its own answer, and it must also STATE one.** The
+three-way check catches the first and says nothing about the second - untouched fails,
+a plausible answer without the knowledge fails, and the correct answer passes, all
+true here while the case remained unwinnable.
+
+---
+
 ## authoring 3.3% -> 9/12, and the control beat the treatment (2026-09-04)
 
 | arm | cap | extraction | score |
