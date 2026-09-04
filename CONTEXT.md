@@ -895,6 +895,17 @@ re-argue a decision that has already been measured.
       runs/<ts>/       summary.jsonl + <case-id>.json full traces
       CHANGELOG.md     one section per cycle: hypothesis, change, before, after
     scripts/reset.sh   restore the workspace to a fixture's state
+    scripts/install-tasks.ps1
+                       A STATED DEVIATION, added 2026-09-04. Registers --channel
+                       and --worker with Windows Task Scheduler. It exists so a
+                       `--daemon` subcommand does NOT: the OS already restarts a
+                       crashed process and starts one at logon, and 60 lines of
+                       Python re-implementing that would be worse at it. Bounded
+                       restarts (3), because `--channel` exits 2 on a rejected
+                       password and an unbounded restart is how a permanently
+                       broken thing looks healthy. Runs --doctor BEFORE
+                       registering: a task that dies on start looks identical in
+                       the UI to one that works.
     .agent/            RUNTIME STATE, gitignored
       artifacts/       spilled tool output. INSIDE the workspace, because the
                        model must be able to read a spill without tripping

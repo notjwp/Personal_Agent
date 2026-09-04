@@ -311,6 +311,62 @@ def check() -> list[str]:
     return lines
 
 
+def diagnose() -> list[str]:
+    """Every precondition this agent needs, each line ok or FAIL.
+
+    Hermes's `doctor` is 3,151 lines because it covers ~25 providers; this covers
+    the two we have. The design is the part worth taking: ONE command that probes
+    every precondition rather than the one you happened to suspect.
+    """
+    from agent import migrations, registry, worker
+
+    lines = []
+
+    try:
+        config.openai_api_key() if config.PROVIDER != "anthropic" else None
+        lines.append(f"ok    provider {config.PROVIDER}, key present")
+    except RuntimeError as exc:
+        lines.append(f"FAIL  {exc}")
+    lines.append(f"ok    model {config.OPENAI_MODEL}"
+                 if config.PROVIDER != "anthropic" else
+                 f"ok    model {config.MODEL}")
+
+    root = config.WORKSPACE
+    lines.append(f"ok    workspace {root}" if root.is_dir()
+                 else f"FAIL  workspace {root} does not exist")
+
+    try:
+        with worker._connect() as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            queued = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status='queued'").fetchone()[0]
+        lines.append(f"ok    tasks db at schema v{version}, {queued} queued"
+                     if version == len(migrations.TASKS)
+                     else f"FAIL  tasks db at v{version}, code expects "
+                          f"v{len(migrations.TASKS)}")
+    except Exception as exc:
+        lines.append(f"FAIL  tasks db: {exc}")
+
+    running = [t for t in worker.tasks() if t["status"] == "running"]
+    alive = [t for t in running if worker._alive(t["pid"], t["pid_started"])]
+    lines.append(f"ok    {len(alive)} worker(s) alive, {len(running)} task(s) running"
+                 if len(alive) == len(running) else
+                 f"FAIL  {len(running) - len(alive)} task(s) running with no live "
+                 f"worker - run --worker to recover them")
+
+    try:
+        size = registry.check_budget()
+        lines.append(f"ok    tool schemas {size:,} of {config.MAX_SCHEMA_CHARS:,} chars")
+    except Exception as exc:
+        lines.append(f"FAIL  {exc}")
+
+    if configured():
+        lines.extend(check())
+    else:
+        lines.append("--    email channel not configured (set AGENT_EMAIL_*)")
+    return lines
+
+
 def run_channel(once: bool = False, poll: float | None = None) -> int:
     """Read the mailbox and pay outstanding replies until stopped.
 

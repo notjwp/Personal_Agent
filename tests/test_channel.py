@@ -545,3 +545,63 @@ def test_ChannelRefused_IS_a_ChannelUnavailable(channel):
     """A subclass, so every existing handler still catches it and no row is
     lost - only run_channel singles it out."""
     assert issubclass(channel.ChannelRefused, channel.ChannelUnavailable)
+
+# ============================================================ the doctor
+
+
+def test_diagnose_reports_every_precondition(channel, monkeypatch, tmp_path):
+    """Hermes's doctor is 3,151 lines across ~25 providers; the design worth taking
+    is ONE command that probes everything rather than the thing you suspected."""
+    from agent import config
+
+    monkeypatch.setattr(config, "WORKSPACE", tmp_path)
+    report = channel.diagnose()
+    blob = " ".join(report)
+
+    for expected in ("provider", "model", "workspace", "tasks db",
+                     "worker", "tool schemas"):
+        assert expected in blob, expected
+
+
+def test_diagnose_FAILS_on_a_missing_workspace(channel, monkeypatch, tmp_path):
+    from agent import config
+
+    monkeypatch.setattr(config, "WORKSPACE", tmp_path / "gone")
+    assert any(l.startswith("FAIL") and "workspace" in l
+               for l in channel.diagnose())
+
+
+def test_diagnose_FLAGS_a_task_running_with_no_live_worker(channel, monkeypatch,
+                                                          tmp_path):
+    """The state --worker recovers from. Silent otherwise: the row says running and
+    nothing is."""
+    from agent import config, worker
+
+    monkeypatch.setattr(config, "WORKSPACE", tmp_path)
+    task_id = worker.submit("orphaned")
+    with worker._connect() as conn:
+        conn.execute("UPDATE tasks SET status='running', pid=?, pid_started=? "
+                     "WHERE id=?", (999999, 1.0, task_id))
+
+    assert any(l.startswith("FAIL") and "no live worker" in l
+               for l in channel.diagnose())
+
+
+def test_diagnose_says_when_the_channel_is_OFF(channel, monkeypatch, tmp_path):
+    from agent import config
+
+    monkeypatch.setattr(config, "WORKSPACE", tmp_path)
+    monkeypatch.setattr(config, "EMAIL_ALLOW", frozenset())
+
+    assert any("not configured" in l for l in channel.diagnose())
+
+
+def test_diagnose_CHANGES_nothing(channel, monkeypatch, tmp_path):
+    from agent import config, worker
+
+    monkeypatch.setattr(config, "WORKSPACE", tmp_path)
+    channel.box = [(1, _mail("me@example.com", "do this", "please"))]
+    channel.diagnose()
+
+    assert worker.tasks() == []
+    assert channel.outbox == []

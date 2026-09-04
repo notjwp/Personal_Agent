@@ -741,3 +741,47 @@ def test_an_ordinary_schedule_is_unaffected_by_the_sentinel(tmp_workspace):
 
     assert len(fired) == 1
     assert worker.get(fired[0])["goal"] == "the ordinary goal"
+
+# ================== cancelling a task (a channel can queue what you did not type)
+
+
+def test_a_queued_task_can_be_CANCELLED(queue):
+    """Once a channel can queue work, there has to be an off switch."""
+    from agent import worker
+
+    task_id = worker.submit('do something regrettable')
+    stopped = worker.cancel(task_id)
+
+    assert stopped['status'] == 'failed'
+    assert stopped['verdict'] == 'cancelled'
+    assert worker.get(task_id)['finished_at'] is not None
+
+
+def test_a_RUNNING_task_can_be_cancelled(queue):
+    from agent import worker
+
+    task_id = worker.submit('long job')
+    worker.claim()
+    assert worker.get(task_id)['status'] == 'running'
+
+    assert worker.cancel(task_id) is not None
+    assert worker.get(task_id)['verdict'] == 'cancelled'
+
+
+def test_cancelling_a_FINISHED_task_changes_nothing(queue):
+    """conclude() writes a terminal state ONCE. Cancelling after the fact must not
+    rewrite a real result into a cancellation."""
+    from agent import worker
+
+    task_id = worker.submit('quick job')
+    worker.claim()
+    worker.conclude(task_id, status='done', verdict='done', detail='all green')
+
+    assert worker.cancel(task_id) is None
+    assert worker.get(task_id)['verdict'] == 'done'
+
+
+def test_cancelling_an_unknown_task_returns_None(queue):
+    from agent import worker
+
+    assert worker.cancel('nosuchid') is None

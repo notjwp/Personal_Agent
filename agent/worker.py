@@ -179,6 +179,20 @@ def conclude(task_id: str, *, status: str, verdict: str = "",
             "SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
 
 
+def cancel(task_id: str) -> dict | None:
+    """Stop a queued or running task. None when it was already terminal.
+
+    conclude() already moves queued/running to a terminal state exactly once, so
+    this is that call and nothing more - no new status, no migration.
+
+    A RUNNING task keeps going until its current node returns; the row flips now
+    and the worker's own conclude() then finds nothing to update, which is the
+    idempotent path doing its job rather than a race.
+    """
+    return conclude(task_id, status="failed", verdict="cancelled",
+                    detail="cancelled by the user")
+
+
 def recover() -> int:
     """Requeue tasks whose worker died. Returns how many.
 
