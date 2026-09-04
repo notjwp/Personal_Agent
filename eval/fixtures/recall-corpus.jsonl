@@ -1,0 +1,170 @@
+{"goal": "The Quartzite deploy key is QZ-8891-KEYSTONE.", "answer": "Recorded the deploy key.", "query": "what do I use to authorise a release push"}
+{"goal": "We build this project with `make release-all`, never plain make.", "answer": "Recorded the build command.", "query": "how is the compile step invoked here"}
+{"goal": "Ashgrove escalations go to extension 4417.", "answer": "Recorded the escalation contact.", "query": "who do I ring when the billing service falls over"}
+{"goal": "My sister's birthday is the 14th of March.", "answer": "Noted the date.", "query": "when should I send Priya a card"}
+{"goal": "I take my coffee black, no sugar.", "answer": "Noted the preference.", "query": "how do I like my morning drink"}
+{"goal": "The spare house key is under the third flowerpot.", "answer": "Noted where the key is.", "query": "where did I hide the way in when I lock myself out"}
+{"goal": "Our staging database is postgres 14, production is 16.", "answer": "Recorded the versions.", "query": "which release of the store runs before we go live"}
+{"goal": "The car insurance renews on 2 November.", "answer": "Noted the renewal date.", "query": "when is the vehicle cover due again"}
+{"goal": "I am allergic to shellfish.", "answer": "Noted the allergy.", "query": "what must never go in my dinner"}
+{"goal": "The wifi password at the flat is heronsflight22.", "answer": "Noted the password.", "query": "how do guests get online at home"}
+{"goal": "Dr Whitfield's surgery only takes bookings before 10am.", "answer": "Noted the booking window.", "query": "when can I phone the medical practice"}
+{"goal": "We agreed to freeze the schema until the migration lands.", "answer": "Recorded the decision.", "query": "are we allowed to change table definitions right now"}
+{"goal": "My passport expires in August 2028.", "answer": "Noted the expiry.", "query": "how long is the travel document still valid"}
+{"goal": "The team stands up at 09:15, not 09:30.", "answer": "Recorded the time.", "query": "when does the daily sync actually start"}
+{"goal": "I prefer aisle seats on anything over two hours.", "answer": "Noted the preference.", "query": "where should I be sat on a long flight"}
+{"goal": "The garage code is 5502.", "answer": "Noted the code.", "query": "what gets me into where the car is parked"}
+{"goal": "We dropped the Redis cache in favour of in-process memoisation.", "answer": "Recorded the change.", "query": "what replaced the external key value store"}
+{"goal": "Mum does not eat dairy.", "answer": "Noted the restriction.", "query": "what should I leave out when my mother visits"}
+{"goal": "The lease is up for renewal at the end of September.", "answer": "Noted the date.", "query": "when do I have to decide about staying in the flat"}
+{"goal": "Invoices go to accounts@ashgrove.example, not to Marcus directly.", "answer": "Recorded the address.", "query": "where do I send the bill"}
+{"goal": "The rowing club meets Tuesdays and Thursdays at six.", "answer": "Noted the schedule.", "query": "which evenings am I on the water"}
+{"goal": "I switched the blog from Jekyll to Astro last spring.", "answer": "Recorded the migration.", "query": "what generates my website these days"}
+{"goal": "The boiler was serviced in January by Kelso Heating.", "answer": "Noted the service.", "query": "who last looked at the hot water system"}
+{"goal": "We cap PRs at 400 lines changed.", "answer": "Recorded the convention.", "query": "how big is a review allowed to get"}
+{"goal": "My National Insurance number is on the back of the blue folder.", "answer": "Noted the location.", "query": "where do I find my tax identifier"}
+{"goal": "The dog is due her booster in April.", "answer": "Noted the date.", "query": "when does Bramble need the vet again"}
+{"goal": "We use British spelling in all customer-facing copy.", "answer": "Recorded the convention.", "query": "which orthography goes in the marketing text"}
+{"goal": "The Ashgrove contract auto-renews unless cancelled 60 days out.", "answer": "Recorded the term.", "query": "how much notice to get out of the agreement"}
+{"goal": "I paid £340 for the standing desk in March.", "answer": "Recorded the purchase.", "query": "what did the adjustable table cost"}
+{"goal": "Sourdough starter gets fed Friday mornings.", "answer": "Noted the routine.", "query": "when do I look after the bread culture"}
+{"goal": "The office alarm code changed to 7734 after the break-in.", "answer": "Recorded the new code.", "query": "what disarms the building now"}
+{"goal": "We decided against Kubernetes; a single box is enough.", "answer": "Recorded the decision.", "query": "did we ever go with container orchestration"}
+{"goal": "My bike is a 2019 Genesis Croix de Fer, frame number GF19-8823.", "answer": "Recorded the details.", "query": "what should I tell the police if the cycle is stolen"}
+{"goal": "Rent is due on the 3rd, by standing order.", "answer": "Noted the arrangement.", "query": "when does the housing payment leave my account"}
+{"goal": "The postgres backups land in s3://ashgrove-backups/nightly/.", "answer": "Recorded the location.", "query": "where do the database snapshots end up"}
+{"goal": "I stopped drinking on weeknights in February.", "answer": "Noted the change.", "query": "when did I give up alcohol Monday to Thursday"}
+{"goal": "Grandad's watch is in the safety deposit box at Barclays.", "answer": "Noted the location.", "query": "where is the inherited timepiece kept"}
+{"goal": "We ship on Wednesdays; never on a Friday.", "answer": "Recorded the policy.", "query": "which day do releases go out"}
+{"goal": "The tenant's deposit is held with the DPS, reference DPS-4417-K.", "answer": "Recorded the reference.", "query": "where is the renter's security money protected"}
+{"goal": "I signed up for the Edinburgh half in October.", "answer": "Recorded the entry.", "query": "which race am I training for"}
+{"goal": "Renewed the domain for two years.", "answer": "Done.", "query": null}
+{"goal": "Cancelled the gym membership.", "answer": "Done.", "query": null}
+{"goal": "Booked the dentist for a check-up.", "answer": "Done.", "query": null}
+{"goal": "Ordered a replacement charger for the laptop.", "answer": "Done.", "query": null}
+{"goal": "Filed the quarterly VAT return.", "answer": "Done.", "query": null}
+{"goal": "Backed up the photo library to the external drive.", "answer": "Done.", "query": null}
+{"goal": "Changed the smoke alarm batteries.", "answer": "Done.", "query": null}
+{"goal": "Set up a direct debit for the electricity.", "answer": "Done.", "query": null}
+{"goal": "Returned the shoes that did not fit.", "answer": "Done.", "query": null}
+{"goal": "Booked train tickets to Manchester.", "answer": "Done.", "query": null}
+{"goal": "Updated the CV with the last two roles.", "answer": "Done.", "query": null}
+{"goal": "Cleared the gutters before the storm.", "answer": "Done.", "query": null}
+{"goal": "Registered for the conference in Lisbon.", "answer": "Done.", "query": null}
+{"goal": "Swapped the winter tyres back.", "answer": "Done.", "query": null}
+{"goal": "Renewed the library card.", "answer": "Done.", "query": null}
+{"goal": "Sold the old monitor on Gumtree.", "answer": "Done.", "query": null}
+{"goal": "Cancelled the newspaper subscription.", "answer": "Done.", "query": null}
+{"goal": "Booked a table for six on Saturday.", "answer": "Done.", "query": null}
+{"goal": "Sent the birthday present to Aunt Judith.", "answer": "Done.", "query": null}
+{"goal": "Repotted the fig tree.", "answer": "Done.", "query": null}
+{"goal": "Fixed the dripping tap in the bathroom.", "answer": "Done.", "query": null}
+{"goal": "Applied for the parking permit.", "answer": "Done.", "query": null}
+{"goal": "Scanned the receipts for the accountant.", "answer": "Done.", "query": null}
+{"goal": "Reset the router after the outage.", "answer": "Done.", "query": null}
+{"goal": "Bought a new mattress.", "answer": "Done.", "query": null}
+{"goal": "Arranged a locksmith for the back door.", "answer": "Done.", "query": null}
+{"goal": "Signed the school consent form.", "answer": "Done.", "query": null}
+{"goal": "Moved the savings into a fixed-rate account.", "answer": "Done.", "query": null}
+{"goal": "Complained to the council about the bins.", "answer": "Done.", "query": null}
+{"goal": "Ordered firewood for the winter.", "answer": "Done.", "query": null}
+{"goal": "Set up two-factor on the bank app.", "answer": "Done.", "query": null}
+{"goal": "Booked the car in for its MOT.", "answer": "Done.", "query": null}
+{"goal": "Cancelled the streaming trial before it charged.", "answer": "Done.", "query": null}
+{"goal": "Wrote the reference for Tomas.", "answer": "Done.", "query": null}
+{"goal": "Sorted the loft insulation quote.", "answer": "Done.", "query": null}
+{"goal": "Renewed the professional indemnity cover.", "answer": "Done.", "query": null}
+{"goal": "Fixed the squeaking door hinge.", "answer": "Done.", "query": null}
+{"goal": "Took the recycling to the tip.", "answer": "Done.", "query": null}
+{"goal": "Ordered contact lenses for three months.", "answer": "Done.", "query": null}
+{"goal": "Booked the chimney sweep.", "answer": "Done.", "query": null}
+{"goal": "Refactored the authentication middleware.", "answer": "Done.", "query": null}
+{"goal": "Upgraded the CI runners to the newer image.", "answer": "Done.", "query": null}
+{"goal": "Added rate limiting to the public endpoint.", "answer": "Done.", "query": null}
+{"goal": "Split the monolith's billing module out.", "answer": "Done.", "query": null}
+{"goal": "Fixed a race in the session cache.", "answer": "Done.", "query": null}
+{"goal": "Wrote integration tests for the payment flow.", "answer": "Done.", "query": null}
+{"goal": "Migrated logging from syslog to structured JSON.", "answer": "Done.", "query": null}
+{"goal": "Pinned the transitive dependency causing the flake.", "answer": "Done.", "query": null}
+{"goal": "Removed the dead feature flag.", "answer": "Done.", "query": null}
+{"goal": "Documented the deployment runbook.", "answer": "Done.", "query": null}
+{"goal": "Tuned the slow query on the orders table.", "answer": "Done.", "query": null}
+{"goal": "Added a health check to the worker.", "answer": "Done.", "query": null}
+{"goal": "Rotated the signing certificate.", "answer": "Done.", "query": null}
+{"goal": "Cleaned up the stale feature branches.", "answer": "Done.", "query": null}
+{"goal": "Set up alerting on queue depth.", "answer": "Done.", "query": null}
+{"goal": "Replaced the cron job with a scheduled task.", "answer": "Done.", "query": null}
+{"goal": "Fixed the timezone bug in the report.", "answer": "Done.", "query": null}
+{"goal": "Added pagination to the search results.", "answer": "Done.", "query": null}
+{"goal": "Cached the expensive aggregate.", "answer": "Done.", "query": null}
+{"goal": "Deprecated the v1 API.", "answer": "Done.", "query": null}
+{"goal": "Wrote the postmortem for the Friday outage.", "answer": "Done.", "query": null}
+{"goal": "Reduced the container image by 300 megabytes.", "answer": "Done.", "query": null}
+{"goal": "Added retries with backoff to the webhook sender.", "answer": "Done.", "query": null}
+{"goal": "Fixed the memory leak in the importer.", "answer": "Done.", "query": null}
+{"goal": "Moved secrets out of the repository.", "answer": "Done.", "query": null}
+{"goal": "Added a linter rule for unused imports.", "answer": "Done.", "query": null}
+{"goal": "Rewrote the onboarding email sequence.", "answer": "Done.", "query": null}
+{"goal": "Consolidated three dashboards into one.", "answer": "Done.", "query": null}
+{"goal": "Fixed the broken redirect after login.", "answer": "Done.", "query": null}
+{"goal": "Archived the abandoned prototype.", "answer": "Done.", "query": null}
+{"goal": "Planned the summer holiday in Portugal.", "answer": "Done.", "query": null}
+{"goal": "Chose a photographer for the wedding.", "answer": "Done.", "query": null}
+{"goal": "Drafted the best man speech.", "answer": "Done.", "query": null}
+{"goal": "Compared quotes for home insurance.", "answer": "Done.", "query": null}
+{"goal": "Researched electric cars under thirty thousand.", "answer": "Done.", "query": null}
+{"goal": "Read three papers on retrieval evaluation.", "answer": "Done.", "query": null}
+{"goal": "Started learning Portuguese on Duolingo.", "answer": "Done.", "query": null}
+{"goal": "Finished the woodworking course.", "answer": "Done.", "query": null}
+{"goal": "Joined the local allotment waiting list.", "answer": "Done.", "query": null}
+{"goal": "Watched the lecture series on macroeconomics.", "answer": "Done.", "query": null}
+{"goal": "Practised scales for twenty minutes.", "answer": "Done.", "query": null}
+{"goal": "Entered the photography competition.", "answer": "Done.", "query": null}
+{"goal": "Volunteered at the food bank on Sundays.", "answer": "Done.", "query": null}
+{"goal": "Started a pension review with the adviser.", "answer": "Done.", "query": null}
+{"goal": "Tracked expenses for a month in a spreadsheet.", "answer": "Done.", "query": null}
+{"goal": "Learned to make proper pasta dough.", "answer": "Done.", "query": null}
+{"goal": "Rebuilt the garden bed with railway sleepers.", "answer": "Done.", "query": null}
+{"goal": "Catalogued the record collection.", "answer": "Done.", "query": null}
+{"goal": "Set up a home server for backups.", "answer": "Done.", "query": null}
+{"goal": "Wrote a short story for the anthology.", "answer": "Done.", "query": null}
+{"goal": "Reviewed the draft partnership agreement.", "answer": "Done.", "query": null}
+{"goal": "Prepared slides for the board meeting.", "answer": "Done.", "query": null}
+{"goal": "Interviewed two candidates for the analyst role.", "answer": "Done.", "query": null}
+{"goal": "Negotiated the supplier contract down.", "answer": "Done.", "query": null}
+{"goal": "Presented the roadmap to the sales team.", "answer": "Done.", "query": null}
+{"goal": "Ran the retrospective for the last quarter.", "answer": "Done.", "query": null}
+{"goal": "Approved the design for the new packaging.", "answer": "Done.", "query": null}
+{"goal": "Wrote the job description for a junior engineer.", "answer": "Done.", "query": null}
+{"goal": "Sat in on the customer research calls.", "answer": "Done.", "query": null}
+{"goal": "Signed off the annual accounts.", "answer": "Done.", "query": null}
+{"goal": "Arranged cover for the bank holiday.", "answer": "Done.", "query": null}
+{"goal": "Updated the staff handbook on remote work.", "answer": "Done.", "query": null}
+{"goal": "Chased the late invoice from Hartley Ltd.", "answer": "Done.", "query": null}
+{"goal": "Set the pricing for the new tier.", "answer": "Done.", "query": null}
+{"goal": "Reviewed the security questionnaire.", "answer": "Done.", "query": null}
+{"goal": "Booked the venue for the away day.", "answer": "Done.", "query": null}
+{"goal": "Wrote the quarterly update for investors.", "answer": "Done.", "query": null}
+{"goal": "Mapped the customer support escalation path.", "answer": "Done.", "query": null}
+{"goal": "Audited who has production access.", "answer": "Done.", "query": null}
+{"goal": "Chose a new payroll provider.", "answer": "Done.", "query": null}
+{"goal": "Ran a fire drill with the office.", "answer": "Done.", "query": null}
+{"goal": "Replaced the kitchen extractor fan.", "answer": "Done.", "query": null}
+{"goal": "Painted the spare room.", "answer": "Done.", "query": null}
+{"goal": "Fitted a smart thermostat.", "answer": "Done.", "query": null}
+{"goal": "Descaled the coffee machine.", "answer": "Done.", "query": null}
+{"goal": "Serviced the lawnmower.", "answer": "Done.", "query": null}
+{"goal": "Rewired the shed with an armoured cable.", "answer": "Done.", "query": null}
+{"goal": "Replaced the fence panels after the wind.", "answer": "Done.", "query": null}
+{"goal": "Laid new flooring in the hallway.", "answer": "Done.", "query": null}
+{"goal": "Installed a water filter under the sink.", "answer": "Done.", "query": null}
+{"goal": "Bled the radiators before winter.", "answer": "Done.", "query": null}
+{"goal": "Cleared the blocked drain outside.", "answer": "Done.", "query": null}
+{"goal": "Fitted blackout blinds in the bedroom.", "answer": "Done.", "query": null}
+{"goal": "Sealed the bathroom tiles.", "answer": "Done.", "query": null}
+{"goal": "Mounted the television on the wall.", "answer": "Done.", "query": null}
+{"goal": "Built shelving in the alcove.", "answer": "Done.", "query": null}
+{"goal": "Replaced the front door lock.", "answer": "Done.", "query": null}
+{"goal": "Insulated the pipes in the loft.", "answer": "Done.", "query": null}
+{"goal": "Repaired the garden gate latch.", "answer": "Done.", "query": null}
+{"goal": "Cleaned and re-oiled the decking.", "answer": "Done.", "query": null}

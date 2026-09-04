@@ -574,6 +574,22 @@ exists.
     MAX_SCHEMA_CHARS. It reopens if a real corpus reproduces the shortfall
     after the query fix, which is the condition to re-measure - not to assume.
 
+    REOPENED 2026-09-04. The condition was tested and it fired. A 170-episode
+    corpus with 40 ground-truth pairs - eval/fixtures/recall-corpus.jsonl, the
+    corpus this entry said had never existed - scores keyword recall@3 of 0/40
+    when the query and the episode are worded differently.
+      Measured three ways so the number means one thing:
+        verbatim, query == goal          40/40   retrieval itself works
+        overlapping, one shared word     10/10   reproduces the old 5/6
+        paraphrase, no shared words       0/40   the shortfall
+      The old corpus was 36 coding-repair goals phrased alike, so a query
+      shared rare words with its target and keyword sufficed. A personal
+      agent's memory is not worded that way: "how do I like my morning drink"
+      retrieves nothing for "I take my coffee black, no sugar".
+    This reopens the GATE, not the design. Vellum's four-lane shape measured
+    1/6 and a dense lane alone 3/6; both stay rejected. A single lane fused
+    with keyword must move recall@3 on THIS corpus or it reverts.
+
   NFR-802 vs FR-302 and NFR-201            ADDED 2026-08-23
     "All agent artifacts under ONE inspectable directory" cannot be satisfied
     without breaking one of the other two, and the collision is structural
@@ -890,6 +906,15 @@ re-argue a decision that has already been measured.
                        tenth without meeting that bar.
     eval/
       harness.py       runner and scorer
+      measure_recall.py  A STATED DEVIATION, added 2026-09-04. recall@k over
+                       fixtures/recall-corpus.jsonl. Separate from harness.py
+                       because it needs no model, no network and no quota - a
+                       retrieval measurement, and folding it into the scored
+                       runner would make it cost a scored run.
+      fixtures/recall-corpus.jsonl
+                       170 episodes, 40 with a ground-truth query worded
+                       DIFFERENTLY from the episode. The corpus 8.2 said had
+                       never existed, and what FR-408's gate asks for.
       tasks.jsonl      fixture cases, flagged by split
       fixtures/<id>/   the broken repo for each case, committed. No nested .git
       runs/<ts>/       summary.jsonl + <case-id>.json full traces

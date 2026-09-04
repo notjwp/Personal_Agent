@@ -887,6 +887,54 @@ see where it points.
 
 ---
 
+## FR-408's gate fired: keyword recall is 0/40 on a corpus it has never had (2026-09-04)
+
+Phase 1 of the FR-408 plan. No code changed; a corpus was built and measured.
+
+| | recall@3 |
+|---|---|
+| verbatim, query == goal | **40/40** |
+| overlapping, one shared rare word | **10/10** |
+| **paraphrase, no shared words** | **0/40** |
+
+Three directions on purpose. 0/40 alone has two explanations and only one is a
+finding: the first two rows rule out "retrieval is broken" and "the benchmark is
+merely impossible", leaving vocabulary as the only variable.
+
+### Why the old measurement said 5/6
+
+The 36-goal corpus was coding-repair tasks phrased alike, so a query shared rare
+words with its target and keyword sufficed. Row 2 above REPRODUCES that: give a
+query one overlapping rare word and keyword scores 10/10 on this corpus too.
+
+A personal agent's memory is not worded that way:
+
+```
+query : how do I like my morning drink
+wanted: I take my coffee black, no sugar.
+got   : Sourdough starter gets fed Friday mornings.
+
+query : when should I send Priya a card
+wanted: My sister's birthday is the 14th of March.
+got   : Renewed the library card.                     <- matched on `card`
+```
+
+### The corpus
+
+`eval/fixtures/recall-corpus.jsonl`: 170 episodes, 40 with a ground-truth query.
+Distractors are written rather than harvested - the 45 distinct recorded goals are
+nearly all "Make the suite pass", which is no distractor set at all. Checked before
+measuring: no pair shares a word with its query except stopwords like `the`, which
+document frequency drops.
+
+### What this does NOT say
+
+It says keyword fails on vocabulary. It does not say embeddings succeed. Vellum's
+four-lane shape measured 1/6 and a dense lane alone 3/6, and both stay rejected.
+Phase 2 has to move recall@3 on THIS corpus or it reverts like everything else.
+
+---
+
 ## authoring re-measured on the committed defaults: 11/11 (2026-09-04)
 
 Confirmation run, no code change. Extraction on by default, caps back at 12,
