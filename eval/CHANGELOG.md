@@ -887,6 +887,35 @@ see where it points.
 
 ---
 
+## authoring re-measured on the committed defaults: 11/11 (2026-09-04)
+
+Confirmation run, no code change. Extraction on by default, caps back at 12,
+`author-release` winnable.
+
+```
+author-deps       2/2      the 12th run was interrupted, not a result
+author-errors     3/3
+author-release    3/3
+author-testname   3/3
+```
+
+| | score |
+|---|---|
+| historic real arm | **3.3%** (n=60) |
+| + extraction, caps 24 | 8/12 |
+| + extraction, caps 12 | 9/12 |
+| **+ fixture fix** | **11/11** |
+
+**11/11 is what completed.** The last case-run was killed by an interrupt and never
+produced a row, so the denominator is 11 - quoting 12/12 would be inventing a result.
+
+Two causes, both things this project already knew and neither a new mechanism: `learn`
+asked and was answered 3 times in 117 runs, where extraction fires by rule 12 of 12;
+and one case demanded an output its own CONVENTIONS.md never specified, with the
+correct wording sitting in `qz-release/SKILL.md` in the same repository.
+
+---
+
 ## author-release was unwinnable: the rule did not determine the check (2026-09-04)
 
 **0/9 -> 3/3.** The only change is four words in a fixture.

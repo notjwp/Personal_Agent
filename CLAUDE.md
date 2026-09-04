@@ -20,7 +20,7 @@ read-only root filesystem, and without the `mcp` package installed.
 | real repositories | **10/17**, all six cases x 3 runs - the first real number not resting on a subset. `real-humanize` 0/3, 1 pass in 13 runs across six configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
-| personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **9/12** with extraction on, and `author-release` 0/9 -> 3/3 once its fixture stated a rule that determined the check. Earlier 46%/52%/16% averaged the ABLATION arm in |
+| personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **11/11** - every case 3/3 - on the committed defaults, from 3.3% (n=60). Extraction on, caps unchanged, `author-release` winnable. Earlier 46%/52%/16% averaged the ABLATION arm in |
 | NFR-101 first token | streams; p50 **unmeasured**, needs a live run |
 
 ## Standing lessons, each paid for once
