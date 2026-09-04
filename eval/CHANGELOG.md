@@ -887,6 +887,56 @@ see where it points.
 
 ---
 
+## authoring 3.3% -> 9/12, and the control beat the treatment (2026-09-04)
+
+| arm | cap | extraction | score |
+|---|---|---|---|
+| A | 24 | off | 4/12 |
+| B | 24 | on | 8/12 |
+| **C** | **12** | **on** | **9/12** |
+
+```
+                   A(24,off)  B(24,on)  C(12,on)
+author-errors        0/3        3/3       3/3
+author-deps          1/3        3/3       3/3
+author-testname      3/3        2/3       3/3
+author-release       0/3        0/3       0/3
+```
+
+**Extraction is the entire effect and the cap raise is worse than neutral.**
+`author-errors` is the discriminator: 0/3 without extraction, 3/3 with it at EITHER
+cap. `author-testname` scores 3/3 at cap 12 and 2/3 at cap 24 - the extra turns gave
+it room to spoil a correct answer, the same over-editing that cost float-division on
+held out. The caps are reverted.
+
+### Why extraction works where `learn` did not
+
+| | fired |
+|---|---|
+| `learn` tool (the agent chooses) | **3 of 117 runs** |
+| extraction (a rule at session end) | **12 of 12** |
+
+`authoring` is a THREE-SESSION case: session 1 says "read CONVENTIONS.md, then cut
+release 4.12.0", sessions 2 and 3 name no convention. The agent has to record what it
+learned or start blind. It almost never chose to, so the split sat at 3.3% while every
+part of the machinery worked.
+
+Third time deterministic injection has beaten agent choice here, after
+write_episode -> context_for (0/18 -> 15/18) and the skill index.
+
+### Two things I read wrong on the way
+
+`skills_loaded=[]` is a load_skill TOOL-CALL counter, not "the skill never reached the
+model". The auto-skill was injecting the body into the system prompt every turn
+(`skill_opened` 19, 13, 20) while I argued twice that it had not fired. Check the trace,
+not the tool counter.
+
+`best_match` was verified against the FULL skills library, which authoring cases never
+see - they get `skills-empty` and must write their own. That check said nothing about
+the split it was cited for.
+
+---
+
 ## Three numbers this project was quoting were wrong (2026-09-04)
 
 No code changed. Reading the traces to PLAN the remaining work corrected the record,

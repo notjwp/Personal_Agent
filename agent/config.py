@@ -312,7 +312,11 @@ MAX_AUTHORED_SKILLS = 8
 
 # A rule instead of asking the model, which declined 15 times out of 15.
 # Switchable independently of authoring or neither is attributable.
-SKILL_EXTRACTION = _env("AGENT_SKILL_EXTRACTION", "off").strip().lower() not in (
+# ON. MEASURED on the authoring split: extraction fired in 12 of 12 runs where
+# the `learn` TOOL had fired in 3 of 117 - the agent almost never chooses to
+# record what it worked out, so sessions 2 and 3 start blind. 3.3% -> 9/12, and
+# 9/9 on the cases that are winnable.
+SKILL_EXTRACTION = _env("AGENT_SKILL_EXTRACTION", "on").strip().lower() not in (
     "0", "off", "false")
 
 # The floor rejects a file carrying no procedure; the ceiling refuses a whole

@@ -20,7 +20,7 @@ read-only root filesystem, and without the `mcp` package installed.
 | real repositories | **10/17**, all six cases x 3 runs - the first real number not resting on a subset. `real-humanize` 0/3, 1 pass in 13 runs across six configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
-| personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **3.3%** (n=60). Earlier figures of 46%/52%/16% averaged the ABLATION arm in |
+| personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **9/12** with extraction on - 9/9 of the winnable cases, `author-release` being an unwinnable fixture. Earlier 46%/52%/16% averaged the ABLATION arm in |
 | NFR-101 first token | streams; p50 **unmeasured**, needs a live run |
 
 ## Standing lessons, each paid for once
@@ -99,7 +99,15 @@ Ordered by how often they have caught something.
   hanging tool; tools take 9s of a 950s run and it was ending working runs instead.
   Re-derive a cap when the thing it bounds changes shape.
 
-- **Deterministic injection works; agent choice does not.** `write_episode` → `context_for` needed
+- **Deterministic injection works; agent choice does not.** THIRD confirmation:
+  extraction at session end fired 12 of 12 where the `learn` TOOL fired 3 of 117, and
+  took `authoring` from 3.3% to 9/12. Before that, `write_episode` -> `context_for`
+  needed no decision and went 0/18 -> 15/18 while `learn` was called 0 times in 15
+  sessions. Prefer a rule over a request, every time.
+- **`skills_loaded` is a TOOL-CALL counter, not evidence the skill reached the model.**
+  The auto-skill was injecting the body into the system prompt on every turn
+  (`skill_opened` 19/13/20) while that field read empty. Check the trace event, not the
+  tool count - I built an argument on the wrong field twice in one hour. `write_episode` → `context_for` needed
   no decision and went 0/18 → 15/18. The `learn` tool needed one and was called 0 times in 15
   sessions. Prefer a rule over a request.
 - **On this provider a tool-call history keeps producing tool calls** whether or not a tool is
