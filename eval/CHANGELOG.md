@@ -5,6 +5,68 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Guard re-measure after gte-base and extraction-by-default (2026-09-05)
+
+**No change under test.** The last `dev` and `heldout` numbers predate the image
+tripling for gte-base (594 MB -> 1.61 GB) and skill extraction going on by
+default. Guards that have not run since the thing they guard changed are not
+guards, so this re-runs both at the committed defaults.
+
+### Result
+
+| | before | after | |
+|---|---|---|---|
+| dev | 15/15 | **15/15** | unchanged |
+| held out | 29/30 | **30/30** | `float-division` 2/3 -> 3/3 |
+
+Ceilings hold: dev median 49,485 and heldout 43,557 against NFR-402's 60,000;
+largest result 4,604 and 5,237 against NFR-104's 6,000. Heldout verdicts are
+`done` x30 with zero tamper. No blocked runs; the free tier absorbed both passes
+at roughly 1.5M tokens total.
+
+Traces: `eval/runs/20260905T060755Z` (dev), `eval/runs/20260905T063222Z` (heldout).
+
+### The +1 is noise and is recorded as noise
+
+`float-division` was already flapping, and the three changes shipped that day -
+`worker.py` recording a task's answer, `cli.py` gating MCP startup, the TUI's
+screens - are **none of them in the graph's path**. There is no mechanism by
+which they move a pass rate, so attributing the gain to them would be the
+"a pass rate is not evidence for a mechanism that did not fire" error. The
+finding is that the guards held, not that anything improved.
+
+### What the run actually settled: add-endpoint at cap 12 is unwinnable
+
+The first attempt was launched without `AGENT_MAX_TURNS=30` and was **stopped
+after three case-runs**, because the cases pin `max_turns: 12` in `tasks.jsonl`
+and the recorded 15/15 baseline was measured with the env override. Different
+arms, so the comparison would have been meaningless.
+
+Those three runs are worth keeping as a measurement in their own right:
+
+| | cap 12 | cap 30 |
+|---|---|---|
+| `add-endpoint` | **0/3**, `stuck` x3 | **3/3**, `done` x3 |
+
+CLAUDE.md said `add-endpoint` "still flaps 1/3-3/3 at the old cap". It does not
+flap - at 12 it cannot pass, because its first edit lands on call 13. The flap
+was measurement variance in how close to the wall it got.
+
+**Stopping the client left the case container running**, which is the orphan the
+standing lesson names; it was killed by hand and the workspace verified clean
+before relaunching.
+
+### Defect found, not fixed here
+
+`--check-provider` reports "no API key" against a working endpoint. The harness
+reads `.env` only to build the proxy allowlist (`allowed_hosts`) and never puts
+it in `os.environ`, so the in-process probe sees nothing - the same shape as
+`.env` reaching only containers, and as `cli.main` starting MCP ahead of every
+flag. Worked around by exporting `.env` into the shell rather than editing the
+harness mid-measurement.
+
+---
+
 ## Stage C - FR-408 measured and closed as not justified (2026-08-31)
 
 **No quota spent. No model called. Nothing built.**

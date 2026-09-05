@@ -15,8 +15,8 @@ read-only root filesystem, and without the `mcp` package installed.
 
 | | |
 |---|---|
-| dev baseline | **15/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b`, at `MAX_TURNS=30`. `add-endpoint` still flaps 1/3-3/3 at the old cap of 12 |
-| held out | **29/30** — unchanged by the cap raise; 3 runs needed 15-31 turns and 1 used the room to break itself |
+| dev baseline | **15/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b`, at `MAX_TURNS=30`. Re-measured 2026-09-05 after gte-base and extraction-by-default. `add-endpoint` does not flap at the old cap of 12 - it scores **0/3, `stuck` x3**, because its first edit lands on call 13 |
+| held out | **30/30**, re-measured 2026-09-05, `done` x30 and zero tamper. The +1 over 29/30 is `float-division` landing on a good seed, NOT a gain: nothing shipped that day is in the graph's path |
 | real repositories | **10/17**, all six cases x 3 runs - the first real number not resting on a subset. `real-humanize` 0/3, 1 pass in 13 runs across six configurations |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
