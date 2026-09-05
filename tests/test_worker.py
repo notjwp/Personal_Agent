@@ -205,6 +205,27 @@ def test_the_worker_runs_a_task_to_done(queue):
     assert row["status"] == "done" and row["verdict"] == "done"
 
 
+def test_a_finished_task_records_what_the_agent_SAID(queue):
+    """Measured live 2026-09-05: an emailed question was answered "done"."""
+    worker.submit("what python version")
+    graph = FakeGraph(out={"verdict": "done", "denied": [], "messages": [
+        {"role": "user", "content": "what python version"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Python 3.13."}]},
+    ]})
+
+    worker.run_worker(graph, once=True)
+
+    assert worker.tasks()[0]["detail"] == "Python 3.13."
+
+
+def test_a_finished_task_with_no_closing_words_keeps_detail_empty(queue):
+    worker.submit("fix it")
+
+    worker.run_worker(FakeGraph(), once=True)
+
+    assert worker.tasks()[0]["detail"] == ""
+
+
 def test_an_empty_queue_is_not_an_error(queue):
     assert worker.run_worker(FakeGraph(), once=True) == 0
 

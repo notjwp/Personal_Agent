@@ -411,7 +411,7 @@ def run_once(app, task: dict, trace: list | None = None) -> dict | None:
     was queued while you were away, and a task that hid its refusals under
     `done` would make that unanswerable.
     """
-    from agent.graph import new_state
+    from agent.graph import _final_text, new_state
 
     cfg = {"configurable": {"thread_id": task["id"], "autonomous": True,
                             "trace": trace if trace is not None else []}}
@@ -434,7 +434,10 @@ def run_once(app, task: dict, trace: list | None = None) -> dict | None:
     # `done` means the AGENT finished, not that the worker exited cleanly - a
     # crashed worker leaves the task running so recover() can requeue it.
     if verdict == "done":
-        return conclude(task["id"], status="done", verdict=verdict)
+        # The ANSWER, not the verdict. channel._reply sends `detail or verdict`,
+        # so without this a person who emailed a question is mailed back "done".
+        return conclude(task["id"], status="done", verdict=verdict,
+                        detail=_final_text(out.get("messages") or []))
     return conclude(task["id"], status="failed", verdict=verdict,
                     detail=f"agent ended {verdict or 'with no verdict'}")
 
