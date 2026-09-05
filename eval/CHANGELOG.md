@@ -5,6 +5,100 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## A 4.6x larger model changed nothing on `real` (2026-09-05)
+
+**One change: `OPENAI_MODEL`.** `nvidia/nemotron-3-super-120b-a12b` ->
+`nvidia/nemotron-3-ultra-550b-a55b`, same key, same endpoint, same caps, same
+code. Run as a shell export, so the committed default never moved and there is
+nothing to revert.
+
+The roadmap's standing claim is that the model outranks the plan - *"a stronger
+model moved this project 4/15 -> 14/15 with zero code changes"*. This tested it
+on the split that matters.
+
+### Result: 10/18 -> 10/18
+
+| case | 120B | ultra | |
+|---|---|---|---|
+| `real-humanize` | 0/3 | **2/3** | +2 |
+| `real-more-itertools` | 2/3 | **3/3** | +1 |
+| `real-markdown` | 3/3 | 3/3 | - |
+| `real-cachetools` | 3/3 | **2/3** | -1 |
+| `real-click` | 1/3 | **0/3** | -1 |
+| `real-rich` | 1/3 | **0/3** | -1 |
+| | **10/18** | **10/18** | **+0** |
+
+Four of six cases moved and the total did not. Median tokens 241,564 ->
+220,221 (**-9%**): ultra spent LESS, not more.
+
+Traces: `eval/runs/20260905T082544Z`. Model confirmed on every row and in the
+manifest before anything was read into the result.
+
+### The finding is not about reasoning. It is about compaction.
+
+`verdicts: done 9, stuck 8, budget 1`. Every one of the eight losses is a cap
+firing, not a wrong answer. Split by cause:
+
+| | 120B | ultra |
+|---|---|---|
+| stuck runs | 3 | **8** |
+| of those, compaction-exhausted (`compact_count` 3) | **0** | **4** |
+| compactions on stuck runs | 1, 1, 2 | 1, 1, 1, 1, **3, 3, 3, 3** |
+| compactions on passing runs | 0-1 | 0-2 |
+
+**The 120B never reached `MAX_COMPACTIONS` in 18 runs; ultra reached it in
+four.** Condition (a1) in `reflect` then ends the run: compacted three times and
+still over `COMPACT_AT_CHARS` (45,000).
+
+And the separator is clean in BOTH arms: **no passing run ever compacted more
+than twice.** Compaction count at 3 is not correlated with failure here, it is
+the terminating condition.
+
+So ultra fills the CONTEXT faster per turn while spending fewer tokens overall -
+it is being cut off earlier, not thinking longer. `MAX_COMPACTIONS = 3` and
+`MAX_TURNS = 30` were both derived against a model a fifth its size, which is
+the standing lesson verbatim: *a cap sized against one failure mode outlives it.*
+
+**What this does NOT establish:** that ultra is worse, or equal. It establishes
+that ultra is not better *under budgets shaped for the 120B*. The model question
+is still open and the caps are the confound.
+
+### Kept: nothing. The default stays nemotron-3-super-120b-a12b.
+
+Per the Iron Law a change that does not move the number is reverted, and this
+one was never committed to revert.
+
+### The one result worth repeating
+
+`real-humanize` **0/3 -> 2/3**. That is the case ROADMAP.md names as the
+arithmetic wall no phase fixes - the agent writes `exponent += 3` where the fix
+needs `exponent += 3 - exponent % 3` - and it had **1 pass in 13 runs across six
+configurations** before today. Two of three, with no code change.
+
+One favourable n=3 is a hypothesis. It also cuts against the aggregate, which is
+exactly when a result deserves repeating rather than quoting.
+
+### Two follow-ups, one variable each
+
+1. **`MAX_COMPACTIONS` 3 -> 5, re-run `real` on ultra.** Tests the confound
+   directly. Four runs died on that cap.
+2. **`real-humanize` alone on ultra, 3 more runs.** Tests whether 2/3 survives.
+
+### Rig notes from this pass, none affecting the score
+
+- **A hung model call is not bounded by `MAX_SECONDS`.** One run sat 112 minutes
+  at 0.78% CPU with empty logs. The cap is checked BETWEEN turns, so a single
+  HTTP call that never returns is never checked. Killing the container produced
+  `NO ROW WRITTEN (exit 137) - not counted`, which is the harness behaving
+  correctly: no row is synthesised for a half-executed run.
+- **A `--continue` attempt was killed by host memory pressure** and left its
+  container running. The orphan was killed by hand and the workspace verified
+  before retrying - the same failure the `timeout` lesson describes, arriving
+  from a different direction.
+- Both losses cost wall-clock only. The 18 rows are complete and untampered.
+
+---
+
 ## Guard re-measure after gte-base and extraction-by-default (2026-09-05)
 
 **No change under test.** The last `dev` and `heldout` numbers predate the image

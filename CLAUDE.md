@@ -17,7 +17,7 @@ read-only root filesystem, and without the `mcp` package installed.
 |---|---|
 | dev baseline | **15/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b`, at `MAX_TURNS=30`. Re-measured 2026-09-05 after gte-base and extraction-by-default. `add-endpoint` does not flap at the old cap of 12 - it scores **0/3, `stuck` x3**, because its first edit lands on call 13 |
 | held out | **30/30**, re-measured 2026-09-05, `done` x30 and zero tamper. The +1 over 29/30 is `float-division` landing on a good seed, NOT a gain: nothing shipped that day is in the graph's path |
-| real repositories | **10/17**, all six cases x 3 runs - the first real number not resting on a subset. `real-humanize` 0/3, 1 pass in 13 runs across six configurations |
+| real repositories | **10/18**, all six cases x 3 runs. A 4.6x larger model (`nemotron-3-ultra-550b-a55b`) scored **10/18 too** - four cases moved, the total did not, and it spent 9% FEWER tokens. `real-humanize` 0/3 -> **2/3** on ultra, the first movement in 13 runs, and worth repeating |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
 | personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **11/11** - every case 3/3 - on the committed defaults, from 3.3% (n=60). Extraction on, caps unchanged, `author-release` winnable. Earlier 46%/52%/16% averaged the ABLATION arm in |
@@ -101,6 +101,15 @@ Ordered by how often they have caught something.
   (`agent/iteration_budget.py`), Vellum at 200. Before raising it, check the run is
   STARVED: median spend was 42-54k of 200,000, so tokens never bound.
 
+- **Caps derived against one model are a confound when you swap the model.**
+  `nemotron-3-ultra-550b-a55b` scored 10/18 against the 120B's 10/18, and 8 of 8
+  losses were caps, not wrong answers. The 120B never reached `MAX_COMPACTIONS`
+  in 18 runs; ultra reached it in 4 and each ended `stuck` there. No passing run
+  in EITHER arm ever compacted more than twice. Swap the model and re-derive the
+  budgets before reading the score.
+- **A hung model call is not bounded by `MAX_SECONDS`.** The cap is checked
+  between turns, so one HTTP call that never returns is never checked - a run sat
+  112 minutes at 0.78% CPU. Watch container age, not row count.
 - **A cap sized against one failure mode outlives it.** `MAX_SECONDS` was set for a
   hanging tool; tools take 9s of a 950s run and it was ending working runs instead.
   Re-derive a cap when the thing it bounds changes shape.
