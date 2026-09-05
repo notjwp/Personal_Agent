@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **759 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **764 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -110,6 +110,12 @@ Ordered by how often they have caught something.
 - **A hung model call is not bounded by `MAX_SECONDS`.** The cap is checked
   between turns, so one HTTP call that never returns is never checked - a run sat
   112 minutes at 0.78% CPU. Watch container age, not row count.
+- **A session that never calls a tool has no cap at all.** `turns` is incremented by
+  `execute`, so a run that answers in words never advances it and `max_turns` cannot
+  bind; the thrash detector misses it too, because it reads tool-call SIGNATURES.
+  Measured live: 53 model calls and 200,681 tokens on "just acknowledge this". Fixed
+  on repetition with no call EVER made - not on a streak, because `add-endpoint`
+  repeats itself identically up to four times mid-run across 942 rows and passes.
 - **A cap sized against one failure mode outlives it.** `MAX_SECONDS` was set for a
   hanging tool; tools take 9s of a 950s run and it was ending working runs instead.
   Re-derive a cap when the thing it bounds changes shape.
@@ -321,7 +327,7 @@ python eval/harness.py --case fix-import --runs 3                  # one case, r
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
 powershell -File scripts/install-tasks.ps1        # run --channel and --worker at logon
 powershell -File scripts/install-tasks.ps1 -Remove
-pytest                            # 759 tests, no API key, no network
+pytest                            # 764 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

@@ -568,3 +568,59 @@ def test_truncation_beats_the_verify_nudge(monkeypatch):
     out = reflect(_finished(truncated=True, edited_unverified=True))
 
     assert "cut off" in out["messages"][-1]["content"]
+
+
+# ============================== a session that answers in words and stops there
+
+def _text(body):
+    return {"role": "assistant", "content": [{"type": "text", "text": body}]}
+
+
+ACK = "I acknowledge and will start every file with ORIGIN: quartzite-desk."
+
+
+def test_a_repeated_answer_with_no_tool_call_ever_is_done():
+    """Measured live 2026-09-05: 53 model calls and 200,681 tokens on "just
+    acknowledge this". `turns` is incremented by `execute`, so a session that
+    never calls a tool never advances it and `max_turns` cannot bind."""
+    s = state(messages=[{"role": "user", "content": "just acknowledge this"},
+                        _text(ACK), _text(ACK)])
+
+    assert reflect(s)["verdict"] == "done"
+
+
+def test_ONE_text_reply_is_still_a_preamble():
+    """Correction (b): "Let me look at the test file first." must not end a run."""
+    s = state(messages=[{"role": "user", "content": "fix it"}, _text(ACK)])
+
+    assert reflect(s)["verdict"] == "continue"
+
+
+def test_two_DIFFERENT_text_replies_do_not_end_it():
+    s = state(messages=[{"role": "user", "content": "fix it"},
+                        _text("Let me look at the tests."),
+                        _text("The failure is in the parser.")])
+
+    assert reflect(s)["verdict"] == "continue"
+
+
+def test_a_session_that_HAS_called_a_tool_is_untouched():
+    """The discriminator, and why a streak would have been wrong: across 942
+    recorded rows `add-endpoint` repeats itself identically up to four times
+    mid-run and still passes. It always calls tools."""
+    from agent.graph import _repeated_its_answer
+
+    messages = [{"role": "user", "content": "fix it"},
+                assistant_call(), tool_result(),
+                _text(ACK), _text(ACK)]
+
+    # It ends `done` either way - a text reply after a tool call always did.
+    # What must not happen is THIS guard being the reason.
+    assert _repeated_its_answer(messages) is False
+
+
+def test_the_guard_reads_text_not_whitespace():
+    s = state(messages=[{"role": "user", "content": "hi"},
+                        _text(""), _text("")])
+
+    assert reflect(s)["verdict"] == "continue"
