@@ -1,16 +1,3 @@
-"""Binary file extensions to skip for text-based operations.
-
-VENDORED from Hermes Agent (tools/binary_extensions.py), MIT, Copyright (c) 2025
-Nous Research. Taken verbatim rather than re-derived: the value here IS the list,
-and a hand-written one would be shorter and wrong. See NOTICE.
-
-Why it earns its place, measured before lifting: read_file on an 8-byte PNG header
-plus 2 KB of bytes returned 2,496 characters of mojibake into the model's context.
-Their second half - the opaque-document set - names a hazard we also have, where a
-model reads report.docx as extracted text and writes it back as plain text,
-destroying the document.
-"""
-
 BINARY_EXTENSIONS = frozenset({
     # Images
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tiff", ".tif",
