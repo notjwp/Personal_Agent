@@ -852,3 +852,53 @@ def test_spawn_PINS_the_container_paths(monkeypatch, tmp_path):
     joined = ' '.join(captured['cmd'])
     assert 'AGENT_WORKSPACE=/workspace' in joined
     assert 'AGENT_HOME=/state' in joined
+
+
+# ============================================= the harness runs on the HOST
+
+def _main_with(monkeypatch, tmp_path, contents, exported=None):
+    """Run main() with a stand-in .env and report what check_provider saw."""
+    import os
+
+    env = tmp_path / ".env"
+    env.write_text(contents, encoding="utf-8")
+    monkeypatch.setattr(harness, "ENV_FILE", env)
+    monkeypatch.delenv("AGENT_HARNESS_PROBE", raising=False)
+    if exported is not None:
+        monkeypatch.setenv("AGENT_HARNESS_PROBE", exported)
+
+    seen = {}
+
+    def stub():
+        seen["value"] = os.environ.get("AGENT_HARNESS_PROBE")
+        return 0
+
+    monkeypatch.setattr(harness, "check_provider", stub)
+    monkeypatch.setattr(sys, "argv", ["harness.py", "--check-provider"])
+
+    assert harness.main() == 0
+    return seen["value"]
+
+
+def test_the_harness_loads_dotenv_itself(monkeypatch, tmp_path):
+    """Measured 2026-09-05: --check-provider reported "no API key" against an
+    endpoint that answered. Only containers ever got .env, via --env-file, and
+    the in-process probe runs on the host."""
+    assert _main_with(monkeypatch, tmp_path,
+                      "AGENT_HARNESS_PROBE=from-file\n") == "from-file"
+
+
+def test_an_exported_variable_still_beats_the_file(monkeypatch, tmp_path):
+    """How the scored container keeps /workspace: spawn() passes AGENT_WORKSPACE
+    with -e, and a .env carrying host paths must not overwrite it."""
+    assert _main_with(monkeypatch, tmp_path,
+                      "AGENT_HARNESS_PROBE=from-file\n",
+                      exported="from-shell") == "from-shell"
+
+
+def test_a_missing_dotenv_is_not_an_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(harness, "ENV_FILE", tmp_path / "nope.env")
+    monkeypatch.setattr(harness, "check_provider", lambda: 0)
+    monkeypatch.setattr(sys, "argv", ["harness.py", "--check-provider"])
+
+    assert harness.main() == 0

@@ -1506,6 +1506,14 @@ def check_provider() -> int:
 
 
 def main() -> int:
+    # The harness runs on the HOST, where nothing else loads .env - containers
+    # get it via --env-file. Without this --check-provider reported "no API key"
+    # against a working endpoint. Safe inside the container too: a real variable
+    # always wins, and spawn() sets AGENT_WORKSPACE and AGENT_HOME with -e.
+    from agent.__main__ import _load_env
+
+    _load_env(ENV_FILE)
+
     p = argparse.ArgumentParser()
     p.add_argument("--split")
     p.add_argument("--case")
