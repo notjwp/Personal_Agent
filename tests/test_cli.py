@@ -327,3 +327,32 @@ def test_a_missing_env_file_is_not_an_error(tmp_path):
     from agent.__main__ import _load_env
 
     assert _load_env(tmp_path / 'nope.env') == 0
+
+
+# ============================================================ MCP startup cost
+
+def _args(**over):
+    """argparse's namespace as _calls_model reads it."""
+    base = dict(worker=False, tui=False, resume=None, goal=None)
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize("flag", ["worker", "tui"])
+def test_the_paths_that_run_the_graph_start_the_servers(flag):
+    assert cli._calls_model(_args(**{flag: True})) is True
+
+
+@pytest.mark.parametrize("field,value", [("resume", "a1b2c3d4"), ("goal", "fix it")])
+def test_resuming_and_a_bare_goal_start_the_servers(field, value):
+    assert cli._calls_model(_args(**{field: value})) is True
+
+
+def test_the_offline_flags_start_nothing():
+    """--doctor, --channel-check, --tasks, --channel: database and disk only.
+
+    Measured 2026-09-05: activation ran ahead of every flag, so a credentials
+    probe exited 2 on a missing web-fetch tool and both scheduled tasks died
+    at logon. --channel only queues and answers; --worker runs the graph.
+    """
+    assert cli._calls_model(_args()) is False

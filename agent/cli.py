@@ -265,6 +265,16 @@ def list_threads(app) -> int:
 TIME_FMT = "%Y-%m-%d %H:%M"
 
 
+def _calls_model(args) -> bool:
+    """Which flags reach act(). Everything else is database and disk.
+
+    Measured 2026-09-05: --channel-check exited 2 on a missing web-fetch tool
+    because activation ran ahead of every flag, and both scheduled tasks died
+    at logon the same way. --channel queues and answers; only --worker runs it.
+    """
+    return bool(args.worker or args.tui or args.resume or args.goal)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent")
     parser.add_argument("goal", nargs="?", help="what to do, in plain language")
@@ -300,6 +310,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list:
         return list_threads(app)          # no model, so no tools, so no startup
+
+    if not _calls_model(args):
+        return _dispatch(args, app, parser)
 
     # Started before EITHER path that calls a model and torn down after both,
     # so a resumed thread does not start a second set of servers.
