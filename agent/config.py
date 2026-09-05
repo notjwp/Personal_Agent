@@ -331,6 +331,17 @@ MAX_AUTHORED_SKILLS = 8
 # the `learn` TOOL had fired in 3 of 117 - the agent almost never chooses to
 # record what it worked out, so sessions 2 and 3 start blind. 3.3% -> 9/12, and
 # 9/9 on the cases that are winnable.
+# Standing instructions the user states are written to AGENT.md by a RULE, not
+# by the model electing to call `remember`. Measured: `remember` fired 136 times
+# in 13,049 tool calls and AGENT.md did not exist on this machine at all.
+PROFILE_DISTIL = _env("AGENT_PROFILE_DISTIL", "on").strip().lower() not in (
+    "0", "off", "false", "no")
+
+# Three per session and 200 chars each, because the profile is injected into
+# every system prompt and this provider caches nothing.
+DISTIL_MAX_FACTS = 3
+DISTIL_MAX_CHARS = 200
+
 SKILL_EXTRACTION = _env("AGENT_SKILL_EXTRACTION", "on").strip().lower() not in (
     "0", "off", "false")
 

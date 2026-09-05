@@ -753,6 +753,10 @@ def finish(state: AgentState, config: RunnableConfig) -> dict:
             files=sorted({c["input"]["path"] for c, ok in outcomes
                           if ok and isinstance(c["input"].get("path"), str)}))
 
+        # Same rule, applied to the user model: `remember` is a tool and
+        # AGENT.md was empty on the one machine this actually runs on.
+        memory.distil(state["messages"], skip=CAP_SUMMARY_REQUEST)
+
     # Phase O-redux: knowledge is retained WITHOUT the agent electing to record
     # it. Deterministic injection went 0/18 to 15/18; the `learn` tool went 0/15.
     for name in skills.extract(state["messages"], _goal(state["messages"])):

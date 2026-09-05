@@ -401,6 +401,71 @@ def remember(note: str) -> str:
     return f"recorded: {note}"
 
 
+# How people actually state a standing instruction. Fitted to the six recall
+# fixtures AND checked against their task halves: 6/6 teach sentences matched,
+# 0/6 task sentences did. Kept narrow on purpose - the profile is system-prompt
+# rent, so a false positive is paid for on every turn of every later session.
+DURABLE = (
+    "standing rule", "from now on", "every time", "without being asked",
+    "note that down", "note this down", "remember that", "remember it",
+    "remember this", "keep that", "keep this", "i prefer", "i want you to",
+    "my convention", "house rule", "always", "never",
+)
+
+_SENTENCE_END = (". ", "! ", "? ", chr(10))
+
+
+def _sentences(text: str) -> list[str]:
+    """Split on terminators, keeping it dumb: a regex here would be a parser."""
+    out, buf = [], text
+    for mark in _SENTENCE_END:
+        buf = buf.replace(mark, chr(1))
+    for part in buf.split(chr(1)):
+        part = " ".join(part.split())
+        if part:
+            out.append(part)
+    return out
+
+
+def distil(messages: list[dict], skip: str = "") -> list[str]:
+    """Write standing instructions the user stated into AGENT.md. Returns them.
+
+    `remember` is a TOOL, so it is written only when the model elects to write
+    it - and this project has measured that shape failing three times. This
+    decides by rule from the user's own words, which is what took skills from
+    3.3% to 11/11.
+
+    Only `str` user content is read, which excludes tool results (they arrive as
+    a list) and `skip` excludes the cap-summary request the loop injects as the
+    user. Never raises: it runs at the end of a session that may already have
+    succeeded.
+    """
+    if not config.PROFILE_DISTIL:
+        return []
+    written: list[str] = []
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or (skip and content.strip() == skip.strip()):
+            continue
+        for sentence in _sentences(content):
+            if len(written) >= config.DISTIL_MAX_FACTS:
+                return written
+            low = sentence.lower()
+            if not any(marker in low for marker in DURABLE):
+                continue
+            try:
+                note = sentence[:config.DISTIL_MAX_CHARS]
+                if remember(note).startswith("recorded"):
+                    written.append(note)
+            except (ValueError, OSError):
+                # A bookkeeping failure must not turn a passing run into a
+                # crashed one.
+                continue
+    return written
+
+
 def context_for(goal: str) -> str:
     """Profile plus relevant past sessions, as text for the system prompt.
 

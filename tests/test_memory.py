@@ -382,3 +382,112 @@ def test_finish_writes_it_WITHOUT_the_agent_electing_to(tmp_workspace):
     finish(state, {"configurable": {"thread_id": "t1"}})
 
     assert "Make the suite pass" in memory.now()
+
+
+# ====================================================== profile distillation
+
+TEACH = [
+    "A standing rule for all my work: every file you create must start with the "
+    "line ORIGIN: quartzite-desk. Always, without being asked.",
+    "A standing rule for my projects: I name every Python helper function with "
+    "the prefix qz_. Always, without being asked.",
+    "A standing rule for anything you write for me: record every duration in "
+    "centiseconds and label it cs. Always.",
+    "My deploy key for the Quartzite cluster is kx-9920-vt. Note that down - I "
+    "will need it later.",
+    "The way we build this project is `make ship-quartz`. It is not the standard "
+    "command, so remember it.",
+    "Escalations for the Ashgrove service go to Priya Raghunathan on extension "
+    "4471. Keep that.",
+]
+
+TASKS = [
+    "Write my Quartzite deploy key into a file called answer.txt in the "
+    "workspace. The file must contain the key and nothing else.",
+    "Write the command we use to build this project into a file called "
+    "answer.txt in the workspace, and nothing else.",
+    "Write the extension for Ashgrove escalations into a file called answer.txt "
+    "in the workspace, and nothing else.",
+    "Create a file called notes.txt in the workspace containing a shopping list.",
+    "Write a Python file called helper.py in the workspace with one function "
+    "that adds two numbers.",
+    "Write a file called timing.txt in the workspace recording that the build "
+    "took two seconds.",
+]
+
+
+def _said(text):
+    return [{"role": "user", "content": text}]
+
+
+@pytest.mark.parametrize("text", TEACH)
+def test_a_stated_standing_instruction_reaches_the_profile(text):
+    assert memory.distil(_said(text)), text
+
+
+@pytest.mark.parametrize("text", TASKS)
+def test_an_ordinary_TASK_does_not(text):
+    """The direction that matters: the profile is injected into every system
+    prompt, so a false positive is rent charged on every later turn."""
+    assert memory.distil(_said(text)) == [], text
+
+
+def test_a_tool_result_is_not_the_user_speaking():
+    """Tool results arrive as role=user with a LIST content. Reading them would
+    persist file contents as though the user had stated them."""
+    messages = [{"role": "user",
+                 "content": [{"type": "tool_result",
+                              "content": "always run make before pushing"}]}]
+
+    assert memory.distil(messages) == []
+
+
+def test_the_caps_own_summary_request_is_not_a_user_statement():
+    ask = "Say what you found. Always be brief."
+
+    assert memory.distil(_said(ask), skip=ask) == []
+
+
+def test_at_most_three_facts_leave_one_session():
+    """System-prompt rent: a session that says ten standing rules must not
+    charge for ten on every later turn."""
+    many = " ".join(f"Standing rule number {i}: always do thing {i}."
+                    for i in range(10))
+
+    assert len(memory.distil(_said(many))) == 3
+
+
+def test_a_fact_is_written_once_however_often_it_is_said():
+    text = "A standing rule: always label durations in cs."
+
+    memory.distil(_said(text))
+    again = memory.distil(_said(text))
+
+    assert again == []
+    assert memory.profile().count("label durations in cs") == 1
+
+
+def test_what_is_distilled_is_what_a_later_session_reads():
+    """The whole point: profile() feeds context_for(), which is the system
+    prompt. A fact that lands in AGENT.md and never reaches the model is not a
+    memory."""
+    memory.distil(_said("A standing rule: always prefix helpers with qz_."))
+
+    assert "qz_" in memory.context_for("write a helper function")
+
+
+def test_the_kill_switch_turns_it_off(monkeypatch):
+    monkeypatch.setattr(config, "PROFILE_DISTIL", False)
+
+    assert memory.distil(_said(TEACH[0])) == []
+    assert memory.profile() == ""
+
+
+def test_distillation_never_raises_on_a_broken_store(monkeypatch):
+    """It runs at the end of a session that may already have succeeded."""
+    def boom(_note):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(memory, "remember", boom)
+
+    assert memory.distil(_said(TEACH[0])) == []
