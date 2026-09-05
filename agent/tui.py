@@ -28,6 +28,7 @@ changed it.
 """
 from __future__ import annotations
 
+import time
 import uuid
 
 from langgraph.types import Command
@@ -39,6 +40,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
+from textual.suggester import SuggestFromList
 from textual.widgets import (Button, DataTable, Footer, Header, Input, Label,
                              RichLog, Static)
 from textual.worker import Worker, WorkerState
@@ -118,6 +120,41 @@ def _replay(messages: list[dict]) -> list:
 
 
 # ------------------------------------------------------------------ approval
+
+# The slash commands, and the only list of them. `Input`'s suggester completes
+# from these keys, `_command` dispatches on them, and /help prints them.
+COMMANDS = {
+    "/tasks": "the queue - what ran, what it answered, what is waiting",
+    "/schedules": "cron schedules, soonest first",
+    "/doctor": "every precondition, each line ok or FAIL",
+    "/threads": "past threads, newest first",
+    "/help": "this list",
+}
+
+
+def _help_text() -> Text:
+    """The command list, rendered into the transcript rather than a modal.
+
+    It belongs in the scrollback: a modal you have to dismiss to type the thing
+    it just told you about is a worse way to learn five words.
+    """
+    out = Text()
+    for name, what in COMMANDS.items():
+        out.append(f"{name:<12}", style="bold")
+        out.append(f"{what}\n", style="dim")
+    return out
+
+
+def _doctor_text(line: str) -> Text:
+    """One diagnostic line, coloured by its verdict rather than its wording.
+
+    `diagnose()` returns strings that already begin ok / FAIL / --, so the
+    marker is the only thing read here; the text after it is free-form.
+    """
+    style = ("bold red" if line.startswith("FAIL")
+             else "dim" if line.startswith("--") else "")
+    return Text(line, style=style)
+
 
 class ApprovalScreen(ModalScreen[str]):
     """The paused call, and one answer (FR-306, NFR-801).
@@ -234,13 +271,180 @@ class ThreadsScreen(Screen[str]):
         self.dismiss(str(event.row_key.value))
 
 
+# --------------------------------------------------------------------- tasks
+
+class TasksScreen(Screen[str]):
+    """The queue (FR-604); Enter opens a task's thread.
+
+    A task id IS a thread id, so selecting a row hands back the same string
+    SessionScreen already takes and no mapping exists to get wrong. Reads
+    `worker.tasks()` - the function `--tasks` prints - so the screen and the
+    flag cannot disagree about a status.
+    """
+
+    BINDINGS = [
+        ("escape", "app.pop_screen", "back"),
+        ("r", "refresh", "refresh"),
+        ("c", "cancel", "cancel"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rows: dict[str, dict] = {}
+        self._current: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield DataTable(id="tasks")
+        yield Static("", id="task-detail")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.cursor_type = "row"
+        table.add_columns("task", "status", "verdict", "goal")
+        self.action_refresh()
+
+    def action_refresh(self) -> None:
+        from agent import worker
+
+        table = self.query_one(DataTable)
+        table.clear()
+        self._rows = {row["id"]: row for row in worker.tasks()}
+        for row in self._rows.values():
+            table.add_row(row["id"], row["status"], row["verdict"] or "-",
+                          row["goal"][:52], key=row["id"])
+        if not self._rows:
+            self.notify("no tasks yet")
+
+    @on(DataTable.RowHighlighted)
+    def _show(self, event: DataTable.RowHighlighted) -> None:
+        """UR-16: what it answered, or refused, while nobody was watching."""
+        self._current = str(event.row_key.value) if event.row_key else None
+        row = self._rows.get(self._current or "")
+        self.query_one("#task-detail", Static).update(
+            Text((row or {}).get("detail") or "", style="dim"))
+
+    @on(DataTable.RowSelected)
+    def _pick(self, event: DataTable.RowSelected) -> None:
+        self.dismiss(str(event.row_key.value))
+
+    def action_cancel(self) -> None:
+        from agent import worker
+
+        if not self._current:
+            return
+        self.notify(f"cancelled {self._current}" if worker.cancel(self._current)
+                    else f"{self._current} is not queued or running")
+        self.action_refresh()
+
+
+# ----------------------------------------------------------------- schedules
+
+class SchedulesScreen(Screen):
+    """Cron schedules, soonest first (FR-602)."""
+
+    BINDINGS = [
+        ("escape", "app.pop_screen", "back"),
+        ("r", "refresh", "refresh"),
+        ("d", "delete", "delete"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._current: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield DataTable(id="schedules")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.cursor_type = "row"
+        table.add_columns("schedule", "cron", "next run", "goal")
+        self.action_refresh()
+
+    def action_refresh(self) -> None:
+        from agent import worker
+
+        table = self.query_one(DataTable)
+        table.clear()
+        rows = worker.schedules()
+        for row in rows:
+            nxt = time.strftime(cli.TIME_FMT, time.localtime(row["next_run"]))
+            table.add_row(row["id"], row["cron"], nxt, row["goal"][:44],
+                          key=row["id"])
+        if not rows:
+            self.notify("no schedules")
+
+    @on(DataTable.RowHighlighted)
+    def _track(self, event: DataTable.RowHighlighted) -> None:
+        self._current = str(event.row_key.value) if event.row_key else None
+
+    def action_delete(self) -> None:
+        from agent import worker
+
+        if not self._current:
+            return
+        self.notify(f"removed {self._current}" if worker.unschedule(self._current)
+                    else f"no such schedule: {self._current}")
+        self.action_refresh()
+
+
+# -------------------------------------------------------------------- doctor
+
+class DoctorScreen(Screen):
+    """Every precondition, each line ok or FAIL. Changes nothing.
+
+    On a worker thread because `diagnose()` dials IMAP and SMTP: run inline it
+    freezes the interface for two network round trips, and a doctor that looks
+    hung is worse than no doctor.
+    """
+
+    BINDINGS = [
+        ("escape", "app.pop_screen", "back"),
+        ("r", "refresh", "re-run"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield RichLog(id="doctor", wrap=True, markup=False)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.action_refresh()
+
+    def action_refresh(self) -> None:
+        log = self.query_one("#doctor", RichLog)
+        log.clear()
+        log.write(Text("probing...", style="dim"))
+        self._probe()
+
+    @work(thread=True, exclusive=True)
+    def _probe(self) -> None:
+        from agent import channel
+
+        try:
+            lines = channel.diagnose()
+        except Exception as exc:                     # noqa: BLE001
+            # A doctor that raises tells you nothing about what it was checking.
+            lines = [f"FAIL  doctor: {type(exc).__name__}: {exc}"]
+        self.app.call_from_thread(self._paint, lines)
+
+    def _paint(self, lines: list[str]) -> None:
+        log = self.query_one("#doctor", RichLog)
+        log.clear()
+        for line in lines:
+            log.write(_doctor_text(line))
+
+
 # ------------------------------------------------------------------- session
 
 class SessionScreen(Screen):
     """One thread: the transcript, the live model text, and the input box."""
 
     BINDINGS = [
-        Binding("tab", "threads", "threads"),
         # ctrl+c is what people actually press, and it used to escape Textual as
         # a KeyboardInterrupt that surfaced as a traceback out of mcp.shutdown().
         # Bound here it is an ordinary quit; the thread is already checkpointed.
@@ -262,7 +466,8 @@ class SessionScreen(Screen):
         yield Header()
         yield RichLog(id="log", wrap=True, markup=False, auto_scroll=True)
         yield Static("", id="status")
-        yield Input(placeholder="say something", id="say")
+        yield Input(placeholder="say something, or /help", id="say",
+                    suggester=SuggestFromList(COMMANDS, case_sensitive=False))
         yield Footer()
 
     def on_mount(self) -> None:
@@ -414,6 +619,8 @@ class SessionScreen(Screen):
         if not text:
             return
         event.input.value = ""
+        if self._command(text):
+            return
         self._write(_said("you", text))
         if self._busy():
             # Typed mid-run. Queued rather than dropped or interleaved: the
@@ -435,8 +642,40 @@ class SessionScreen(Screen):
     def _busy(self) -> bool:
         return any(w.is_running for w in self.workers)
 
+    def _command(self, text: str) -> bool:
+        """Run a slash command. False means it was an ordinary message.
+
+        A command is a lone slash word: "/usr/bin/python is missing" is a
+        sentence and must reach the model, while "/taks" is a typo and gets the
+        list rather than being silently sent as a goal. The further slash is
+        what separates them.
+        """
+        if not text.startswith("/"):
+            return False
+        word = text.split()[0].lower()
+        if "/" in word[1:]:
+            return False                  # a path, and paths are not commands
+        if word not in COMMANDS:
+            self._write(_help_text())
+            self._note(f"no such command: {word}")
+            return True
+        if word == "/help":
+            self._write(_help_text())
+        else:
+            getattr(self, f"action_{word[1:]}")()
+        return True
+
     def action_threads(self) -> None:
         self.app.push_screen(ThreadsScreen(), callback=self._switch)
+
+    def action_tasks(self) -> None:
+        self.app.push_screen(TasksScreen(), callback=self._switch)
+
+    def action_schedules(self) -> None:
+        self.app.push_screen(SchedulesScreen())
+
+    def action_doctor(self) -> None:
+        self.app.push_screen(DoctorScreen())
 
     def _switch(self, thread: str | None) -> None:
         if thread and thread != self.thread:
@@ -473,7 +712,12 @@ class SessionScreen(Screen):
 # ----------------------------------------------------------------------- app
 
 class AgentTUI(App):
-    """Two screens and one modal. Resist a third of anything."""
+    """One session screen, four pickers over it, two modals.
+
+    The pickers are READ paths over state the CLI already prints, plus the two
+    mutations it already offers (cancel, unschedule). Anything that would call
+    a model belongs in SessionScreen, which owns the thread worker.
+    """
 
     TITLE = "personal-agent"
     BINDINGS = [Binding("ctrl+q", "quit", "quit", priority=True)]
@@ -483,6 +727,9 @@ class AgentTUI(App):
        conversation that has just started. */
     #log { height: 1fr; padding: 0 1; background: $surface; }
     #status { padding: 0 2; color: $text-muted; height: auto; }
+    #tasks, #schedules { height: 1fr; }
+    #task-detail { height: auto; padding: 0 2; }
+    #doctor { height: 1fr; padding: 0 1; }
     #say { dock: bottom; border: none; border-top: tall $panel; padding: 0 1; }
     #say:focus { border-top: tall $accent; }
     ApprovalScreen { align: center middle; }

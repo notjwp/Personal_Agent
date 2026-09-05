@@ -19,7 +19,11 @@ import pytest
 from textual.app import App
 
 from agent import cli
-from agent.tui import AgentTUI, ApprovalScreen, PlanScreen, _tool_text
+from agent import worker
+from agent.tui import (COMMANDS, AgentTUI, ApprovalScreen, DoctorScreen,
+                       PlanScreen, SchedulesScreen, SessionScreen,
+                       TasksScreen,
+                       _doctor_text, _tool_text)
 
 
 PAUSE = {"call": {"id": "t1", "name": "run_shell",
@@ -333,3 +337,269 @@ def test_the_header_says_planning_before_a_plan_exists():
 
     drive(app, script)
     assert "planning" in titles[0]
+
+
+# ======================================================= tasks / schedules / doctor
+
+class Opened(App):
+    """Pushes one picker and keeps whatever it dismisses with."""
+
+    def __init__(self, screen) -> None:
+        super().__init__()
+        self._screen = screen
+        self.answer = "UNSET"
+
+    def on_mount(self) -> None:
+        self.push_screen(self._screen,
+                         callback=lambda result: setattr(self, "answer", result))
+
+
+def _cells(pilot):
+    from textual.widgets import DataTable
+
+    table = pilot.app.screen.query_one(DataTable)
+    return [str(c) for row in table.get_row_at_all() for c in row] \
+        if hasattr(table, "get_row_at_all") else \
+        [str(table.get_cell_at((r, c)))
+         for r in range(table.row_count) for c in range(len(table.columns))]
+
+
+def test_the_task_screen_shows_what_the_queue_holds():
+    worker.submit("count the files")
+
+    app = Opened(TasksScreen())
+    seen = []
+
+    async def script(pilot):
+        seen.extend(_cells(pilot))
+        await pilot.press("escape")
+
+    drive(app, script)
+    assert any("count the files" in c for c in seen)
+    assert any("queued" == c for c in seen)
+
+
+def test_selecting_a_task_returns_its_id_because_that_IS_the_thread_id():
+    task_id = worker.submit("count the files")
+
+    app = Opened(TasksScreen())
+
+    async def script(pilot):
+        await pilot.press("enter")
+
+    drive(app, script)
+    assert app.answer == task_id
+
+
+def test_the_task_screen_shows_the_answer_the_run_produced():
+    """UR-16, and the other half of the worker fix: `detail` is what was said."""
+    task_id = worker.submit("what python version")
+    worker.conclude(task_id, status="done", verdict="done",
+                    detail="Python 3.13.")
+
+    app = Opened(TasksScreen())
+    shown = []
+
+    async def script(pilot):
+        from textual.widgets import Static
+
+        node = pilot.app.screen.query_one("#task-detail", Static)
+        shown.append(getattr(node.content, "plain", str(node.content)))
+        await pilot.press("escape")
+
+    drive(app, script)
+    assert "Python 3.13." in shown[0]
+
+
+def test_the_schedule_screen_lists_and_removes():
+    sched_id = worker.schedule("0 9 * * 1", "weekly review")
+
+    app = Opened(SchedulesScreen())
+
+    async def script(pilot):
+        await pilot.press("d")
+        await pilot.pause()
+
+    drive(app, script)
+    assert worker.schedules() == [], f"{sched_id} should be gone"
+
+
+def test_the_doctor_renders_every_line_it_is_given(monkeypatch):
+    from agent import channel
+
+    monkeypatch.setattr(channel, "diagnose",
+                        lambda: ["ok    provider nvidia", "FAIL  workspace missing"])
+    app = Opened(DoctorScreen())
+    lines = []
+
+    async def script(pilot):
+        await pilot.app.screen.workers.wait_for_complete()
+        await pilot.pause()
+        from textual.widgets import RichLog
+
+        log = pilot.app.screen.query_one("#doctor", RichLog)
+        lines.extend(str(s) for s in log.lines)
+
+    drive(app, script)
+    joined = " ".join(lines)
+    assert "provider nvidia" in joined and "workspace missing" in joined
+
+
+def test_a_doctor_that_RAISES_reports_it_rather_than_killing_the_screen(monkeypatch):
+    """A probe that dials IMAP can raise anything; a traceback here says nothing."""
+    from agent import channel
+
+    def boom():
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(channel, "diagnose", boom)
+    app = Opened(DoctorScreen())
+    lines = []
+
+    async def script(pilot):
+        await pilot.app.screen.workers.wait_for_complete()
+        await pilot.pause()
+        from textual.widgets import RichLog
+
+        log = pilot.app.screen.query_one("#doctor", RichLog)
+        lines.extend(str(s) for s in log.lines)
+
+    drive(app, script)
+    joined = " ".join(lines)
+    assert "FAIL" in joined and "network unreachable" in joined
+
+
+def test_a_failing_line_is_not_styled_like_a_passing_one():
+    assert _doctor_text("FAIL  workspace missing").style == "bold red"
+    assert _doctor_text("ok    provider nvidia").style == ""
+    assert _doctor_text("--    email channel not configured").style == "dim"
+
+
+# ====================================================== slash commands
+
+class EmptyCheckpointer:
+    """What ThreadsScreen walks. Empty, because the command is what is on
+    trial here, not the picker it opens."""
+
+    def list(self, _config):
+        return []
+
+
+class Counted(FakeGraph):
+    """A graph that says whether the input box ever reached it."""
+
+    def __init__(self, values=None):
+        super().__init__(values)
+        self.calls = 0
+        self.checkpointer = EmptyCheckpointer()
+
+    def invoke(self, payload, cfg):
+        self.calls += 1
+        return super().invoke(payload, cfg)
+
+
+IDLE = {"messages": [], "turns": 0, "max_turns": 30, "spent_tokens": 0,
+        "verdict": "done", "plan": [], "cursor": 0}
+
+
+def _type(pilot, text):
+    from textual.widgets import Input
+
+    box = pilot.app.screen.query_one(Input)
+    box.value = text
+    return pilot.press("enter")
+
+
+def _run_command(text, graph=None):
+    """Type `text`, submit it, and report where the app ended up."""
+    graph = graph or Counted(dict(IDLE))
+    app = AgentTUI(graph, goal=None, thread="abc12345")
+    out = {}
+
+    async def script(pilot):
+        await _type(pilot, text)
+        await pilot.pause()
+        out["screen"] = type(pilot.app.screen).__name__
+        # The session screen may no longer be on top, and its log is where a
+        # command writes; find it in the stack rather than on `app.screen`.
+        session = next(s for s in pilot.app.screen_stack
+                       if isinstance(s, SessionScreen))
+        out["transcript"] = "\n".join(
+            strip.text for strip in session.query_one("#log").lines)
+
+    drive(app, script)
+    out["calls"] = graph.calls
+    return out
+
+
+@pytest.mark.parametrize("command,screen", [
+    ("/tasks", "TasksScreen"),
+    ("/schedules", "SchedulesScreen"),
+    ("/doctor", "DoctorScreen"),
+    ("/threads", "ThreadsScreen"),
+])
+def test_a_slash_command_opens_its_screen(command, screen):
+    assert _run_command(command)["screen"] == screen
+
+
+def test_a_command_never_reaches_the_model():
+    """The point of intercepting in _submitted rather than in the graph: a
+    command is navigation, and billing a turn for it would be absurd."""
+    assert _run_command("/tasks")["calls"] == 0
+
+
+def test_an_unknown_command_answers_with_the_list_rather_than_guessing():
+    out = _run_command("/taks")
+
+    assert out["calls"] == 0
+    assert "no such command" in out["transcript"]
+    assert "/tasks" in out["transcript"]
+
+
+def test_a_sentence_that_merely_STARTS_with_a_slash_is_a_message():
+    """"/usr/bin/python is missing" is a goal, not a mistyped command.
+    Swallowing it would lose the message with no way to get it back."""
+    out = _run_command("/usr/bin/python is missing")
+
+    assert out["calls"] == 1
+    assert out["screen"] == "SessionScreen"
+
+
+def test_help_lists_every_command_that_exists():
+    out = _run_command("/help")
+
+    assert out["screen"] == "SessionScreen"
+    for name in COMMANDS:
+        assert name in out["transcript"], name
+
+
+def test_no_keystroke_navigates_anywhere():
+    """Navigation is typed, not pressed. tab was the last key that moved
+    screens; unbound, it goes back to being ordinary focus movement."""
+    app = AgentTUI(Counted(dict(IDLE)), goal=None, thread="abc12345")
+    landed = []
+
+    async def script(pilot):
+        for key in ("tab", "f2", "f3", "f4"):
+            await pilot.press(key)
+            await pilot.pause()
+            landed.append(type(pilot.app.screen).__name__)
+
+    drive(app, script)
+    assert landed == ["SessionScreen"] * 4
+
+
+def test_the_input_completes_the_commands_it_accepts():
+    """One list behind the suggester and the dispatcher, so a command that
+    completes cannot be one that does not run."""
+    from textual.widgets import Input
+
+    app = AgentTUI(Counted(dict(IDLE)), goal=None, thread="abc12345")
+    found = []
+
+    async def script(pilot):
+        box = pilot.app.screen.query_one(Input)
+        found.append(await box.suggester.get_suggestion("/ta"))
+
+    drive(app, script)
+    assert found[0] == "/tasks"

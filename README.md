@@ -16,7 +16,7 @@ collapse into the others:
   resumes having lost at most one step, with no duplicated side effects. Verified, not asserted.
 
 **Only one component ever talks to the model.** The gate, the context manager, the verdict logic and
-the harness are ordinary deterministic code — all 720 tests run with no API key and no network.
+the harness are ordinary deterministic code — all 737 tests run with no API key and no network.
 
 ### Why the evaluation is full of code repair
 
@@ -229,7 +229,7 @@ what doing the work actually costs.
 docker build -f Containerfile -t personal-agent .
 cp .env.example .env          # then add a free key from build.nvidia.com
 
-# 720 offline tests - no API key, no network
+# 737 offline tests - no API key, no network
 docker run --rm --network none -v "$PWD:/app" personal-agent pytest -q
 
 # a baseline: every dev case, three times, pacing between runs
