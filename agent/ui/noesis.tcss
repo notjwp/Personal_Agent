@@ -1,0 +1,208 @@
+/* NOESIS.
+
+   No hex anywhere in this file. Every colour is a variable from
+   agent/ui/theme.py, because three themes only work if there is exactly one
+   place a colour is written, and because transparency needs every foreground
+   explicitly set - an unset one degrades to 16-colour ANSI and the palette is
+   gone.
+
+   Hierarchy comes from space and alignment. A terminal gives you bold, dim,
+   reverse and colour, and that is the whole type system. */
+
+Screen {
+    background: $background;
+    color: $foreground;
+}
+
+/* --- transparency ---------------------------------------------------------
+
+   A TUI cannot make a window transparent; only the emulator can. What the app
+   does is emit NO background, which `ansi_color=True` renders as a bare cell.
+   Measured against textual 8.0.1: `background: transparent` alone still paints,
+   and so does overriding App.render(); ansi_color plus transparent is the only
+   combination that produces `default`, and an explicitly painted colour still
+   survives it as truecolor.
+
+   The class sits on the Screen, which IS the root of the widget tree. */
+
+Screen.-gaps, Screen.-bare {
+    background: transparent;
+}
+
+/* $muted over a busy wallpaper is hard to read and that cannot be fixed from
+   inside the app, so in `bare` the muted BODY text is promoted. Naming the
+   classes is the point: `Screen.-bare { color: $foreground }` inherits from a
+   rule that already said so and promotes nothing. Chrome is excluded because it
+   stays painted in all three modes, where $muted is still readable. */
+Screen.-bare .row--muted,
+Screen.-bare Pane > .pane--title,
+Screen.-bare Pane > .pane--count {
+    color: $foreground;
+}
+
+/* --- panes ---------------------------------------------------------------- */
+
+Pane {
+    background: $surface;
+    color: $foreground;
+    border: round $border;
+    padding: 0 1;             /* vertical space is the scarce resource */
+}
+
+/* No motion is declared here on purpose. Textual 8.0.1's ANIMATABLE set
+   (css/styles.py:226) has no border, so section 11's 120ms focus fade cannot be
+   a transition and the border swap below is INSTANT. The open and close fades
+   are per-event durations and belong with the event, not in a rule that would
+   apply one timing to both. */
+
+Pane:focus, Pane:focus-within {
+    border: round $accent;
+}
+
+/* In `bare` the interiors go too, and only the gutters and chrome remain. */
+Screen.-bare Pane {
+    background: transparent;
+}
+
+Pane > .pane--title {
+    color: $muted;
+    text-style: none;         /* lowercase and unemphasised, never bold */
+}
+
+Pane:focus > .pane--title,
+Pane:focus-within > .pane--title {
+    color: $accent;
+}
+
+Pane > .pane--count {
+    color: $muted;
+}
+
+/* --- chrome ---------------------------------------------------------------
+
+   Painted in ALL THREE modes. An approval prompt must never be hard to read,
+   and the active step (FR-702) lives in the status bar. */
+
+#composer {
+    dock: bottom;
+    background: $panel;
+    color: $foreground;
+    border: none;
+    padding: 0 1;
+}
+
+#composer:focus {
+    border: none;
+}
+
+#status {
+    dock: bottom;
+    height: 1;
+    background: $panel;
+    color: $muted;
+    padding: 0 1;
+}
+
+#status .status--step {
+    color: $foreground;
+}
+
+#status .status--hint {
+    color: $muted;
+}
+
+/* --- rows and selection ---------------------------------------------------
+
+   Never `reverse`: it inverts unreadably in half the palettes and is illegible
+   in the transparent modes. Background plus a marker instead. */
+
+.row--selected {
+    background: $surface;
+    color: $foreground;
+}
+
+.row--muted {
+    color: $muted;            /* timestamps and durations, always */
+}
+
+.row--path {
+    color: $info;
+}
+
+.row--ran {
+    color: $foreground;
+}
+
+.row--mutated {
+    color: $success;
+}
+
+.row--denied {
+    color: $error;
+}
+
+.row--empty {
+    color: $muted;
+    text-align: center;       /* one dim line, never a blank box */
+}
+
+/* --- modals ---------------------------------------------------------------
+
+   Painted in all three modes, for the same reason as the chrome. */
+
+ApprovalScreen, PlanScreen {
+    align: center middle;
+}
+
+#approval, #plan {
+    width: 78;
+    height: auto;
+    padding: 1 2;
+    background: $surface;
+    color: $foreground;
+}
+
+#approval {
+    border: thick $error;     /* the one place a second saturated hue belongs */
+}
+
+#plan {
+    border: thick $accent;
+}
+
+#approval-title {
+    color: $error;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#plan-title {
+    color: $accent;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.arg {
+    margin-left: 1;
+    color: $foreground;
+}
+
+.step {
+    margin-left: 1;
+    color: $foreground;
+}
+
+.why {
+    margin-top: 1;
+    color: $muted;
+}
+
+#approval-buttons, #plan-buttons {
+    height: auto;
+    margin-top: 1;
+    align-horizontal: center;
+}
+
+#approval-buttons Button, #plan-buttons Button {
+    margin: 0 1;
+}

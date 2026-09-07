@@ -54,6 +54,7 @@ MAX_TOKENS = 16_000      # on Anthropic this caps thinking AND response together
 # Turn and token caps do not bound a hung request, and the SDK defaults are
 # 10 min x 3 attempts - half an hour of silence before anything surfaces.
 REQUEST_TIMEOUT = float(_env("AGENT_REQUEST_TIMEOUT", "120"))
+
 MAX_ATTEMPTS = 3
 
 # Attempts at the WHOLE call, above whatever the SDK retries internally.
@@ -352,3 +353,12 @@ SKILL_EXTRACTION = _env("AGENT_SKILL_EXTRACTION", "on").strip().lower() not in (
 # source file, which would eventually overflow the index and brick a run.
 EXTRACT_MIN_CHARS = 80
 EXTRACT_MAX_CHARS = 4_000
+
+
+# --- the interface (FR-701) -------------------------------------------------
+
+# Both fall back rather than raise on a name they do not know - a typo here
+# must not be the reason the terminal will not open. agent/ui/theme.py holds
+# the names and does the falling back.
+TUI_THEME = _env("AGENT_TUI_THEME", "noesis-mono")
+TUI_TRANSPARENT = _env("AGENT_TUI_TRANSPARENT", "gaps")
