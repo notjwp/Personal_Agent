@@ -16,7 +16,7 @@ collapse into the others:
   resumes having lost at most one step, with no duplicated side effects. Verified, not asserted.
 
 **Only one component ever talks to the model.** The gate, the context manager, the verdict logic and
-the harness are ordinary deterministic code — all 764 tests run with no API key and no network.
+the harness are ordinary deterministic code — all 938 tests run with no API key and no network.
 
 ### Why the evaluation is full of code repair
 
@@ -227,9 +227,8 @@ what doing the work actually costs.
 
 ```bash
 docker build -f Containerfile -t personal-agent .
-cp .env.example .env          # then add a free key from build.nvidia.com
 
-# 764 offline tests - no API key, no network
+# 938 offline tests - no API key, no network
 docker run --rm --network none -v "$PWD:/app" personal-agent pytest -q
 
 # a baseline: every dev case, three times, pacing between runs
@@ -241,6 +240,23 @@ python eval/harness.py --split dev --runs 3 --pace 20 --continue
 # one case, repeated
 python eval/harness.py --case fix-import --runs 3
 ```
+
+### The API key
+
+**On first run there is nothing to edit.** Any command — `python -m agent --tui`,
+`--doctor`, a goal — opens a setup wizard when no key is configured and a terminal is
+attached: pick a model, type the key, and it **probes the endpoint before saving
+anything**, so a wrong key is rejected there with the provider's own message rather
+than twenty turns later as an auth error. It writes `.env` and the current process, so
+the command you typed carries on without a restart. `ctrl+k` reopens it later to change
+model or rotate the key, and the key need not be retyped to change the model.
+
+Without a terminal — `--worker`, `--channel`, a scheduled task, the eval harness — the
+wizard never opens, and a missing key is the same clear `RuntimeError` it always was.
+That gate is what stops a cron job hanging on a prompt.
+
+The file path still works and is what a container needs: `cp .env.example .env` and
+fill it in. A real environment variable beats both.
 
 Offline tests need no API key and no network. Only the scored run calls a model.
 

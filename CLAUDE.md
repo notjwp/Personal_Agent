@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **764 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **938 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -296,7 +296,12 @@ dead. State is a plain `TypedDict`: no reducers, no `Annotated`.
 
 ```bash
 python -m agent "goal"            # interactive; destructive calls pause for approval
-python -m agent --tui             # Textual chat; --tui --resume <id> opens one thread
+python -m agent --tui             # NOESIS; --tui --resume <id> opens one thread
+                                  # FIRST RUN needs no .env: with no key and a TTY,
+                                  # any command opens the setup wizard, which PROBES
+                                  # the endpoint before writing one. ctrl+k reopens
+                                  # it. No TTY (worker, cron, harness) = no wizard,
+                                  # which is what stops a scheduled task hanging
 python -m agent --list            # past threads, newest first
 python -m agent --resume <id>     # continue a thread; a task's identity IS its thread id
 
@@ -327,7 +332,7 @@ python eval/harness.py --case fix-import --runs 3                  # one case, r
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
 powershell -File scripts/install-tasks.ps1        # run --channel and --worker at logon
 powershell -File scripts/install-tasks.ps1 -Remove
-pytest                            # 764 tests, no API key, no network
+pytest                            # 938 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,
