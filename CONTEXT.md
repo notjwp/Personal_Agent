@@ -836,6 +836,50 @@ re-argue a decision that has already been measured.
                        implementation of the interface layer - provider.py's
                        standard. textual is imported inside the --tui branch so
                        the CLI, harness and suite run without it (NFR-602).
+                       SINCE 2026-09-07 it is the entry SHIM only; the
+                       interface is ui/ below and cli.py is unchanged.
+      ui/              A STATED DEVIATION, created 2026-09-07. The TUI as a
+                       package rather than one module. §12 listed tui.py alone,
+                       which was right for a docked transcript and an input
+                       box; the dwindle layout, three themes, three
+                       transparency modes and eight panes are a different
+                       quantity of code and the premise expired.
+
+                       Earned under CE-01 three ways. tiling.py has two callers
+                       and is pure enough to test with textual UNINSTALLED,
+                       which is the point of extracting it - a subprocess test
+                       blocks the import and runs it anyway. panes.py holds
+                       eight implementations of one interface. theme.py holds
+                       three of one Theme shape, and is the ONLY file in the
+                       package allowed a colour: three themes only work if
+                       every colour is one lookup, and transparency only works
+                       if every foreground is explicitly set, because under
+                       ansi_color=True an unset one degrades silently to
+                       16-colour ANSI. screens.py is two Screen
+                       implementations, on the same standard as the other two -
+                       landing and workspace were separate files in the plan
+                       and were merged because one of each is not enough.
+                       noesis.tcss is the stylesheet, read inside the App and
+                       never at import (CE-05); modals.py is the approval and
+                       plan screens, moved with no behaviour change.
+      setup.py         A STATED DEVIATION, created 2026-09-07. The first-run
+                       credential wizard's LOGIC, kept out of cli.py because it
+                       must run BEFORE config resolves: config.py reads every
+                       tunable at import time, so a wizard that runs after
+                       agent.cli is imported cannot change PROVIDER,
+                       OPENAI_MODEL or OPENAI_BASE_URL no matter what it
+                       writes. It runs from agent/__main__.py in the same
+                       window .env is loaded in, and the entry point reloads
+                       config after.
+
+                       Separate from ui/setup.py, which holds the screen,
+                       because needed() runs on EVERY `python -m agent` and
+                       must cost nothing on a machine with no interface
+                       installed. A key is probed against the live endpoint
+                       before it is saved, and a key that fails is not saved -
+                       a wizard that stores an unverified key is worse than no
+                       wizard, because the failure surfaces twenty turns later
+                       as an auth error.
       registry.py      merged tool view, schema budget, and the @tool decorator
                        (FR-207, added at the eighth hand-written schema, which
                        is where §13's own arithmetic stops objecting)
@@ -921,6 +965,23 @@ re-argue a decision that has already been measured.
                        wrong direction - a channel that answers a stranger
                        looks exactly like one that works). Do not add a
                        tenth without meeting that bar.
+
+                       THE TENTH AND ELEVENTH, added 2026-09-07, held to it.
+                       test_ui_setup (with test_ui_theme and test_ui_screens
+                       beside it) is a CREDENTIAL boundary: a key saved without
+                       being verified surfaces twenty turns later as an auth
+                       error, and a key echoed into a trace surfaces never.
+                       test_ui_tiling is the layout algorithm, whose failures
+                       are also silent - rects summing short leaves a dead
+                       column that reads as a gap, and a split refusing the
+                       3x12 minimum returns the tree unchanged with no error.
+                       It is also the only file that must run with textual
+                       UNINSTALLED, which test_tui.py cannot do.
+
+                       NOTED, NOT FIXED: test_migrations and test_skills were
+                       on disk before this and are not recorded above, so the
+                       count in this paragraph has been behind reality since
+                       they were written.
     eval/
       harness.py       runner and scorer
       measure_recall.py  A STATED DEVIATION, added 2026-09-04. recall@k over

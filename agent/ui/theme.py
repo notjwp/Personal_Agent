@@ -19,6 +19,7 @@ MEASURED against textual 8.0.1, and it decides the shape of this file:
 """
 from pathlib import Path
 
+from rich.theme import Theme as RichTheme
 from textual.theme import Theme
 
 STYLESHEET = Path(__file__).with_name("noesis.tcss")
@@ -104,7 +105,31 @@ def resolve_mode(name: str) -> str:
     return name if name in MODES else "gaps"
 
 
-def apply(app, name: str) -> str:
+def rich_styles(one: Theme, mode: str = "gaps") -> dict[str, str]:
+    """The same roles as the stylesheet, as RICH styles.
+
+    Two registries exist because two things are being coloured. A widget takes
+    a CSS class; a `rich.Text` inside a RichLog does not - Rich resolves
+    `style=` against its own table, so a CSS class name there is not a style at
+    all, it is a parse error. Both tables are built from this one Theme, which
+    is what keeps the no-hardcoded-hex rule true.
+
+    In `bare` the muted role is promoted here for the same reason the
+    stylesheet promotes it: over a wallpaper it cannot be read, and the
+    transcript is body text.
+    """
+    return {
+        "row--muted": one.foreground if mode == "bare" else one.variables["muted"],
+        "row--path": one.variables["info"],
+        "row--ran": one.foreground,
+        "row--mutated": one.success,
+        "row--denied": one.error,
+        "row--selected": one.accent,
+        "row--logo": one.accent,
+    }
+
+
+def apply(app, name: str, mode: str = "gaps") -> str:
     """Select a theme and keep transparency alive across the switch.
 
     MEASURED against textual 8.0.1: `App._watch_theme` runs
@@ -114,6 +139,11 @@ def apply(app, name: str) -> str:
     """
     app.theme = resolve(name)
     app.ansi_color = True
+    if getattr(app, "_noesis_rich", False):
+        app.console.pop_theme()          # replace ours, never stack another
+    app.console.push_theme(
+        RichTheme(rich_styles(app.current_theme, resolve_mode(mode))))
+    app._noesis_rich = True
     return app.theme
 
 

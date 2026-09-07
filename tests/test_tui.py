@@ -17,13 +17,15 @@ import asyncio
 import pytest
 
 from textual.app import App
+from textual.widgets import DataTable
 
 from agent import cli
 from agent import worker
-from agent.tui import (COMMANDS, AgentTUI, ApprovalScreen, DoctorScreen,
-                       PlanScreen, SchedulesScreen, SessionScreen,
-                       TasksScreen,
-                       _doctor_text, _tool_text)
+from agent.ui.modals import ApprovalScreen, PlanScreen
+from agent.ui.panes import (DoctorPane, SchedulesPane, TasksPane,
+                            doctor_text as _doctor_text,
+                            tool_text as _tool_text)
+from agent.ui.screens import COMMANDS, NoesisApp, WorkspaceScreen
 
 
 PAUSE = {"call": {"id": "t1", "name": "run_shell",
@@ -151,7 +153,10 @@ class FakeGraph:
 
 
 def transcript(app) -> str:
-    log = app.screen.query_one("#log")
+    """The chat pane's log. The transcript itself lives on the screen now, and
+    the pane is a view over it - either would do; this reads what a person
+    would actually see."""
+    log = app.screen.query_one("#chat-log")
     return "\n".join(strip.text for strip in log.lines)
 
 
@@ -159,7 +164,7 @@ def test_a_trace_entry_from_the_worker_thread_reaches_the_transcript():
     """The mechanism the whole screen rests on: the graph runs on a thread and
     every line it produces crosses back through call_from_thread. If this hop is
     broken the UI simply stops moving, with no error anywhere."""
-    app = AgentTUI(FakeGraph(), goal="fix the tests", thread="t1")
+    app = NoesisApp(FakeGraph(), goal="fix the tests", thread="t1")
     text = []
 
     async def script(pilot):
@@ -177,7 +182,7 @@ def test_streamed_text_is_buffered_then_flushed_as_one_block():
     """Anthropic streams deltas, the OpenAI path hands over one finished block.
     A log line per delta would shred a sentence into one word per row, so the
     buffer renders live and moves into the log when the turn completes."""
-    app = AgentTUI(FakeGraph(), goal="fix the tests", thread="t1")
+    app = NoesisApp(FakeGraph(), goal="fix the tests", thread="t1")
     text = []
 
     async def script(pilot):
@@ -199,7 +204,7 @@ def test_a_provider_error_is_shown_rather_than_swallowed():
         def invoke(self, payload, cfg):
             raise RuntimeError("rate limited")
 
-    app = AgentTUI(Broken(), goal="fix the tests", thread="t1")
+    app = NoesisApp(Broken(), goal="fix the tests", thread="t1")
     text = []
 
     async def script(pilot):
@@ -221,9 +226,13 @@ def test_tool_line_marks_denied_and_errored_calls_differently():
                       "is_error": True})
     denied = _tool_text({"tool": "run_shell", "summary": "rm -rf /", "duration_ms": 0,
                          "verdict": "deny"})
-    assert ok.plain.strip().startswith(">")
-    assert "ERROR" in bad.plain and bad.plain.strip().startswith("x")
-    assert "DENIED" in denied.plain and denied.plain.strip().startswith("!")
+    # Section 8 gives denied and errored the same glyph, so the WORD is what
+    # keeps them apart - and it must, because a denied call is not a failed one
+    # and collapsing them hides the gate doing its job.
+    assert ok.plain.strip().startswith("◇")
+    assert "error" in bad.plain and bad.plain.strip().startswith("✕")
+    assert "denied" in denied.plain and denied.plain.strip().startswith("✕")
+    assert "denied" not in bad.plain and "error" not in denied.plain
 
 
 def test_tool_summary_is_not_parsed_as_console_markup():
@@ -313,45 +322,84 @@ def test_the_header_shows_the_active_step():
     graph = FakeGraph({"plan": ["read it", "fix it", "test it"], "cursor": 1,
                        "phase": "working", "turns": 4, "max_turns": 12,
                        "spent_tokens": 18_402})
-    app = AgentTUI(graph, goal=None, thread="9f2a1c")
+    app = NoesisApp(graph, goal=None, thread="9f2a1c")
     titles = []
 
     async def script(pilot):
         await pilot.pause()
-        titles.append(pilot.app.sub_title)
+        titles.append(status_text(pilot.app))
 
     drive(app, script)
-    assert "step 2/3" in titles[0]
-    assert "turn 4/12" in titles[0] and "18,402 tokens" in titles[0]
+    assert "2/3" in titles[0] and "fix it" in titles[0]
+    assert "4/12" in titles[0] and "18,402" in titles[0]
 
 
 def test_the_header_says_planning_before_a_plan_exists():
     graph = FakeGraph({"plan": [], "cursor": 0, "phase": "planning",
                        "turns": 0, "max_turns": 12, "spent_tokens": 0})
-    app = AgentTUI(graph, goal=None, thread="9f2a1c")
+    app = NoesisApp(graph, goal=None, thread="9f2a1c")
     titles = []
 
     async def script(pilot):
         await pilot.pause()
-        titles.append(pilot.app.sub_title)
+        titles.append(status_text(pilot.app))
 
     drive(app, script)
     assert "planning" in titles[0]
 
 
+def test_the_step_survives_every_layout_including_zoom():
+    """FR-702 says at ALL times. A pane can be closed or zoomed over; the
+    status bar cannot, which is why the step lives there."""
+    graph = FakeGraph({"plan": ["read it", "fix it"], "cursor": 0,
+                       "phase": "working", "turns": 1, "max_turns": 12,
+                       "spent_tokens": 10})
+    app = NoesisApp(graph, goal=None, thread="9f2a1c")
+    seen = []
+
+    async def script(pilot):
+        await pilot.pause()
+        seen.append(status_text(pilot.app))
+        await pilot.press("alt+enter")
+        await pilot.pause()
+        seen.append(status_text(pilot.app))
+        await pilot.press("alt+z")
+        await pilot.pause()
+        seen.append(status_text(pilot.app))
+
+    drive(app, script)
+    assert all("1/2" in line for line in seen), seen
+
+
 # ======================================================= tasks / schedules / doctor
 
-class Opened(App):
-    """Pushes one picker and keeps whatever it dismisses with."""
+def status_text(app) -> str:
+    """FR-702's home: one row, docked, never hidden."""
+    from textual.widgets import Static
 
-    def __init__(self, screen) -> None:
-        super().__init__()
-        self._screen = screen
+    node = app.screen.query_one("#status", Static)
+    return getattr(node.content, "plain", str(node.content))
+
+
+class Opened(NoesisApp):
+    """A workspace with one pane already split in.
+
+    The pickers used to be pushed screens; they are panes over the same data
+    now, so the way to open one is the way a person opens one.
+    """
+
+    def __init__(self, pane_id) -> None:
+        # Through the constructor, not an on_mount override: textual dispatches
+        # `on_mount` to EVERY class in the MRO, so overriding it would have run
+        # the base's too and opened a second workspace on top.
+        super().__init__(FakeGraph(), thread="picker", pane=pane_id)
         self.answer = "UNSET"
 
-    def on_mount(self) -> None:
-        self.push_screen(self._screen,
-                         callback=lambda result: setattr(self, "answer", result))
+    def open_workspace(self, goal=None, thread=None, pane=None):
+        if pane is None and thread not in (None, "picker"):
+            self.answer = thread        # what selecting a row hands back
+            return
+        super().open_workspace(goal=goal, thread=thread, pane=pane)
 
 
 def _cells(pilot):
@@ -367,12 +415,13 @@ def _cells(pilot):
 def test_the_task_screen_shows_what_the_queue_holds():
     worker.submit("count the files")
 
-    app = Opened(TasksScreen())
+    app = Opened("tasks")
     seen = []
 
     async def script(pilot):
+        await pilot.pause()
+        await pilot.pause()
         seen.extend(_cells(pilot))
-        await pilot.press("escape")
 
     drive(app, script)
     assert any("count the files" in c for c in seen)
@@ -382,10 +431,13 @@ def test_the_task_screen_shows_what_the_queue_holds():
 def test_selecting_a_task_returns_its_id_because_that_IS_the_thread_id():
     task_id = worker.submit("count the files")
 
-    app = Opened(TasksScreen())
+    app = Opened("tasks")
 
     async def script(pilot):
-        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        pilot.app.screen.query_one(DataTable).action_select_cursor()
+        await pilot.pause()
 
     drive(app, script)
     assert app.answer == task_id
@@ -397,15 +449,16 @@ def test_the_task_screen_shows_the_answer_the_run_produced():
     worker.conclude(task_id, status="done", verdict="done",
                     detail="Python 3.13.")
 
-    app = Opened(TasksScreen())
+    app = Opened("tasks")
     shown = []
 
     async def script(pilot):
         from textual.widgets import Static
 
+        await pilot.pause()
+        await pilot.pause()
         node = pilot.app.screen.query_one("#task-detail", Static)
         shown.append(getattr(node.content, "plain", str(node.content)))
-        await pilot.press("escape")
 
     drive(app, script)
     assert "Python 3.13." in shown[0]
@@ -414,10 +467,12 @@ def test_the_task_screen_shows_the_answer_the_run_produced():
 def test_the_schedule_screen_lists_and_removes():
     sched_id = worker.schedule("0 9 * * 1", "weekly review")
 
-    app = Opened(SchedulesScreen())
+    app = Opened("schedules")
 
     async def script(pilot):
-        await pilot.press("d")
+        await pilot.pause()
+        await pilot.pause()
+        pilot.app.screen.query_one(SchedulesPane).action_remove()
         await pilot.pause()
 
     drive(app, script)
@@ -429,15 +484,17 @@ def test_the_doctor_renders_every_line_it_is_given(monkeypatch):
 
     monkeypatch.setattr(channel, "diagnose",
                         lambda: ["ok    provider nvidia", "FAIL  workspace missing"])
-    app = Opened(DoctorScreen())
+    app = Opened("doctor")
     lines = []
 
     async def script(pilot):
-        await pilot.app.screen.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.app.screen.query_one(DoctorPane).workers.wait_for_complete()
         await pilot.pause()
         from textual.widgets import RichLog
 
-        log = pilot.app.screen.query_one("#doctor", RichLog)
+        log = pilot.app.screen.query_one("#doctor-log", RichLog)
         lines.extend(str(s) for s in log.lines)
 
     drive(app, script)
@@ -453,15 +510,17 @@ def test_a_doctor_that_RAISES_reports_it_rather_than_killing_the_screen(monkeypa
         raise OSError("network unreachable")
 
     monkeypatch.setattr(channel, "diagnose", boom)
-    app = Opened(DoctorScreen())
+    app = Opened("doctor")
     lines = []
 
     async def script(pilot):
-        await pilot.app.screen.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.app.screen.query_one(DoctorPane).workers.wait_for_complete()
         await pilot.pause()
         from textual.widgets import RichLog
 
-        log = pilot.app.screen.query_one("#doctor", RichLog)
+        log = pilot.app.screen.query_one("#doctor-log", RichLog)
         lines.extend(str(s) for s in log.lines)
 
     drive(app, script)
@@ -470,9 +529,9 @@ def test_a_doctor_that_RAISES_reports_it_rather_than_killing_the_screen(monkeypa
 
 
 def test_a_failing_line_is_not_styled_like_a_passing_one():
-    assert _doctor_text("FAIL  workspace missing").style == "bold red"
-    assert _doctor_text("ok    provider nvidia").style == ""
-    assert _doctor_text("--    email channel not configured").style == "dim"
+    assert _doctor_text("FAIL  workspace missing").style == "row--denied"
+    assert _doctor_text("ok    provider nvidia").style == "row--ran"
+    assert _doctor_text("--    email channel not configured").style == "row--muted"
 
 
 # ====================================================== slash commands
@@ -513,33 +572,33 @@ def _type(pilot, text):
 def _run_command(text, graph=None):
     """Type `text`, submit it, and report where the app ended up."""
     graph = graph or Counted(dict(IDLE))
-    app = AgentTUI(graph, goal=None, thread="abc12345")
+    app = NoesisApp(graph, goal=None, thread="abc12345")
     out = {}
 
     async def script(pilot):
         await _type(pilot, text)
         await pilot.pause()
-        out["screen"] = type(pilot.app.screen).__name__
-        # The session screen may no longer be on top, and its log is where a
-        # command writes; find it in the stack rather than on `app.screen`.
         session = next(s for s in pilot.app.screen_stack
-                       if isinstance(s, SessionScreen))
+                       if isinstance(s, WorkspaceScreen))
+        # A command opens a PANE now. Where it landed is which panes are up.
+        out["screen"] = type(pilot.app.screen).__name__
+        out["panes"] = session.showing()
         out["transcript"] = "\n".join(
-            strip.text for strip in session.query_one("#log").lines)
+            strip.text for strip in session.query_one("#chat-log").lines)
 
     drive(app, script)
     out["calls"] = graph.calls
     return out
 
 
-@pytest.mark.parametrize("command,screen", [
-    ("/tasks", "TasksScreen"),
-    ("/schedules", "SchedulesScreen"),
-    ("/doctor", "DoctorScreen"),
-    ("/threads", "ThreadsScreen"),
+@pytest.mark.parametrize("command,pane", [
+    ("/tasks", "tasks"),
+    ("/schedules", "schedules"),
+    ("/doctor", "doctor"),
+    ("/threads", "threads"),
 ])
-def test_a_slash_command_opens_its_screen(command, screen):
-    assert _run_command(command)["screen"] == screen
+def test_a_slash_command_opens_its_pane(command, pane):
+    assert pane in _run_command(command)["panes"]
 
 
 def test_a_command_never_reaches_the_model():
@@ -562,21 +621,21 @@ def test_a_sentence_that_merely_STARTS_with_a_slash_is_a_message():
     out = _run_command("/usr/bin/python is missing")
 
     assert out["calls"] == 1
-    assert out["screen"] == "SessionScreen"
+    assert out["panes"] == ["chat"], "a message must not open a pane"
 
 
 def test_help_lists_every_command_that_exists():
     out = _run_command("/help")
 
-    assert out["screen"] == "SessionScreen"
+    assert out["panes"] == ["chat"], "the list belongs in the scrollback"
     for name in COMMANDS:
         assert name in out["transcript"], name
 
 
-def test_no_keystroke_navigates_anywhere():
-    """Navigation is typed, not pressed. tab was the last key that moved
-    screens; unbound, it goes back to being ordinary focus movement."""
-    app = AgentTUI(Counted(dict(IDLE)), goal=None, thread="abc12345")
+def test_no_keystroke_navigates_to_another_screen():
+    """Navigation between VIEWS is typed, not pressed. tab cycles pane focus
+    now, and the function keys that used to open screens do nothing at all."""
+    app = NoesisApp(Counted(dict(IDLE)), goal=None, thread="abc12345")
     landed = []
 
     async def script(pilot):
@@ -586,7 +645,7 @@ def test_no_keystroke_navigates_anywhere():
             landed.append(type(pilot.app.screen).__name__)
 
     drive(app, script)
-    assert landed == ["SessionScreen"] * 4
+    assert landed == ["WorkspaceScreen"] * 4
 
 
 def test_the_input_completes_the_commands_it_accepts():
@@ -594,7 +653,7 @@ def test_the_input_completes_the_commands_it_accepts():
     completes cannot be one that does not run."""
     from textual.widgets import Input
 
-    app = AgentTUI(Counted(dict(IDLE)), goal=None, thread="abc12345")
+    app = NoesisApp(Counted(dict(IDLE)), goal=None, thread="abc12345")
     found = []
 
     async def script(pilot):

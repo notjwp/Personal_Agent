@@ -1,0 +1,100 @@
+"""The two screens that ask a person something, moved and restyled only.
+
+Ported from agent/tui.py with NO behaviour change. Both are where consent is
+decided, both are covered by tests that assert exactly these rules, and a modal
+that answers "allow" when it is dismissed is a security defect that manual
+testing finds only by accident.
+"""
+from __future__ import annotations
+
+from rich.text import Text
+from textual import on
+from textual.app import ComposeResult
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Button, Label, Static
+
+from agent import cli
+
+
+class ApprovalScreen(ModalScreen[str]):
+    """The paused call, and one answer (FR-306, NFR-801).
+
+    Every argument is shown in full, never abbreviated - the CLI's rule, and the
+    reason is the same: a prompt that elides the dangerous half of a command
+    manufactures consent instead of obtaining it.
+
+    A modal has dismissal paths a keystroke loop cannot have, and each of them
+    resolves to DENY: escape, and any dismissal that is not the allow button.
+    Silence is not consent, exactly as the CLI's EOFError branch already says.
+    """
+
+    BINDINGS = [("escape", "refuse", "deny")]
+
+    def __init__(self, payload: dict) -> None:
+        super().__init__()
+        self._payload = payload
+
+    def compose(self) -> ComposeResult:
+        call = self._payload["call"]
+        with Vertical(id="approval"):
+            yield Label(f"APPROVAL NEEDED   {call['name']}", id="approval-title")
+            for key, value in call["input"].items():
+                yield Static(Text(f"  {key}: {value}"), classes="arg")
+            yield Label(f"Reason: {self._payload.get('reason', '')}", classes="why")
+            with Horizontal(id="approval-buttons"):
+                yield Button("Allow", id="allow", variant="error")
+                yield Button("Deny", id="deny", variant="primary")
+                yield Button("Quit", id="quit")
+
+    def on_mount(self) -> None:
+        # Deny takes focus, so a reflexive Enter refuses. The dangerous answer
+        # must be the one that takes a deliberate keystroke.
+        self.query_one("#deny", Button).focus()
+
+    @on(Button.Pressed)
+    def _pressed(self, event: Button.Pressed) -> None:
+        self.dismiss({"allow": "allow", "deny": "deny",
+                      "quit": cli.QUIT}[event.button.id])
+
+    def action_refuse(self) -> None:
+        self.dismiss("deny")
+
+
+class PlanScreen(ModalScreen[str]):
+    """The plan, before anything has been changed (UR-02, UR-05).
+
+    Dismissal resolves to REVISE, never accept - the same rule as the tool
+    modal's deny, and for the same reason: an approval nobody gave must not be
+    manufactured by a stray escape. Revise is also the cheap direction, since
+    nothing has been written yet.
+    """
+
+    BINDINGS = [("escape", "revise", "revise")]
+
+    def __init__(self, payload: dict) -> None:
+        super().__init__()
+        self._payload = payload
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="plan"):
+            yield Label("PLAN", id="plan-title")
+            for number, step in enumerate(self._payload["plan"], 1):
+                yield Static(Text(f"  {number}. {step}"), classes="step")
+            with Horizontal(id="plan-buttons"):
+                yield Button("Accept", id="accept", variant="primary")
+                yield Button("Revise", id="revise")
+                yield Button("Quit", id="quit")
+
+    def on_mount(self) -> None:
+        # Accept holds focus here, unlike the tool modal where deny does.
+        # Nothing has been changed yet, so the reflexive key is the harmless one.
+        self.query_one("#accept", Button).focus()
+
+    @on(Button.Pressed)
+    def _pressed(self, event: Button.Pressed) -> None:
+        self.dismiss({"accept": "accept", "revise": "revise",
+                      "quit": cli.QUIT}[event.button.id])
+
+    def action_revise(self) -> None:
+        self.dismiss("revise")

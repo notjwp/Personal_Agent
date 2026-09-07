@@ -83,8 +83,16 @@ Pane > .pane--count {
    Painted in ALL THREE modes. An approval prompt must never be hard to read,
    and the active step (FR-702) lives in the status bar. */
 
-#composer {
+#chrome {
     dock: bottom;
+    height: 2;
+    background: $panel;
+}
+
+#composer {
+    /* An Input is 3 rows by default, for a border it does not have here. Left
+       at 3 it covers the status bar, and FR-702 lives in the status bar. */
+    height: 1;
     background: $panel;
     color: $foreground;
     border: none;
@@ -96,7 +104,6 @@ Pane > .pane--count {
 }
 
 #status {
-    dock: bottom;
     height: 1;
     background: $panel;
     color: $muted;
@@ -205,4 +212,139 @@ ApprovalScreen, PlanScreen {
 
 #approval-buttons Button, #plan-buttons Button {
     margin: 0 1;
+}
+
+/* --- the tiled region ------------------------------------------------------
+
+   Panes are laid out by nested containers with fractional sizes, never
+   absolute positions. The single gutter between two siblings is a margin on
+   the FIRST of them, which is what puts a gap between panes and none on the
+   outer edge - the same rule tiling.rects computes against. */
+
+#tiled {
+    height: 1fr;
+}
+
+/* PADDING, not margin, and the difference is the whole effect: a margin is
+   painted by the PARENT, and a screen-owned empty region still resolves to
+   $background even when the screen is transparent. Padding belongs to #tiled,
+   which is transparent, so the cells come out bare. */
+Screen.-gaps #tiled, Screen.-bare #tiled {
+    padding: 1 1 0 1;
+}
+
+.gutter-right {
+    margin-right: 1;
+}
+
+.gutter-below {
+    margin-bottom: 1;
+}
+
+/* Focus is the workspace's own idea, not the terminal's: the composer holds
+   keyboard focus so typing always reaches the agent, which means `:focus`
+   would never land on a pane. */
+Pane.-active {
+    border: round $accent;
+}
+
+Pane.-active > .pane--title {
+    color: $accent;
+}
+
+/* --- the landing ---------------------------------------------------------- */
+
+LandingScreen {
+    align: center middle;
+}
+
+#landing {
+    width: 64;
+    height: auto;
+}
+
+#logotype {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.row--logo {
+    color: $accent;
+}
+
+#landing-status {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#landing-list {
+    height: auto;
+}
+
+#landing-input {
+    height: 1;
+    background: $panel;
+    color: $foreground;
+    border: none;
+    padding: 0 1;
+    margin-top: 1;
+}
+
+#landing-hint {
+    height: auto;
+    padding: 0 1;
+}
+
+/* --- scrollbars -----------------------------------------------------------
+
+   MEASURED: an unstyled ScrollBar rendered SOLID BLACK in all three modes.
+   Section 10.1's rule is not advice - under ansi_color=True every colour must
+   be set explicitly, and the scrollbar is the one widget nothing else styles. */
+
+Screen {
+    scrollbar-size: 1 1;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $muted;
+    scrollbar-color-active: $accent;
+    scrollbar-corner-color: $surface;
+}
+
+Screen.-bare {
+    scrollbar-background: $panel;
+    scrollbar-background-hover: $panel;
+    scrollbar-background-active: $panel;
+    scrollbar-corner-color: $panel;
+}
+
+/* Scrollbar colours are read from the SCROLLABLE widget, not inherited from
+   the Screen - setting them there left the bar black. */
+Pane, RichLog, DataTable {
+    scrollbar-size: 1 1;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $muted;
+    scrollbar-color-active: $accent;
+    scrollbar-corner-color: $surface;
+}
+
+/* An Input's cursor and placeholder default to `reverse`, which under
+   ansi_color=True is a 16-colour ANSI cell rather than a palette colour. */
+Input > .input--cursor {
+    background: $accent;
+    color: $background;
+}
+
+Input > .input--placeholder,
+Input > .input--suggestion {
+    color: $muted;
+}
+
+Input > .input--selection {
+    background: $surface;
+    color: $foreground;
 }
