@@ -42,6 +42,18 @@ def _load_env(path: Path) -> int:
 if __name__ == "__main__":
     _load_env(Path(__file__).resolve().parent.parent / ".env")
 
+    # The wizard runs in the same window .env is loaded in, and for the same
+    # reason: config.py resolves PROVIDER, OPENAI_MODEL and OPENAI_BASE_URL at
+    # IMPORT time, so a key entered after agent.cli is imported changes nothing.
+    from agent import setup
+
+    if setup.needed() and setup.interactive() and setup.run():
+        import importlib
+
+        from agent import config
+
+        importlib.reload(config)
+
     from agent.cli import main
 
     raise SystemExit(main())

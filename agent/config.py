@@ -31,7 +31,10 @@ STATE_DB = AGENT_HOME / "state.db"
 
 PROVIDER = _env("AGENT_PROVIDER", "nvidia")
 
-MODEL = "claude-opus-5"
+# A literal until the setup wizard existed, which meant the Anthropic model
+# could not be selected at all. Same rule as OPENAI_MODEL: changing it is a
+# different measurement.
+MODEL = _env("AGENT_MODEL", "claude-opus-5")
 EFFORT = "medium"        # low | medium | high | xhigh | max
 
 # OPENAI_* names the protocol, not the vendor: any compatible endpoint works.
