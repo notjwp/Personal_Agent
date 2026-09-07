@@ -97,14 +97,31 @@ def test_the_landing_shows_the_wordmark_and_every_command():
     drive(app, script)
 
 
-def test_the_counts_are_a_placeholder_until_they_arrive():
+def test_a_count_that_has_not_arrived_renders_as_a_placeholder():
     """Section 12.1: nothing touches SQLite on the render path. The landing is
-    drawn before the queue is asked anything."""
+    drawn first and the counts arrive after, so the render path must have
+    something to show while they have not."""
     app = screens.NoesisApp(FakeGraph())
 
     async def script(pilot):
-        assert app.screen.counts == {}
+        await app.screen.workers.wait_for_complete()
+        app.screen.counts = {}
+        app.screen.paint_list()
+        await pilot.pause()
         assert "·" in rendered(app)
+
+    drive(app, script)
+
+
+def test_an_empty_queue_is_not_the_same_as_a_count_nobody_asked_for():
+    """`·` means "not loaded yet". A queue with nothing in it is a different
+    statement, and rendering both the same way says neither."""
+    app = screens.NoesisApp(FakeGraph())
+
+    async def script(pilot):
+        await app.screen.workers.wait_for_complete()
+        await pilot.pause()
+        assert app.screen.counts.get("/tasks") == ""
 
     drive(app, script)
 
@@ -547,5 +564,31 @@ def test_ctrl_p_opens_the_command_palette():
         await pilot.press("ctrl+p")
         await pilot.pause()
         assert type(app.screen).__name__ == "CommandPalette"
+
+    drive(app, script)
+
+
+@pytest.mark.parametrize("mode", theme.MODES)
+def test_the_chrome_stays_painted_in_every_mode(mode):
+    """Section 10.3: the composer and the status bar must never be hard to read
+    over someone's wallpaper. FR-702's step lives in that bar, so the bar losing
+    its background takes the requirement with it.
+
+    Checked on the WORKSPACE and not a stand-in: the phase-3 theme test uses its
+    own host, so making the real chrome transparent passed it.
+    """
+    app = workspace()
+    app.mode = mode
+
+    async def script(pilot):
+        strips = app.screen._compositor.render_strips()
+        for name in ("#composer", "#status"):
+            row = app.screen.query_one(name).region.y
+            # EVERY cell, not any: the Input's cursor is painted on its own, so
+            # "something on this row has a background" passes on a bare bar.
+            bare = sum(len(segment.text) for segment in strips[row]
+                       if not segment.style or segment.style.bgcolor is None
+                       or segment.style.bgcolor.name == "default")
+            assert bare == 0, f"{mode}: {name} has {bare} unpainted cells"
 
     drive(app, script)

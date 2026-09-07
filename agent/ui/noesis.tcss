@@ -86,7 +86,6 @@ Pane > .pane--count {
 #chrome {
     dock: bottom;
     height: 2;
-    background: $panel;
 }
 
 #composer {
@@ -347,4 +346,96 @@ Input > .input--suggestion {
 Input > .input--selection {
     background: $surface;
     color: $foreground;
+}
+
+/* --- the setup wizard -----------------------------------------------------
+
+   Here rather than on SetupApp, because the screen is pushed onto NoesisApp by
+   ctrl+k and /setup as well as run standalone on first launch - and CSS on the
+   App does not follow a screen to another App. Measured: opened from the
+   landing, the wizard came up entirely unstyled. */
+
+SetupScreen {
+    align: center middle;
+}
+
+#setup {
+    width: 78;
+    height: auto;
+    padding: 1 2;
+    background: $surface;
+    color: $foreground;
+    border: round $border;
+}
+
+#setup-title {
+    color: $accent;
+    text-style: bold;
+}
+
+.hint {
+    color: $muted;
+    margin-bottom: 1;
+}
+
+#choices {
+    height: auto;
+    max-height: 18;
+    margin-bottom: 1;
+    background: $surface;
+    color: $foreground;
+    border: none;
+}
+
+#warning {
+    height: auto;
+    color: $warning;
+}
+
+#key-shown {
+    height: auto;
+    color: $muted;
+}
+
+#base-url, #model-id, #key {
+    height: 1;
+    background: $panel;
+    color: $foreground;
+    border: none;
+    padding: 0 1;
+    margin-top: 1;
+}
+
+#status {
+    height: auto;
+}
+
+#after {
+    height: auto;
+    margin-top: 1;
+}
+
+#after Button {
+    margin-right: 1;
+}
+
+/* Buttons take the palette rather than textual's defaults, which are unset
+   colours and so degrade to 16-colour ANSI under ansi_color=True. */
+Button {
+    background: $panel;
+    color: $foreground;
+    border: none;
+    height: 1;
+    min-width: 12;
+}
+
+Button:focus {
+    background: $surface;
+    color: $accent;
+    text-style: bold;
+}
+
+Button.-error {
+    background: $error;
+    color: $background;
 }

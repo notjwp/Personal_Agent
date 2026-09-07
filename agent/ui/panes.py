@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 
+from rich.align import Align
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
@@ -82,6 +83,16 @@ class Pane(Vertical):
     def __init__(self) -> None:
         super().__init__(id=f"pane-{self.pane_id}")
 
+    empty_line = ""
+
+    def compose(self) -> ComposeResult:
+        yield from self.body()
+        yield Static(id="empty-line")
+
+    def body(self) -> ComposeResult:
+        """The pane's own contents. Everything else here is chrome."""
+        return ()
+
     def on_mount(self) -> None:
         # Here rather than in the workspace's rebuild: `mount()` is async, so
         # a pane's own children do not exist until its Mount arrives.
@@ -99,10 +110,21 @@ class Pane(Vertical):
     def count(self, value) -> None:
         self.border_subtitle = "" if value in (None, "") else f" {value} "
 
-    def empty(self, text: str) -> Text:
+    def empty(self, on: bool, text: str = "") -> None:
         """One dim centred line saying what would appear here, never a blank
-        box - an empty bordered rectangle reads as broken rather than idle."""
-        return Text(text, style="row--muted", justify="center")
+        box - an empty bordered rectangle reads as broken rather than idle.
+
+        Its own WIDGET rather than a line written into the log: centring a
+        rich renderable inside a RichLog centres it against the CONSOLE width,
+        and a 46-cell pane then clipped the tail off it - measured, on screen.
+        """
+        line = self.query_one("#empty-line", Static)
+        line.update(Align.center(Text(text or self.empty_line,
+                                      style="row--muted")))
+        line.display = on
+        for child in self.children:
+            if child.id != "empty-line":
+                child.display = not on
 
 
 class ChatPane(Pane):
@@ -111,8 +133,9 @@ class ChatPane(Pane):
     pane_id = "chat"
     title = "chat"
     closeable = False              # section 8: alt+w refuses on this one
+    empty_line = "say something below to begin"
 
-    def compose(self) -> ComposeResult:
+    def body(self) -> ComposeResult:
         yield RichLog(id="chat-log", wrap=True, markup=False,
                       auto_scroll=True, max_lines=MAX_LINES)
 
@@ -122,8 +145,7 @@ class ChatPane(Pane):
         log.clear()
         for renderable in screen.transcript:
             log.write(renderable)
-        if not screen.transcript:
-            log.write(self.empty("say something below to begin"))
+        self.empty(not screen.transcript)
 
     def append(self, renderable) -> None:
         """Append only. Never re-render the transcript to add a line.
@@ -132,6 +154,8 @@ class ChatPane(Pane):
         replays the whole transcript from the screen on its own Mount, so an
         early line is not lost - it arrives once, in order.
         """
+        if self.is_mounted:
+            self.empty(False)
         for log in self.query(RichLog):
             log.write(renderable)
 
@@ -141,15 +165,16 @@ class PlanPane(Pane):
 
     pane_id = "plan"
     title = "plan"
+    empty_line = "no plan for this thread"
 
-    def compose(self) -> ComposeResult:
+    def body(self) -> ComposeResult:
         yield Static(id="plan-body")
 
     def refresh_from(self, screen) -> None:
         body = self.query_one("#plan-body", Static)
+        self.empty(not screen.plan)
         if not screen.plan:
             self.count(None)
-            body.update(self.empty("no plan for this thread"))
             return
         self.count(f"{min(screen.cursor, len(screen.plan) - 1) + 1}/{len(screen.plan)}")
         out = Text()
@@ -168,8 +193,9 @@ class TracePane(Pane):
 
     pane_id = "trace"
     title = "trace"
+    empty_line = "no tool has run yet"
 
-    def compose(self) -> ComposeResult:
+    def body(self) -> ComposeResult:
         yield RichLog(id="trace-log", wrap=False, markup=False,
                       auto_scroll=True, max_lines=MAX_LINES)
 
@@ -179,10 +205,11 @@ class TracePane(Pane):
         log.clear()
         for entry in screen.trace_rows:
             log.write(tool_text(entry))
-        if not screen.trace_rows:
-            log.write(self.empty("no tool has run yet"))
+        self.empty(not screen.trace_rows)
 
     def append(self, entry: dict) -> None:
+        if self.is_mounted:
+            self.empty(False)
         for log in self.query(RichLog):
             log.write(tool_text(entry))
 
@@ -196,11 +223,13 @@ class TablePane(Pane):
 
     columns: tuple = ()
 
-    def compose(self) -> ComposeResult:
-        yield DataTable(id=f"{self.pane_id}-table", cursor_type="row")
-
     def setup(self) -> None:
         self.query_one(DataTable).add_columns(*self.columns)
+
+    empty_line = "nothing here yet"
+
+    def body(self) -> ComposeResult:
+        yield DataTable(id=f"{self.pane_id}-table", cursor_type="row")
 
     def rows(self, screen) -> list[tuple]:
         return []
@@ -212,6 +241,7 @@ class TablePane(Pane):
         self.count(len(rows) or None)
         for key, cells in rows:
             table.add_row(*cells, key=key)
+        self.empty(not rows)
 
 
 class ThreadsPane(TablePane):
@@ -220,6 +250,7 @@ class ThreadsPane(TablePane):
     pane_id = "threads"
     title = "threads"
     columns = ("thread", "verdict", "turns", "goal")
+    empty_line = "no threads yet"
 
     def rows(self, screen) -> list[tuple]:
         return [(row["id"], (row["id"], row["verdict"], str(row["turns"]),
@@ -234,6 +265,7 @@ class TasksPane(TablePane):
     pane_id = "tasks"
     title = "tasks"
     columns = ("task", "status", "verdict", "goal")
+    empty_line = "no tasks queued - submit one with --submit"
     BINDINGS = [Binding("c", "cancel", "cancel", show=False)]
 
     def compose(self) -> ComposeResult:
@@ -278,6 +310,7 @@ class SchedulesPane(TablePane):
     pane_id = "schedules"
     title = "schedules"
     columns = ("schedule", "cron", "next run", "goal")
+    empty_line = "no schedules - add one with --schedule"
     BINDINGS = [Binding("d", "remove", "remove", show=False)]
 
     def action_remove(self) -> None:
@@ -311,14 +344,14 @@ class DoctorPane(Pane):
 
     pane_id = "doctor"
     title = "doctor"
+    empty_line = "probing…"
 
-    def compose(self) -> ComposeResult:
+    def body(self) -> ComposeResult:
         yield RichLog(id="doctor-log", wrap=True, markup=False)
 
     def refresh_from(self, screen) -> None:
-        log = self.query_one(RichLog)
-        log.clear()
-        log.write(self.empty("probing…"))
+        self.query_one(RichLog).clear()
+        self.empty(True)
         self._probe()
 
     @work(thread=True, exclusive=True)
@@ -333,6 +366,7 @@ class DoctorPane(Pane):
         self.app.call_from_thread(self._paint, lines)
 
     def _paint(self, lines: list[str]) -> None:
+        self.empty(False)
         log = self.query_one(RichLog)
         log.clear()
         self.count(sum(1 for line in lines if line.startswith("FAIL")) or None)
@@ -346,8 +380,9 @@ class ArtifactPane(Pane):
 
     pane_id = "artifact"
     title = "artifact"
+    empty_line = "select a spilled result in trace"
 
-    def compose(self) -> ComposeResult:
+    def body(self) -> ComposeResult:
         yield RichLog(id="artifact-log", wrap=False, markup=False,
                       max_lines=MAX_LINES)
 
@@ -355,9 +390,9 @@ class ArtifactPane(Pane):
         log = self.query_one(RichLog)
         log.clear()
         path = screen.artifact
+        self.empty(not path)
         if not path:
             self.border_title = "artifact"
-            log.write(self.empty("select a spilled result in trace"))
             return
         self.border_title = f"artifact · {path.name}"
         try:

@@ -21,7 +21,9 @@ from textual.screen import Screen
 from textual.widgets import Button, Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
+from agent import config as settings
 from agent import setup
+from agent.ui import theme
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -50,8 +52,8 @@ class SetupScreen(Screen):
     def compose(self) -> ComposeResult:
         with Vertical(id="setup"):
             yield Label("NOESIS  ·  setup", id="setup-title")
-            yield Static("a key is verified against the live endpoint before it "
-                         "is saved  ·  ^q leaves without saving", classes="hint")
+            yield Static("verified against the live endpoint before it is "
+                         "saved  ·  ^q leaves", classes="hint")
             yield OptionList(*self._options(), id="choices")
             yield Static("", id="warning")
             yield Input(placeholder="base URL, e.g. https://openrouter.ai/api/v1",
@@ -78,10 +80,13 @@ class SetupScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#after").display = False
+        # An empty Static still occupies its row, and four blank rows between
+        # the list and the key box read as a layout that lost something.
+        self.query_one("#key-shown").display = bool(self._existing)
         if self._existing:
             self.query_one("#key-shown", Static).update(
-                Text(f"current key {setup.mask(self._existing)} - leave blank to "
-                     "keep it", style="dim"))
+                Text(f"current key {setup.mask(self._existing)} - leave blank "
+                     "to keep it", style="row--muted"))
         self.choose(0)
         self.query_one("#choices", OptionList).focus()
 
@@ -95,6 +100,7 @@ class SetupScreen(Screen):
         for widget in ("#base-url", "#model-id"):
             self.query_one(widget).display = custom
         # The default IS the baseline, so only a departure from it is news.
+        self.query_one("#warning").display = index != 0
         self.query_one("#warning", Static).update(
             Text("" if index == 0 else setup.WARNING, style="bold"))
 
@@ -211,21 +217,17 @@ class SetupApp(App):
     # leaving must cost nothing: nothing is written until a probe has answered.
     BINDINGS = [Binding("ctrl+q", "quit", "quit", priority=True)]
 
-    CSS = """
-    SetupScreen { align: center middle; }
-    #setup { width: 78; height: auto; padding: 1 2; }
-    #setup-title { text-style: bold; }
-    .hint { color: $text-muted; margin-bottom: 1; }
-    #choices { height: auto; max-height: 18; margin-bottom: 1; }
-    #warning { height: auto; color: $warning; }
-    #key-shown { height: auto; }
-    #status { height: auto; margin-top: 1; }
-    #after { height: auto; margin-top: 1; }
-    #after Button { margin-right: 1; }
-    """
+    CSS_PATH = theme.STYLESHEET
+
 
     def __init__(self, existing_key: str = "") -> None:
-        super().__init__()
+        # The same registration NoesisApp does, and for the same reason: the
+        # stylesheet is parsed before a theme applies, so $muted is undefined
+        # unless the theme is selected here.
+        super().__init__(ansi_color=True)
+        for one in theme.THEMES:
+            self.register_theme(one)
+        theme.apply(self, settings.TUI_THEME, settings.TUI_TRANSPARENT)
         self._existing = existing_key
         self.offered: set = set()
         self.last_message = ""

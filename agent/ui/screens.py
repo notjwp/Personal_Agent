@@ -152,7 +152,7 @@ class LandingScreen(Screen):
             yield Static(id="logotype")
             yield Static(id="landing-status")
             yield Static(id="landing-list")
-            yield Input(placeholder="type to begin", id="landing-input",
+            yield Input(placeholder="›", id="landing-input",
                         suggester=SuggestFromList(COMMANDS,
                                                   case_sensitive=False))
             yield Static(id="landing-hint")
@@ -232,7 +232,9 @@ class LandingScreen(Screen):
         self.app.call_from_thread(self.counted, found, flag)
 
     def counted(self, found: dict, flag: str) -> None:
-        self.counts = {name: value for name, value in found.items() if value}
+        # Kept even when empty: `·` means "not loaded yet", and a queue with
+        # nothing in it is a different statement from one nobody has asked.
+        self.counts = dict(found)
         self.flag = flag
         self.paint_list()
 
