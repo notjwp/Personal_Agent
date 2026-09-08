@@ -1,20 +1,23 @@
-"""A build pipeline. Reports each stage as it finishes, then keeps watching.
-
-The artifact id is minted for this build and written to build.log. The pipeline
-does not exit on its own.
-"""
+"""A build pipeline. It stops at each gate and waits to be released."""
+import pathlib
 import secrets
 import time
 
-STAGES = ("resolve", "compile", "link", "package", "verify")
+HERE = pathlib.Path(__file__).resolve().parent
 ARTIFACT = "ARTIFACT-" + secrets.token_hex(3).upper()
 
-for index, stage in enumerate(STAGES):
-    time.sleep(2)
-    print(f"[{index + 1}/5] {stage} ok", flush=True)
+for gate in (1, 2, 3):
+    password = secrets.token_hex(3).upper()
+    print(f"GATE {gate} is holding. To release it, create the file "
+          f"gate-{gate}.txt containing exactly {password}", flush=True)
+    reply = HERE / f"gate-{gate}.txt"
+    while not (reply.exists()
+               and reply.read_text(encoding="utf-8").strip() == password):
+        time.sleep(0.5)
+    print(f"gate {gate} released", flush=True)
 
 print(f"artifact id: {ARTIFACT}", flush=True)
-with open("build.log", "a", encoding="utf-8") as log:
+with (HERE / "build.log").open("a", encoding="utf-8") as log:
     log.write(ARTIFACT + "\n")
 
 while True:

@@ -1,25 +1,29 @@
-"""A small service. Issues a token, and does not exit.
-
-A token is issued only in exchange for a nonce from /session, and every one
-issued is appended to issued.log.
-"""
+"""A service that will not hand out a token in one step. It does not exit."""
 import http.server
 import secrets
 
 PORT = 8731
-NONCE = secrets.token_hex(4)
+STATE = {"phrase": None}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/session":
-            body = f"nonce={NONCE}"
-        elif self.path == f"/token?nonce={NONCE}":
-            body = "TOKEN-" + secrets.token_hex(3).upper()
-            with open("issued.log", "a", encoding="utf-8") as log:
-                log.write(body + "\n")
-        elif self.path.startswith("/token"):
-            body = "wrong or missing nonce - get one from /session"
+        if self.path == "/request-phrase":
+            STATE["phrase"] = secrets.token_hex(3).upper()
+            print(f"phrase for the next token: {STATE['phrase']}", flush=True)
+            body = ("a phrase has been printed to my output. Send it back as "
+                    "/token?phrase=THEPHRASE")
+        elif self.path.startswith("/token?phrase="):
+            sent = self.path.split("=", 1)[1]
+            if STATE["phrase"] and sent == STATE["phrase"]:
+                body = "TOKEN-" + secrets.token_hex(3).upper()
+                with open("issued.log", "a", encoding="utf-8") as log:
+                    log.write(body + "\n")
+                STATE["phrase"] = None
+            else:
+                body = "wrong phrase. Ask for one at /request-phrase first"
+        elif self.path == "/token":
+            body = "a token costs a phrase. Ask for one at /request-phrase"
         else:
             body = ""
         self.send_response(200 if body else 404)
