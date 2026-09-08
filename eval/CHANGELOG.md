@@ -435,7 +435,7 @@ Offline, no quota. 510 -> 528 tests.
 
 ### What was consulted, and what was actually taken
 
-Hermes's `cron/` is 14,880 lines across 12 modules, `scheduler.py` alone 7,644. Two
+The reference implementation's `cron/` is 14,880 lines across 12 modules, `scheduler.py` alone 7,644. Two
 things came out of reading it and nothing else did:
 
 **The ordering, which is the whole correctness argument.** `scheduler.py:7360` advances
@@ -461,7 +461,7 @@ task. A second execution path is how two components come to disagree about what 
 
 **Recorded because it nearly shipped.** The first race test asserted the right property
 and could not detect its own violation. Inverting the ordering in `fire()` - submit
-first, advance after, exactly the bug Hermes's comment warns about - left **51 of 51
+first, advance after, exactly the bug the reference implementation's comment warns about - left **51 of 51
 passing**.
 
 The reason is worth keeping: the test called `fire()` twice, and the second call found
@@ -897,7 +897,7 @@ harness - *`timeout` kills the client but leaves the container running, and the
 orphan corrupts the shared workspace mid-case* - sitting unnoticed in our own
 `run_shell`. `subprocess.run(shell=True)` kills `/bin/sh`, never its tree.
 
-### What was taken from Hermes
+### What was taken from the reference implementation
 
 `tools/binary_extensions.py` is **VENDORED VERBATIM** - the first file in this
 project that is. The value IS the list, and a hand-written set of 80-odd
@@ -911,7 +911,7 @@ same job.
 
 ### The method, corrected
 
-Earlier the same day I ranked 7 of 142 liftable Hermes modules by keyword, tested
+Earlier the same day I ranked 7 of 142 liftable reference modules by keyword, tested
 each against our recorded traces, found **0 useful**, and reported that as a
 verdict on lifting.
 
@@ -965,7 +965,7 @@ rewrote a `.docx` as text.
 `surrogateescape` on read AND write round-trips arbitrary bytes losslessly. That
 puts lone surrogates in the receipt, which are invalid in UTF-8 and break the
 provider's encode step - so they are stripped in `shrink()`, the one seam every
-tool result crosses on its way to the model. From Hermes
+tool result crosses on its way to the model. From the reference implementation
 `agent/message_sanitization.py`, which states the consequence in its own docstring.
 
 The write-verify check had to change with it: it compared a `surrogateescape`
@@ -1026,7 +1026,7 @@ afternoon, none needing the provider. Two of them - `edit_file` corrupting
 non-UTF-8 files and `run_shell` losing timeout output - are the kind that cost
 real-repository passes without ever appearing as an error.
 
-**None had ever shown up in a trace**, which is the whole lesson. Ranking Hermes
+**None had ever shown up in a trace**, which is the whole lesson. Ranking the reference implementation
 modules by keyword and testing them against recorded traces found 0 useful from 7.
 Reading our own code for gaps found nine in an afternoon. A capability we do not
 have cannot appear in traces - `read_file` never logged a binary read because it
@@ -1091,11 +1091,11 @@ list length so an insertion in the middle is caught.
 
 ## The prompt listed 4 tools; the agent has 7 (2026-08-31) - UNMEASURED
 
-Prompted by "results are failing, check hermes_copy and fix it". The unit suite was
+Prompted by "results are failing, check the reference checkout and fix it". The unit suite was
 green at 613; what is failing is the agent - real repositories 4/10, `real-humanize`
 1 pass in 58, reads 9-16 times and never edits.
 
-### What Hermes has that we did not
+### What the reference implementation has that we did not
 
 `agent/coding_context.py` carries a **coding posture**: a profile declaring which
 toolset to collapse to and which operating brief to inject. Two lines of that brief
@@ -1166,7 +1166,7 @@ pass rate is a separate question, and the answer is not yet known.
 ## NFR-203 was only half implemented (2026-08-31)
 
 613 -> 622 tests. No quota. Gap found by reading our own code, filled with
-Hermes's data and NOT their code - the distinction is the whole entry.
+The reference implementation's data and NOT their code - the distinction is the whole entry.
 
 ### The gap
 
@@ -1195,7 +1195,7 @@ max_tokens=settings.MAX_TOKENS  ->  max_tokens=settin...ENS
 
 Type annotations and identifiers destroyed. It matches `NAME=value` wherever NAME
 merely CONTAINS key/token/secret - correct for terminal output and chat, which is
-where Hermes applies it, and catastrophic on source code, which is what this agent
+where the reference implementation applies it, and catastrophic on source code, which is what this agent
 reads all day. **I was about to put it somewhere they deliberately do not.**
 
 What was taken is the curated part: 40 issuer prefixes, the PEM block, the JWT
@@ -1608,7 +1608,7 @@ ITERATED - after `create()` returned - so httpx raises through unwrapped and
 `RETRYABLE` never saw it. Vellum names the same thing: a transport abort has
 `status === undefined` because the SDK never saw an HTTP response.
 
-Hermes carries a type list AND a substring list, because the exception can
+The reference implementation carries a type list AND a substring list, because the exception can
 arrive wrapped in something whose name no longer says transport. Both are here.
 
 **What was deliberately NOT taken** is Vellum's structural rule, "no HTTP status
@@ -1711,7 +1711,7 @@ itself. The dev gain is real; the held-out gain is zero.
 
 ### 12 was a fixture-era cost control
 
-Hermes caps a parent agent at 500 (`agent/iteration_budget.py`, subagents 250), Vellum
+The reference implementation caps a parent agent at 500 (`agent/iteration_budget.py`, subagents 250), Vellum
 at 200 (`maxStepsPerSession`). 30 is derived: at ~4.4k tokens a turn the token budget
 binds around turn 45, so 30 keeps BUDGET_TOKENS the real ceiling.
 
@@ -1812,7 +1812,7 @@ attempts with backoff.
 | after | **20/20** | 88s |
 
 75% per call is 0.3% over a 20-turn run. `call_model` now retries
-`ProviderUnavailable` six times with jittered backoff - Hermes's `retry_utils`
+`ProviderUnavailable` six times with jittered backoff - the reference implementation's `retry_utils`
 design, resized: their base 5s / cap 120s is sized for a rate limit, this endpoint
 bounces back in about a second.
 
@@ -1831,8 +1831,8 @@ on an unverified edit. The evidence was real and the remedy was wrong.
 | ON | **12/15** | 53% | **47%** |
 | OFF | **13/15** | 67% | 33% |
 
-Hermes reached the same place from real use rather than from a number:
-`hermes_cli/config_defaults.py:262` ships `verify_on_stop: False`, and TWO one-time
+The reference implementation reached the same place from real use rather than from a number:
+`its own config defaults:262` ships `verify_on_stop: False`, and TWO one-time
 migrations (`config_migrations.py` `_migrate_to_31`/`_32`) turn it off on existing
 installs because "the verification narrative was more noise than signal". Reading
 their default answered in minutes what a tuning cycle had cost a day.
@@ -1841,7 +1841,7 @@ their default answered in minutes what a tuning cycle had cost a day.
 
 `broken-fixture` run 1 made five tool calls - `read_file`, `search_files` x3,
 `read_file` - and declared `done` with the suite red. `_verify_nudge` cannot see it:
-nothing was edited, so `edited_unverified` was never set. Hermes's
+nothing was edited, so `edited_unverified` was never set. The reference implementation's
 `verification_stop.py` has the SAME blind spot (`if not paths: return None`), so
 porting it would not have helped; their cover for this is
 `trailing_continue_intent`, a regex on the message tail.
@@ -1916,7 +1916,7 @@ It now opens *"You are a personal agent working for one person"*, and the coding
 brief lives in `prompts/CODING.md`, appended only when the workspace looks like
 source someone maintains - a project manifest, a `tests/` directory, a `.git`.
 
-Hermes's `agent/coding_context.py` selects a ContextProfile the same way and
+The reference implementation's `agent/coding_context.py` selects a ContextProfile the same way and
 injects its brief only in that posture. Two files here rather than a profile
 registry, because we have two postures and they have a plugin system.
 
@@ -1938,7 +1938,7 @@ worked, the index was there. The DECISION was the defect, which is this project'
 oldest lesson: deterministic injection works, agent choice does not. `learn` asked
 and was called 0 times in 15 sessions.
 
-Neither reference implementation relies on that choice: Hermes loads skills by
+Neither reference implementation relies on that choice: the reference implementation loads skills by
 slash command, Vellum tracks explicit `<loaded_skill>` markers. Both have a human
 in the loop; our authoring cases need autonomous recall, which is a MEMORY problem
 - and memory injection is the thing this project already measured at 0/18 -> 15/18.
@@ -3621,7 +3621,7 @@ its premise stopped being true, which §0 says to state rather than reinterpret.
 than characters (fixture output has short lines) and the scored check having no timeout (fixture
 suites always terminate). All three were justified by numbers that only held for 10-file projects.
 
-### How Hermes solves it - checked, not assumed
+### How the reference implementation solves it - checked, not assumed
 
 `tools/patch_parser.py` implements a custom **V4A patch format**: `*** Begin Patch`,
 `*** Update File: <path>`, and hunks marked `@@ context hint @@` carrying ` ` context, `-` removal
@@ -3682,7 +3682,7 @@ Both passes verified rather than assumed: `tampered=0`, `write_violations=0`, ex
 zero match errors, and the failing-test count went 1 -> 0.
 
 **Zero edit-match errors across every run that used the tool.** Exact matching was sufficient; the
-model reproduced snippets precisely. Hermes's fuzzy matching is therefore still unearned, exactly as
+model reproduced snippets precisely. The reference implementation's fuzzy matching is therefore still unearned, exactly as
 CE-02 requires - if it were needed, the traces would show repeated edit failures, and they do not.
 
 ### A rig fault, self-inflicted, found by the tamper check
@@ -3763,13 +3763,13 @@ that text appears 2 times in rich/console.py; it must match exactly once.
 One was "not found". So the model is **reproducing snippets correctly**; in a 2,689-line file its
 chosen snippet simply is not unique.
 
-**This is evidence AGAINST porting Hermes's fuzzy matching**, not for it. Fuzzy matching loosens the
+**This is evidence AGAINST porting the reference implementation's fuzzy matching**, not for it. Fuzzy matching loosens the
 match - in a file that already contains duplicates, that produces more ambiguity, not less, and risks
 editing the wrong occurrence silently. The earlier note said fuzzy matching would be earned if
 "exact matching measurably fails because the model cannot reproduce strings precisely". It did fail,
 but **not for that reason**, so the trigger has not fired.
 
-What Hermes actually uses for this problem is the `@@ context hint @@` that scopes which region a
+What the reference implementation actually uses for this problem is the `@@ context hint @@` that scopes which region a
 hunk applies to - a different mechanism from `fuzzy_find_and_replace()`.
 
 ### Next candidate cycle, not built now
@@ -3817,9 +3817,9 @@ precisely what the revert rule exists to stop.
 
 Run 1 did something different again: 18 reads, **zero** edits.
 
-### Checked against Hermes and OpenClaw, not assumed
+### Checked against the reference implementation and OpenClaw, not assumed
 
-- **Hermes** scopes hunks with `@@ context hint @@` rather than relying on uniqueness, and
+- **the reference implementation** scopes hunks with `@@ context hint @@` rather than relying on uniqueness, and
   `tools/file_state.py` warns explicitly on a **"partial read hazard"** - *"was last read with
   offset/limit pagination (partial view)"*. They flag the exact situation `real-rich` is in.
 - **OpenClaw** has the same tool shape (exec / read / write / **edit**) and additionally edits inside
@@ -5143,9 +5143,9 @@ anything about planning.
 ## Stage 1 — six audit closures, no third-party code, no quota
 
 A requirement-by-requirement audit against CONTEXT.md found **21 of 35 must-haves
-satisfied**, 11 unmet, 3 partial, and one Definition-of-Done item false as written. Hermes was
-copied to `hermes_copy/` to fix them. **Four of the six turned out to have nothing to copy** -
-Hermes hand-writes all 84 of its tool schemas, its code tool is a subprocess runner with no
+satisfied**, 11 unmet, 3 partial, and one Definition-of-Done item false as written. The reference implementation was
+copied from the reference checkout to fix them. **Four of the six turned out to have nothing to copy** -
+The reference implementation hand-writes all 84 of its tool schemas, its code tool is a subprocess runner with no
 final-expression value, it has no directory-listing tool, and its seven `_redact_*` helpers are
 each tool-specific with no shared utility. So Stage 1 is written here, and costs nothing.
 
@@ -5285,7 +5285,7 @@ not satisfy it: grep returns every matching line unbounded, which is the context
 `shrink()` exists to contain. Capped at 50 matches and 120 chars a line, and the result says
 when it truncated.
 
-Hermes has a `search_files` and it could **not** be lifted — `file_operations.py` is
+The reference implementation has a `search_files` and it could **not** be lifted — `file_operations.py` is
 ripgrep-backed and `rg` is not in the image. Two things were worth taking: `output_mode:
 files_only`, which is literally "paths, not contents", and its description strategy ("use
 this instead of grep/find/ls in terminal"), because a search tool the model ignores in
@@ -5329,7 +5329,7 @@ above eight hand-written schemas. There were seven.** `search_files` is the eigh
 building Stage 8 first means CE-02 and FR-207 agree for the first time, rather than a
 requirement overruling a live objection.
 
-Nothing in `hermes_copy/` implements this, checked twice: `inspect.signature` appears in five
+Nothing in the reference checkout implements this, checked twice: `inspect.signature` appears in five
 of its files and every use is capability probing, never schema construction. All 84 of its
 schemas are hand-written dicts.
 
@@ -5407,10 +5407,10 @@ providers reject an orphaned call. Measured over every trace with more than eigh
 reinterpreted**: §4.3's intent (keep the opening and the recent turns) is implemented, its
 arithmetic corrected, and the correction written down where the code is.
 
-The fix is Hermes Agent's, from `trajectory_compressor.py:524-560` — snap a boundary onto the
+The fix is the reference implementation's, from `trajectory_compressor.py:524-560` — snap a boundary onto the
 nearest turn that does not split a pair, forward first so an orphaned result folds in with
 the call it answers. ~30 lines of idea against a 1,598-line file. Ours inspects **block
-types** rather than Hermes's `from == "tool"` marker, because our messages carry
+types** rather than the reference implementation's `from == "tool"` marker, because our messages carry
 Anthropic-shaped content lists. `NOTICE` restored, because unlike the percentile helper this
 one genuinely is derived.
 
@@ -5477,7 +5477,7 @@ and FR-604 had no implementation at all; FR-603 turned out to need none.
 
 **433 offline tests**, up from 410. Zero model quota — the graph is a stand-in throughout.
 
-### What ports from Hermes, and what cannot
+### What ports from the reference implementation, and what cannot
 
 `cron/scheduler.py` is 7,644 lines welded to a 13,732-line state module. None of it comes
 across. `cron/executions.py` is 284 lines of stdlib and SQLite, and two ideas in it are worth
@@ -5491,8 +5491,8 @@ having:
   pid alone cannot detect that — pids are recycled, and the next process to claim one looks
   exactly like the original. The pair cannot be fooled.
 
-**Where this deliberately diverges.** Hermes marks an abandoned execution `unknown` and refuses
-to retry, because "whether side effects ran is unknown". That is right for Hermes and wrong here:
+**Where this deliberately diverges.** the reference implementation marks an abandoned execution `unknown` and refuses
+to retry, because "whether side effects ran is unknown". That is right for the reference implementation and wrong here:
 this project checkpoints after every node transition and keeps `gate` and `execute` separate
 precisely so a resumed run re-classifies rather than re-executes. So an abandoned task goes back
 to `queued`, and the worker that picks it up **resumes** — which is FR-603, and the reason
@@ -5901,7 +5901,7 @@ repeating one changes nothing and signals confusion, not a loop. The harmful
 pattern is a repeated WRITE or failing command. This matters most on real
 repositories, where the recorded read-to-write ratio is 37:1.
 
-The shape is Hermes Agent's (`agent/tool_guardrails.py`): it keeps idempotent
+The shape is the reference implementation's (`agent/tool_guardrails.py`): it keeps idempotent
 tools apart from mutating ones and gives the idempotent set a LARGER budget rather
 than exempting it. That refinement matters - five identical reads really is a
 loop. No code was taken; risk comes from `policy.RISK`, which already classifies
@@ -5927,7 +5927,7 @@ turns rising 13 -> 22 where a run previously died - survival, not progress.
 **Hypothesis.** `SOUL.md` rule 1 said *"Read before you edit. Never write a file
 you have not read"*, and `edit_file` returned only a character count. We command a
 read before every edit, then hand back no evidence it landed - so the model reads
-again to check. Hermes has no read-before-edit gate at all and its edit tool says
+again to check. The reference implementation has no read-before-edit gate at all and its edit tool says
 *"do NOT re-read the file to check the write landed"*; their trajectory mining
 measured 154 verify-reads per 400k messages and engineered them out.
 
@@ -5954,11 +5954,11 @@ what the cycle targeted.
 
 ---
 
-## Cycle F — Hermes-level result caps are incompatible with our compaction — ABANDONED
+## Cycle F — the reference implementation-level result caps are incompatible with our compaction — ABANDONED
 
 **Hypothesis, and it was wrong.** `pytest -q` emitted 346 lines / 49,629 bytes and
 `shrink()` returned 4,784. I checked for `E AssertionError` lines, found three of
-four missing, and concluded the agent could not see the bug. Hermes caps file and
+four missing, and concluded the agent could not see the bug. The reference implementation caps file and
 terminal results at 100,000 chars - 16.7x ours.
 
 **Refuted before it was measured, by reading the tail I had never looked at.**
@@ -6059,7 +6059,7 @@ runs the four assertions, with inputs and expected values, were on screen from
 turn 1. The agent read, experimented, and did not edit.
 
 **Two things remain unspent with evidence behind them:** `edit_file` returning a
-unified diff rather than a character count - the one Hermes mechanism aimed
+unified diff rather than a character count - the one the reference implementation mechanism aimed
 squarely at an agent that does not trust its edit landed - and a provider that
 serves more than one model.
 
@@ -6086,7 +6086,7 @@ something later discovered.
 know the edit was what it intended and re-read to check - and re-reading is what
 the thrash detector then punishes.
 
-Hermes's patch tool returns a unified diff and its description says *"do NOT re-read
+The reference implementation's patch tool returns a unified diff and its description says *"do NOT re-read
 the file to check the write landed"*; their trajectory mining measured 154
 verify-reads per 400k messages and engineered them out.
 
@@ -6104,10 +6104,10 @@ already carries: NFR-104 bounds CHARACTERS while a line count bounds LINES.
 
 ## Cycle J — Warn before killing, and hash the RESULT — `35ca171`
 
-Two halves of Hermes's `tool_guardrails` that the morning's thrash fix left behind.
+Two halves of the reference implementation's `tool_guardrails` that the morning's thrash fix left behind.
 
 `reflect` ended a run silently at `REPEAT_LIMIT`: the model was never told it was
-looping and could not correct. Hermes warns on the 2nd identical call and blocks
+looping and could not correct. The reference implementation warns on the 2nd identical call and blocks
 only later, appending the notice to the tool result the model reads next turn -
 cache-safe, because tool results are append-only.
 
@@ -6117,7 +6117,7 @@ notice is unreachable.
 
 **A defect the morning shipped:** `_signature()` hashes the CALL, so a re-read after
 an edit looked identical to a pointless one. It is not - the file changed, so the
-result changed. The notice now keys on both, which is what Hermes's `_result_hash`
+result changed. The notice now keys on both, which is what the reference implementation's `_result_hash`
 does.
 
 **Kept, measurement disputed** - see Cycle L.
@@ -6127,12 +6127,12 @@ does.
 ## Cycle K — Verify-on-stop, DEFAULT OFF — `6f198f1`
 
 A run that edits and then stops without running the tests has not finished, it has
-narrated. Hermes injects a message and continues
+narrated. The reference implementation injects a message and continues
 (`agent/verification_stop.py`); ours does the same in `reflect`, bounded at two
 nudges.
 
 **Off by default, deliberately.** The plan said build it only once traces showed it
-was needed, and they did not: the loop already runs to a turn cap. Hermes ships its
+was needed, and they did not: the loop already runs to a turn cap. The reference implementation ships its
 own off for the same reason. `AGENT_VERIFY_ON_STOP` turns it on.
 
 **Never exercised.** Every measurement since ran with it off.
@@ -6163,7 +6163,7 @@ call billed 30,862 tokens. The run was scored `done`.
 a tidy 6,319-char message ending in a normal artifact pointer - not like something
 cut off mid-word.
 
-**The fix is Hermes's** (`conversation_loop.py:3612`,
+**The fix is the reference implementation's** (`conversation_loop.py:3612`,
 `_LENGTH_CONTINUATION_OUTPUT_LIMIT` at `:1119`), with one deliberate difference:
 their wording says *"continue exactly where you left off"*, which here would spend
 the next 16,000 tokens the same way. Our budget goes on visible reasoning, so the
@@ -6189,7 +6189,7 @@ The loop already supported batching - verified before writing the prose: three c
 in one turn, gate approves all three, `execute` returns three results, `turns`
 increments by 1.
 
-Adapted from Hermes's `PARALLEL_TOOL_CALL_GUIDANCE`.
+Adapted from the reference implementation's `PARALLEL_TOOL_CALL_GUIDANCE`.
 
 **Result: calls/turn stayed at exactly 1.00 across all three runs.** The instruction
 was ignored entirely. **REVERTED** - a prompt section the model demonstrably ignores

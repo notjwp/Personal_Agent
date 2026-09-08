@@ -53,7 +53,7 @@ RUN pip install --no-cache-dir "pyyaml==6.0.2"
 RUN pip install --no-cache-dir "textual==8.0.1" "rich==14.3.3"
 
 # Web search (FR-501). Keyless on purpose: ddgs needs no account and no API key,
-# so a scored run reproduces without a subscription that might lapse. Hermes
+# so a scored run reproduces without a subscription that might lapse. The reference implementation
 # supports nine providers behind a plugin layer and all but ddgs/searxng need a
 # key - the CHOICE is what was taken from it, not the layer.
 #

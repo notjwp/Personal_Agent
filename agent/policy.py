@@ -18,7 +18,7 @@ _HOME = r"(?:~|\$HOME|\$\{HOME\})"
 
 # On macOS /etc, /var, /tmp and /home are symlinks into /private/. A command
 # written against /private/etc/sudoers works exactly like /etc/sudoers and walks
-# straight past a plain "/etc/" check. Hermes's approval layer catches this and
+# straight past a plain "/etc/" check. The reference implementation's approval layer catches this and
 # it is not something reasoning from scratch would produce.
 _SYSTEM_PATH = r"(?:/etc/|/private/(?:etc|var|tmp|home)/|/boot/|/dev/sd)"
 
@@ -33,7 +33,7 @@ _SENSITIVE_FILE = (
 
 # An interpreter given inline source is a shell by another name: `python -c` can
 # do anything `rm -rf` can, and the old pattern list saw none of them. The flags
-# are Hermes's table; the shape is ours.
+# are the reference implementation's table; the shape is ours.
 _INLINE_SOURCE = (
     r"\bpython[\d.]*\s+(?:-\w+\s+)*-c\b"
     r"|\bnode\s+(?:-\w+\s+)*(?:-e|--eval|-p|--print)\b"
@@ -54,7 +54,7 @@ SENSITIVE = re.compile(_SENSITIVE_FILE, re.IGNORECASE)
 # and this became the only thing between the model and the filesystem. The gaps
 # were measured by reading it, not guessed: `mv ~/Documents /tmp`, `> ~/.bashrc`,
 # `python -c "shutil.rmtree(...)"` and `git clean -fdx` all passed the old list.
-# Categories taken from hermes_copy/hermes-agent/tools/approval.py (5,498 lines,
+# Categories taken from the reference implementation/tools/approval.py (5,498 lines,
 # not lifted); the regex is ours and much smaller.
 DANGER = re.compile(
     r"\brm\s+(-\w+\s+)*-\w*[rf]"

@@ -6,7 +6,7 @@ second liveness check; worker.py already has all three, and Vellum's runtime is
 171k lines largely because delivery, sessions and identity grew up separately
 there.
 
-Three designs are taken from Hermes's email adapter and none is lifted - theirs
+Three designs are taken from the reference implementation's email adapter and none is lifted - theirs
 is 1,510 lines across six mail providers:
 
 - DEFAULT DENY on who may write (gateway/authz_mixin.py). The moment a message
@@ -32,7 +32,7 @@ from agent import config, worker
 MAX_BODY = 8000
 
 # Past this many failed sends a reply is abandoned rather than retried forever.
-# Hermes caps attempts for the same reason: a poison row that cannot be
+# The reference implementation caps attempts for the same reason: a poison row that cannot be
 # delivered must not occupy the sweep on every tick.
 MAX_ATTEMPTS = 5
 
@@ -49,14 +49,14 @@ class ChannelRefused(ChannelUnavailable):
     """The credentials were rejected. Retrying cannot help, so the loop stops.
 
     A SUBCLASS, so every existing handler still catches it and no row is lost -
-    only run_channel singles it out. Hermes marks the same failure
+    only run_channel singles it out. The reference implementation marks the same failure
     retryable=False because "bad or revoked credentials can never self-heal".
     """
 
 
 # Only markers a server sends for a REJECTED LOGIN. Deliberately narrow: an
 # ambiguous error must stay retryable, because stopping on a transient one is a
-# listener that is off when it is most needed. Hermes classifies SMTP by type
+# listener that is off when it is most needed. The reference implementation classifies SMTP by type
 # and leaves IMAP4.error alone for exactly this reason - imaplib gives us only
 # the server text, so these are the unambiguous strings and nothing else.
 _REFUSED = ("authenticationfailed", "invalid credentials",
@@ -314,7 +314,7 @@ def check() -> list[str]:
 def diagnose() -> list[str]:
     """Every precondition this agent needs, each line ok or FAIL.
 
-    Hermes's `doctor` is 3,151 lines because it covers ~25 providers; this covers
+    The reference implementation's `doctor` is 3,151 lines because it covers ~25 providers; this covers
     the two we have. The design is the part worth taking: ONE command that probes
     every precondition rather than the one you happened to suspect.
     """

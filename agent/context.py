@@ -38,7 +38,7 @@ def redact(text: str) -> str:
     return secrets.scrub(text)
 
 
-# Lone surrogates. From Hermes agent/message_sanitization.py, which states the
+# Lone surrogates. From the reference implementation's message sanitisation, which states the
 # consequence: they are invalid in UTF-8 and crash json.dumps() inside the SDK.
 _SURROGATE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
 

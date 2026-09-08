@@ -122,7 +122,7 @@ TASKS: list[tuple[str, list[str]]] = [
     (
         # v3: a task can arrive from a chat and owes it a reply, added 2026-09-02.
         #
-        # An outbound reply is a ROW WITH A STATE, not a function call. Hermes
+        # An outbound reply is a ROW WITH A STATE, not a function call. The reference implementation
         # learned that the expensive way - gateway/delivery_ledger.py exists
         # because a send that fails must not lose the message, and a poison row
         # must not spin. `delivered_at` is that ledger at the size this project

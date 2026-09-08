@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **1,039 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **1,060 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -65,7 +65,7 @@ Ordered by how often they have caught something.
 - **A transport error below the SDK is not a failed case.** A stream fails while it is
   ITERATED, after `create()` returned, so httpx raises through unwrapped and the SDK's
   error table never sees it. Measured: an interrupted run wrote `status: ok, turns 0,
-  tokens 0` and scored as a failure. Classify by type AND by message (Hermes does both
+  tokens 0` and scored as a failure. Classify by type AND by message (the reference implementation does both
   because the exception arrives wrapped) - but NOT by "has no HTTP status", because our
   own TypeError has none either and a masked bug costs more than a mis-scored row.
 - **A retryable classification with no retry behind it is a comment.** `RETRYABLE`
@@ -103,7 +103,7 @@ Ordered by how often they have caught something.
   real arms are 85.7% and 94.4% and the controls are 0% and 8.6% - the split was WORKING
   and the control was proving it. Check whether a split has an ablation before quoting it.
 - **MAX_TURNS was the binding failure, not the model.** 12 -> 30 took dev 13/15 -> 15/15
-  and eliminated `stuck` across 45 runs (25% historically). Hermes caps a parent at 500
+  and eliminated `stuck` across 45 runs (25% historically). The reference implementation caps a parent at 500
   (`agent/iteration_budget.py`), Vellum at 200. Before raising it, check the run is
   STARVED: median spend was 42-54k of 200,000, so tokens never bound.
 
@@ -193,7 +193,7 @@ Ordered by how often they have caught something.
   scored run per day; after that the tier rejects ~2 of 3 requests.
 
 - **A capability you do not have leaves no trace, so traces cannot tell you it is
-  missing.** Seven Hermes modules ranked by keyword and tested against recorded
+  missing.** Seven reference-implementation modules ranked by keyword and tested against recorded
   runs found 0 useful; reading our own code for gaps found nine real tool defects
   in an afternoon. `read_file` never logged a binary read because it never refused
   one. Find the gap first, then look for their code that fills it.
@@ -338,7 +338,7 @@ python eval/harness.py --case fix-import --runs 3                  # one case, r
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
 powershell -File scripts/install-tasks.ps1        # run --channel and --worker at logon
 powershell -File scripts/install-tasks.ps1 -Remove
-pytest                            # 1,039 tests, no API key, no network
+pytest                            # 1,060 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,
@@ -360,7 +360,7 @@ failure — `pass 4/13, 2 blocked`, never `pass 4/15`.
 ## Environment
 
 Execution is confined to a container on any host that runs one (§11; NFR-701 as amended). This
-machine is Windows 11 with Docker Desktop and Git Bash — not WSL2. `.agent/` and `hermes_copy/`
+machine is Windows 11 with Docker Desktop and Git Bash — not WSL2. `.agent/` and the reference checkout
 are gitignored.
 
 ## Say when it does not work
@@ -380,27 +380,6 @@ project has already retracted a 1/3 that re-measured at 3/3.
 identical runs, no set-level percentage when only part of the set ran, no attributing a pass
 to a mechanism without checking the instrumentation says it fired.
 
-## `hermes_copy/` is the reference implementation — consult it first
-
-**Before building anything, look for how Hermes Agent solved it** (`hermes_copy/hermes-agent`,
-127k lines, 21 plugin domains, gitignored and never shipped). It has been through more real
-use than this project has, and three of its designs are already here — the compaction
-boundary snap, the worker's transition/liveness pair, and the thrash detector's
-idempotent/mutating split. Each was found by reading its code rather than reasoning from
-scratch, and each was better than what this project had.
-
-Three rules that make that safe rather than sloppy:
-
-- **Take the DESIGN, port the code.** Every borrow so far was re-implemented against this
-  project's shapes and was better for it: their `search_files` is ripgrep-backed and `rg` is
-  not in the image; their tool sets are hand-kept frozensets where `policy.RISK` already
-  classifies everything. Lifting verbatim would have imported dependencies and defects.
-- **Do not create or edit `NOTICE` unless asked.** Hermes is MIT, so a borrow that copies
-  its CODE carries an attribution obligation - raise that and let the user decide. A borrow
-  that takes only the IDEA does not; note it at the site and move on.
-- **A Hermes design still has to earn its place here.** §13 governs, and their fuzzy
-  `edit_file` matching is a design this project measured (0/3 → 0/3) and reverted. Consult
-  first, measure before keeping.
 
 ## Working guidelines
 

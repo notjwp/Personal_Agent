@@ -149,7 +149,7 @@ def test_a_stranger_still_ADVANCES_the_mark(channel):
 
 
 def test_the_FIRST_run_adopts_the_inbox_and_answers_NOTHING(channel):
-    """Hermes logs "%d existing messages skipped" for this exact reason. Without
+    """the reference implementation logs "%d existing messages skipped" for this exact reason. Without
     it, starting the listener replies to every message you have ever received -
     and every one of those replies is a real agent run."""
     from agent import worker
@@ -283,7 +283,7 @@ def test_an_UNFINISHED_task_is_not_answered(channel):
 
 
 def test_a_FAILED_send_leaves_the_reply_owed(channel):
-    """The Hermes design this file borrows: a send that fails must not lose the
+    """The the reference implementation design this file borrows: a send that fails must not lose the
     answer (gateway/delivery_ledger.py). The row stays owed and the next sweep
     retries it."""
     task_id = _queued(channel)
@@ -451,7 +451,7 @@ def test_an_unreachable_mailbox_is_a_FAIL_not_a_crash(channel, monkeypatch):
 
 
 def test_a_REJECTED_password_stops_the_listener(channel, monkeypatch):
-    """It used to retry every 30 seconds forever, silently. Hermes marks the
+    """It used to retry every 30 seconds forever, silently. The reference implementation marks the
     same failure retryable=False: bad credentials never self-heal."""
     def refused():
         raise channel.ChannelRefused(
@@ -523,7 +523,7 @@ def test_a_transient_outage_does_NOT_stop_the_listener(channel, monkeypatch):
 
 
 def test_smtp_classifies_a_rejected_login_by_TYPE(channel, monkeypatch):
-    """Hermes: SMTPAuthenticationError is unambiguous, unlike IMAP4.error."""
+    """the reference implementation: SMTPAuthenticationError is unambiguous, unlike IMAP4.error."""
     import smtplib
 
     from agent import channel as mod
@@ -550,7 +550,7 @@ def test_ChannelRefused_IS_a_ChannelUnavailable(channel):
 
 
 def test_diagnose_reports_every_precondition(channel, monkeypatch, tmp_path):
-    """Hermes's doctor is 3,151 lines across ~25 providers; the design worth taking
+    """the reference implementation's doctor is 3,151 lines across ~25 providers; the design worth taking
     is ONE command that probes everything rather than the thing you suspected."""
     from agent import config
 

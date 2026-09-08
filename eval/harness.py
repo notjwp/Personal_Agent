@@ -824,7 +824,7 @@ def code_version() -> dict:
     defaulting to "restricted" where nothing ever set it.
 
     NOT `git status --porcelain`: measured at 30s in the container because the
-    repo carries hermes_copy (928 MB) and vellum-assistant-main (128 MB), and git
+    repo carries the reference checkout (928 MB) and vellum-assistant-main (128 MB), and git
     stats them even to decide they are ignored. Asking about tracked and untracked
     separately costs about 7s - though `diff` alone has been measured from 7s to
     36s depending on cache state, because eval/fixtures holds six vendored

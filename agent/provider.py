@@ -76,12 +76,12 @@ RETRYABLE = ("RateLimitError", "APITimeoutError", "APIConnectionError",
              # create() returned - so httpx raises through unwrapped. Measured:
              # a severed stream arrived as RemoteProtocolError, missed this
              # table, and was scored as a failed case with turns 0, tokens 0.
-             # Names from Hermes _TRANSIENT_TRANSPORT_ERRORS.
+             # Names from the reference implementation _TRANSIENT_TRANSPORT_ERRORS.
              "RemoteProtocolError", "LocalProtocolError", "ReadError",
              "ConnectError", "ConnectTimeout", "ReadTimeout", "PoolTimeout")
 
 # The same failures when something has WRAPPED them and the type name no longer
-# says so. Hermes carries both a type list and this substring list for exactly
+# says so. The reference implementation carries both a type list and this substring list for exactly
 # that; Vellum reaches the same place structurally - a transport abort has no
 # HTTP status, because the SDK never saw a response.
 TRANSPORT_MARKERS = ("incomplete chunked read", "peer closed connection",
@@ -129,7 +129,7 @@ class _Spoken:
 
 
 def _pause(attempt: int) -> float:
-    """Exponential backoff with decorrelating jitter, Hermes retry_utils design.
+    """Exponential backoff with decorrelating jitter, the reference implementation retry_utils design.
 
     The jitter is not decoration: a worker draining a queue and a scored run
     retrying in lockstep re-collide on the same overloaded window.

@@ -17,6 +17,7 @@ Adding a tool touches this file only (NFR-601).
 import atexit
 import difflib
 import html
+import ipaddress
 import json
 import os
 import re
@@ -513,11 +514,85 @@ def robots_allows(url: str, agent: str = "*") -> bool:
     return True if parser is None else parser.can_fetch(agent, url)
 
 
-# A live session per turn would hold the machine, so the pool is bounded the
-# way Hermes bounds its own. Killed at exit through the same atexit path
-# mcp.shutdown() uses - an orphaned process outliving the run is the failure
-# already recorded, when two `sleep 60` survived a timeout and held the
-# workspace for everything after.
+
+# --------------------------------------------------------------- 
+
+# Blocked whatever else is true. These are cloud metadata endpoints - the
+# credential-theft target - and no agent has a legitimate reason to reach one.
+BLOCKED_HOSTS = frozenset({"metadata.google.internal", "metadata.goog"})
+
+# CGNAT is NOT covered by `is_private`: ipaddress returns False for both
+# is_private and is_global on 100.64.0.0/10. Tailscale and carrier NAT live
+# there, and so does Alibaba's metadata address.
+_EXTRA_BLOCKED = (
+    ipaddress.ip_network("100.64.0.0/10"),   # RFC 6598 CGNAT
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local, all of it
+)
+
+
+def _blocked_ip(ip) -> bool:
+    """Whether an address is one the agent must not reach."""
+    # ::ffff:x.x.x.x is a distinct object from x.x.x.x to `ipaddress`, so a
+    # resolver returning the mapped form walks straight past a set membership
+    # test. Unwrap before deciding.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+                or any(ip in network for network in _EXTRA_BLOCKED))
+
+
+def url_is_safe(url: str) -> tuple[bool, str]:
+    """Whether `url` may be opened, and why not when it may not.
+
+    Every address the name resolves to is checked, not the first: a host with
+    one public and one private A record is the whole attack.
+    """
+    import socket
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError as exc:
+        return False, f"that is not a URL I can parse: {exc}"
+    if parts.scheme not in ("http", "https"):
+        return False, f"only http and https are allowed, not {parts.scheme!r}"
+    host = (parts.hostname or "").strip().rstrip(".").lower()
+    if not host:
+        return False, "the URL names no host"
+    if host in BLOCKED_HOSTS:
+        return False, f"{host} is a cloud metadata endpoint"
+
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        return ((False, f"{host} is not a public address")
+                if _blocked_ip(literal) else (True, ""))
+
+    # Behind a proxy the NAME is what travels and the proxy resolves it, so a
+    # local lookup answers a question nobody asked - and in the scored run it
+    # fails outright, because that container has no DNS of its own.
+    if any(os.environ.get(name) for name in
+           ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")):
+        return True, ""
+
+    try:
+        resolved = socket.getaddrinfo(host, parts.port or 0,
+                                      proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        return False, f"{host} does not resolve: {exc}"
+    for entry in resolved:
+        try:
+            address = ipaddress.ip_address(entry[4][0])
+        except ValueError:
+            continue
+        if _blocked_ip(address):
+            return False, f"{host} resolves to {address}, which is not public"
+    return True, ""
+
 MAX_TERMINALS = 4
 _TERMINALS: dict = {}
 

@@ -122,7 +122,7 @@ def openai_api_key() -> str:
 # constraint; the runs were starved on turns while being told to stop.
 #
 # 30 is derived, not picked: at ~4.4k tokens a turn the token budget binds around
-# turn 45, so 30 keeps BUDGET_TOKENS the real ceiling. Hermes caps a parent agent at
+# turn 45, so 30 keeps BUDGET_TOKENS the real ceiling. The reference implementation caps a parent agent at
 # 500 (agent/iteration_budget.py) and Vellum at 200 (maxStepsPerSession); 12 was a
 # fixture-era cost control that outlived its reason.
 MAX_TURNS = 30
@@ -177,9 +177,9 @@ MAX_COMPACTIONS = int(_env("AGENT_MAX_COMPACTIONS", "3"))
 # DEFAULT ON since 2026-08-31, reversing Cycle K's "build it only once traces
 # show it is needed". The traces now show it, from 637 scored rows: of 98 runs
 # that declared `done` and failed, 31 never ran the tests at all and 15 edited
-# AFTER their last test run - 47% ended on an unverified change. Hermes ships
+# AFTER their last test run - 47% ended on an unverified change. The reference implementation ships
 # theirs off; we have the measurement they presumably did not.
-# OFF, which is what Hermes ships: hermes_cli/config_defaults.py sets
+# OFF, which is what the reference implementation ships: its own config defaults sets
 # "verify_on_stop": False and TWO one-time migrations (config_migrations.py
 # _migrate_to_31/_32) turn it off on existing installs, because "the
 # verification narrative was more noise than signal". Measured here the same

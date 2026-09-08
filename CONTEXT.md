@@ -633,7 +633,7 @@ exists.
       - anything that can WRITE outside is `confirm` in interactive mode and
         `deny` in autonomous mode, which is how `confirm` already degrades
     FR-302's INTENT - no silent writes outside the declared root - survives
-    intact. Its mechanism moves from refusal to consent, which is where Hermes
+    intact. Its mechanism moves from refusal to consent, which is where the reference implementation
     puts it too: approval modes manual / smart / off, and no OS sandbox around
     tool execution anywhere in its 127k lines.
     NFR-201 keeps its wording FOR THE SCORED SUITE, where the container is
@@ -851,7 +851,7 @@ re-argue a decision that has already been measured.
     pyproject.toml     dependencies, package metadata
     Containerfile      sandbox image
     NOTICE             third-party attribution, when any code is derived
-    .gitignore         must include .agent/ and hermes_copy/
+    .gitignore         must include .agent/ and the reference checkout
     README.md          baseline and current numbers table
     agent/
       __init__.py
@@ -939,7 +939,7 @@ re-argue a decision that has already been measured.
                        model verbatim - measured, not feared. Its own file
                        because it is a curated PATTERN LIST rather than logic,
                        and mixing 40 issuer regexes into context.py would bury
-                       shrink(). Hermes's list, their redactor deliberately NOT
+                       shrink(). The reference implementation's list, their redactor deliberately NOT
                        vendored: applied to source it destroys type annotations
                        (`spent_tokens: int` -> `spent_tokens: ***`).
       skills.py        agentskills.io loading, and extraction at finish

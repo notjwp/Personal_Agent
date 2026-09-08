@@ -43,7 +43,7 @@ def _no_real_pacing(monkeypatch):
 def _isolate_state(tmp_path, monkeypatch):
     """Every test gets its own agent home. AUTOUSE - isolation is opt-OUT.
 
-    Ported from Hermes, which makes its hermetic environment autouse rather
+    Ported from the reference implementation, which makes its hermetic environment autouse rather
     than a fixture each test must remember to request. Ours was opt-in, and a
     test that forgot it wrote to the REAL TASKS_DB: three tests passed alone
     and failed together, which reads as a code bug and is not one.

@@ -2646,7 +2646,7 @@ def test_the_line_delta_survives_alongside_the_diff(tmp_workspace):
 
 
 def test_an_edit_that_does_not_persist_raises(tmp_workspace, monkeypatch):
-    """A write that did not land must not report success. Hermes makes this a hard
+    """A write that did not land must not report success. The reference implementation makes this a hard
     error rather than a silent flag, and a silent flag is how a run spends its
     remaining turns building on a file that never changed."""
     from pathlib import Path
@@ -2958,7 +2958,7 @@ def test_auth_failure_outranks_the_retryable_table():
     with pytest.raises(ProviderMisconfigured):
         _reraise_classified(AuthenticationError("no key"))
 
-# ================================ binary and container-document guards (Hermes)
+# ================================ binary and container-document guards (the reference implementation)
 
 
 PNG_HEADER = bytes([0x89, 0x50, 0x4E, 0x47])
@@ -3156,7 +3156,7 @@ def test_search_files_still_finds_text_matches(tmp_workspace):
     (tmp_workspace / 'a.py').write_text('needle here' + chr(10), encoding='utf-8')
     assert 'a.py' in search_files('needle')
 
-# ================================ posture: one loop, two briefs (Hermes's design)
+# ================================ posture: one loop, two briefs (the reference implementation's design)
 
 
 def test_an_empty_workspace_is_not_a_code_workspace(tmp_workspace):
@@ -3434,7 +3434,7 @@ def test_a_transport_error_is_caught_by_its_TYPE_with_no_marker_in_the_message()
 
 
 def test_a_WRAPPED_transport_error_is_caught_by_its_MESSAGE():
-    """Hermes carries a type list AND a substring list because the exception can
+    """the reference implementation carries a type list AND a substring list because the exception can
     arrive wrapped in something whose name no longer says transport."""
     class SomeWrapper(Exception):
         pass
@@ -3503,7 +3503,7 @@ def test_reading_a_real_file_outside_the_workspace_works(tmp_workspace, tmp_path
 # ===================================================== ask_user (FR-2xx, tool 1)
 
 def test_ask_user_returns_what_the_person_said(monkeypatch):
-    """The tool defines the schema; the INTERFACE does the asking. Hermes puts
+    """The tool defines the schema; the INTERFACE does the asking. The reference implementation puts
     the interaction in the platform layer for the same reason - a tool that
     owned a prompt would work in one surface and hang in the others."""
     from agent import tools
@@ -3540,7 +3540,7 @@ def test_ask_user_passes_the_choices_through(monkeypatch):
 
 
 def test_ask_user_bounds_the_choice_list(monkeypatch):
-    """Hermes caps at 4. An unbounded list is a menu nobody reads, and it is
+    """the reference implementation caps at 4. An unbounded list is a menu nobody reads, and it is
     also unbounded schema-adjacent text in the transcript."""
     from agent import tools
 
@@ -3641,7 +3641,7 @@ def test_read_document_reads_an_xlsx(tmp_workspace):
 
 
 def test_a_document_with_no_text_says_so(tmp_workspace):
-    """Hermes's lesson, and it is the one that matters: a scanned PDF or an
+    """the reference implementation's lesson, and it is the one that matters: a scanned PDF or an
     image-only docx extracts to nothing and looks IDENTICAL to an empty file.
     Silent data loss the model cannot detect."""
     import zipfile
@@ -3753,7 +3753,7 @@ def test_an_unknown_action_names_the_ones_that_exist(tmp_workspace):
 
 
 def test_the_content_is_bounded(tmp_workspace):
-    """Hermes caps it. An unbounded item is unbounded text on every turn that
+    """the reference implementation caps it. An unbounded item is unbounded text on every turn that
     lists it, and the transcript pays for it repeatedly."""
     from agent import tools
 
@@ -3846,7 +3846,7 @@ def test_a_finished_session_says_it_finished(tmp_workspace):
 
 
 def test_sessions_are_bounded(tmp_workspace):
-    """An agent that starts one per turn would hold the machine. Hermes bounds
+    """An agent that starts one per turn would hold the machine. The reference implementation bounds
     its pool for the same reason."""
     import sys
 
@@ -3954,3 +3954,139 @@ def test_the_switch_parses_a_comma_list(monkeypatch):
     finally:
         monkeypatch.delenv("AGENT_TOOLS_OFF")
         importlib.reload(config)
+
+
+# ======================================= url_is_safe, ported from the reference implementation (P)
+
+import pytest
+
+
+@pytest.mark.parametrize("url, why", [
+    ("http://169.254.169.254/latest/meta-data/", "AWS/GCP/Azure metadata"),
+    ("http://169.254.170.2/v2/credentials", "ECS task IAM credentials"),
+    ("http://[::ffff:169.254.169.254]/", "the IPv4-mapped form of the same"),
+    ("http://100.100.100.200/", "Alibaba metadata, inside CGNAT"),
+    ("http://metadata.google.internal/computeMetadata/v1/", "by name"),
+    ("http://127.0.0.1:8080/", "loopback"),
+    ("http://localhost:8080/", "loopback by name"),
+    ("http://10.0.0.5/", "private"),
+    ("http://192.168.1.1/", "private"),
+    ("http://172.16.0.1/", "private"),
+    ("http://100.64.0.1/", "CGNAT, which is_private does NOT cover"),
+    ("http://0.0.0.0/", "unspecified"),
+])
+def test_the_addresses_an_agent_must_not_reach(url, why, monkeypatch):
+    from agent import tools
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    ok, reason = tools.url_is_safe(url)
+    assert not ok, f"{url} was allowed, and it is {why}"
+    assert reason
+
+
+def test_cgnat_is_blocked_because_ipaddress_calls_it_neither(monkeypatch):
+    """The reason it needs its own network: ipaddress returns False for BOTH
+    is_private and is_global on 100.64.0.0/10, so a check built on is_private
+    lets carrier NAT and Tailscale straight through."""
+    import ipaddress
+
+    address = ipaddress.ip_address("100.64.0.1")
+    assert not address.is_private and not address.is_global
+
+    from agent import tools
+
+    assert tools._blocked_ip(address)
+
+
+def test_the_mapped_form_is_unwrapped_before_the_decision():
+    """::ffff:x.x.x.x is a DIFFERENT object to ipaddress, so a resolver that
+    returns the mapped form walks past a set-membership test."""
+    import ipaddress
+
+    from agent import tools
+
+    assert tools._blocked_ip(ipaddress.ip_address("::ffff:127.0.0.1"))
+    assert tools._blocked_ip(ipaddress.ip_address("::ffff:10.0.0.1"))
+
+
+def test_a_scheme_that_is_not_http_is_refused():
+    from agent import tools
+
+    for url in ("file:///etc/passwd", "gopher://x/", "ftp://host/f",
+                "data:text/html,<script>"):
+        ok, reason = tools.url_is_safe(url)
+        assert not ok and "http" in reason
+
+
+def test_a_public_address_is_allowed(monkeypatch):
+    from agent import tools
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    ok, reason = tools.url_is_safe("http://93.184.216.34/")
+    assert ok, reason
+
+
+def test_every_resolved_address_is_checked_not_the_first(monkeypatch):
+    """A host with one public and one private record is the whole attack, and
+    checking only the first answer misses it."""
+    import socket
+
+    from agent import tools
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80)),
+    ])
+    ok, reason = tools.url_is_safe("http://split-horizon.example/")
+    assert not ok and "169.254.169.254" in reason
+
+
+def test_a_proxy_defers_resolution_rather_than_guessing(monkeypatch):
+    """Behind a proxy the NAME travels and the proxy resolves it. The scored
+    container has no DNS of its own, so resolving locally fails outright."""
+    import socket
+
+    from agent import tools
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:8888")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("resolved locally while a proxy was configured")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _boom)
+    assert tools.url_is_safe("http://example.com/")[0]
+
+
+def test_a_host_that_does_not_resolve_is_refused_not_allowed(monkeypatch):
+    """Fails CLOSED, unlike robots_allows which deliberately fails open. A name
+    that cannot be checked has not been shown to be safe."""
+    import socket
+
+    from agent import tools
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+
+    def _fail(*_a, **_k):
+        raise socket.gaierror("Name or service not known")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fail)
+    ok, reason = tools.url_is_safe("http://nowhere.invalid/")
+    assert not ok and "resolve" in reason
+
+
+def test_a_url_with_no_host_is_refused():
+    from agent import tools
+
+    assert not tools.url_is_safe("http:///path")[0]
+    assert not tools.url_is_safe("")[0]
+
+
+def test_a_trailing_dot_does_not_evade_the_name_blocklist(monkeypatch):
+    """metadata.google.internal. is the same host to a resolver."""
+    from agent import tools
+
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    ok, _ = tools.url_is_safe("http://metadata.google.internal./")
+    assert not ok
