@@ -5,6 +5,90 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Profile distillation measured, and the split cannot answer the question (2026-09-08)
+
+**One change: `AGENT_PROFILE_DISTIL`.** `on` (the committed default, shipped
+2026-09-05 in `5d748f7`) against `off`, same key, same endpoint, same caps,
+same code. The control ran as a shell export, so the committed default never
+moved and there is nothing to revert.
+
+Shipped and never scored, which this project's own rules call a failure rather
+than a feature. This is the cycle that was meant to settle it. **It did not**,
+and the reason is worth more than the score.
+
+### Result: 18/18 -> 18/18 (+0)
+
+| case | distil ON | distil OFF |
+|---|---|---|
+| `profile-marker` | 3/3 | 3/3 |
+| `profile-naming` | 3/3 | 3/3 |
+| `profile-units` | 3/3 | 3/3 |
+| `recall-buildcmd` | 3/3 | 3/3 |
+| `recall-deploykey` | 3/3 | 3/3 |
+| `recall-oncall` | 3/3 | 3/3 |
+| | **18/18** | **18/18** |
+
+`20260908T050813Z` (172,512 tokens, one blocked run retried and passed) against
+`20260908T054551Z` (156,721 tokens). The 19th row in the ON arm is the blocked
+one: excluded, not counted as a failure.
+
+### The control was not a control
+
+**`remember` fired in 9 of 9 profile runs in BOTH arms** and wrote the rule to
+`AGENT.md` by itself. The control arm's profiles are real, only smaller - 90 to
+143 bytes against the ON arm's 203 to 248. The comparison was never *profile*
+against *no profile*; it was *written twice* against *written once*.
+
+That contradicts the premise distillation was built on. The stated provocation
+was `remember` firing 3 of 117, then 136 of 13,049 tool calls, with `AGENT.md`
+not existing on this machine at all. On these fixtures it fires **1/1, every
+time** - and the fixture text says why:
+
+> "A standing rule for all my work: every file you create must start with the
+> line ORIGIN: quartzite-desk. **Always, without being asked.**"
+
+That is close to the strongest possible cue to call `remember`. The cases
+provoke the tool that real use does not, so the mechanism under test is
+redundant on them by construction.
+
+### Three things are true, and collapsing them into a verdict would be wrong
+
+- distillation **fired correctly** - 9 of 9 homes carry the right rule, and it
+  is the shape this project's own lesson prefers: a rule, not a request.
+- it **moved no number**, which the Iron Law normally answers with revert.
+- the rig **cannot see the gap it was built for**. Every scored case-run starts
+  from a blank home and runs two sessions; the real machine has many sessions
+  and a persistent home, which is where `AGENT.md` was missing.
+
+Reverting on a +0 from a measurement incapable of producing anything else
+applies the Iron Law to evidence it does not cover. Keeping it unmeasured is
+the state this project calls a failure. **KEPT, and marked UNMEASURED** -
+neither outcome is earned yet.
+
+### What this actually found: a fixture defect
+
+The three `profile-*` cases have been quoted as evidence the profile mechanism
+works. **They pass with that mechanism switched off.** Same shape as
+`author-release` scoring 0/9 because CONVENTIONS.md contradicted its own check,
+and that one was fixed on four words.
+
+The next cycle is a fourth case whose session 1 states the rule INCIDENTALLY -
+no "standing rule", no "always", no "without being asked". Something closer to
+*"I've set the build to report in centiseconds, so 200cs is two seconds."* If
+`remember` stops firing there, the arms separate and distillation gets a real
+verdict. Verify it three ways first, per the standing lesson: untouched fails,
+a plausible answer without the knowledge fails, the correct answer passes.
+
+### Not measured here, and still open
+
+`MEMORY_INJECT_CHARS` caps the whole injected block at 1,500 and `profile()` is
+placed FIRST, so a growing `AGENT.md` evicts the episode lane from the tail
+with no error anywhere. The `recall` split cannot see it - its homes hold three
+episodes and its profiles are ~250 bytes. That risk is unmeasured, and this
+cycle does not touch it.
+
+---
+
 ## A 4.6x larger model changed nothing on `real` (2026-09-05)
 
 **One change: `OPENAI_MODEL`.** `nvidia/nemotron-3-super-120b-a12b` ->

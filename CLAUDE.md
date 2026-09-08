@@ -49,6 +49,12 @@ Ordered by how often they have caught something.
 - **A fixture must not contain its own answer, and two-way verification will not catch it.** Verify
   three ways: untouched fails, a plausible answer *without* the knowledge fails, the correct answer
   passes.
+- **A fixture that PROVOKES the mechanism it controls for cannot measure it.** The three
+  `profile-*` cases scored 18/18 with `AGENT_PROFILE_DISTIL` on and 18/18 with it off,
+  because `remember` fired 9 of 9 in BOTH arms and wrote the profile itself. Their session-1
+  text is "a standing rule... always, without being asked" - close to the strongest possible
+  cue to call the tool the change existed to replace, which fires 136 times in 13,049 calls
+  in real use. Check what the fixture's WORDING invites before reading a +0 as a verdict.
 - **Do not quote a set-level percentage when only part of the set is measured.** "4/10" rests on
   four of six real cases, and they are the ones that were tuned against.
 - **A pass rate is not evidence for a mechanism that did not fire.** Check the instrumentation says
