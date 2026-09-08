@@ -1173,7 +1173,7 @@ def inner(args) -> int:
     _, _, before = run_check(case)
 
     # Imported after setup so a rig failure needs no agent.
-    from agent import mcp, memory, skills
+    from agent import mcp, memory, skills, tools
     from agent.graph import get_app, new_state
     from agent.provider import ProviderMisconfigured, ProviderUnavailable
 
@@ -1213,6 +1213,19 @@ def inner(args) -> int:
     # Captured while the tool set is LIVE. record() runs after shutdown(), so reading
     # the exposure back then would report the built-ins alone and silently understate
     # every MCP run. Carried on the trace, like `tamper` and `model` already are.
+    # A scored run is unattended, so `ask_user` returns NOBODY_THERE and the tool
+    # can never be measured. A case that declares `answers` supplies a stand-in
+    # person; every question is recorded, because a pass rate is not evidence for
+    # a mechanism that did not fire.
+    scripted = list(case.get("answers") or ())
+    if scripted:
+        def answer(question, choices, _left=scripted):
+            reply = _left.pop(0) if _left else ""
+            trace.append({"kind": "asked", "question": question[:200],
+                          "choices": list(choices), "answer": reply})
+            return reply
+        tools.ASK = answer
+
     trace.append({"kind": "tools", **tool_exposure(), "mcp": mcp_tools,
                   "memory": bool(os.environ.get("AGENT_MEMORY", "on").strip().lower()
                                  not in ("0", "off", "false")),
@@ -1253,6 +1266,8 @@ def inner(args) -> int:
     # Before the check runs: a live server subprocess holding the port makes the
     # check fail for a reason that has nothing to do with the agent.
     mcp.shutdown()
+    tools.stop_terminals()
+    tools.ASK = None
     memory.deactivate()
     skills.deactivate()
 

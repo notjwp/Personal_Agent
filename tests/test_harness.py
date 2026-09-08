@@ -902,3 +902,76 @@ def test_a_missing_dotenv_is_not_an_error(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["harness.py", "--check-provider"])
 
     assert harness.main() == 0
+
+
+# ============================================== the case file itself (Phase P)
+
+# Every key a case may carry. A case is data the harness reads by name, so a
+# field it does not know is a field that silently does nothing - which is how
+# `answers` could have been written `answer` and measured nothing at all.
+CASE_FIELDS = {
+    "id", "split", "family", "goal", "sessions", "setup", "setups", "check",
+    "egress", "budget", "max_turns", "skills_dir", "answers",
+    # real-*: where the repository and its fix came from.
+    "repo_url", "parent_sha", "fix_sha", "files", "suite_seconds",
+    # skill-*: which skill the run was supposed to open.
+    "skill_expected",
+}
+
+
+def _cases():
+    path = pathlib.Path(__file__).resolve().parent.parent / "eval" / "tasks.jsonl"
+    return [json.loads(line) for line in
+            path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_every_case_field_is_one_the_harness_reads():
+    for case in _cases():
+        unknown = set(case) - CASE_FIELDS
+        assert not unknown, f"{case['id']} carries {unknown}, which nothing reads"
+
+
+def test_every_case_names_a_fixture_that_exists():
+    """setup is `scripts/reset.sh <id>`, and reset.sh exits 1 on a missing
+    fixture - which the harness records as setup-failed, not as a score."""
+    root = pathlib.Path(__file__).resolve().parent.parent / "eval" / "fixtures"
+    for case in _cases():
+        for setup in case.get("setups") or [case["setup"]]:
+            fixture = setup.rsplit(maxsplit=1)[-1]
+            assert (root / fixture).is_dir(), f"{case['id']}: no fixture {fixture}"
+
+
+def test_case_ids_are_unique():
+    ids = [case["id"] for case in _cases()]
+    assert len(ids) == len(set(ids))
+
+
+def test_a_multi_session_case_ends_on_its_own_goal():
+    """`goal` is what the row reports and `sessions[-1]` is what actually ran.
+    They diverging is how a trace comes to describe a run that never happened."""
+    for case in _cases():
+        if case.get("sessions"):
+            assert case["goal"] == case["sessions"][-1], case["id"]
+
+
+def test_scripted_answers_reach_the_ask_hook(monkeypatch, tmp_path):
+    """A scored run is unattended, so ask_user returns NOBODY_THERE and the tool
+    cannot be measured at all. `answers` is the stand-in person; if it stops
+    being wired up, the case still passes for the wrong reason."""
+    from agent import tools
+
+    case = next(c for c in _cases() if c["id"] == "ask-environment")
+    assert case.get("answers"), "ask-environment lost its scripted answer"
+
+    trace: list = []
+    scripted = list(case["answers"])
+
+    def answer(question, choices, _left=scripted):
+        reply = _left.pop(0) if _left else ""
+        trace.append({"kind": "asked", "question": question[:200],
+                      "choices": list(choices), "answer": reply})
+        return reply
+
+    monkeypatch.setattr(tools, "ASK", answer)
+    assert tools.TOOLS["ask_user"]["fn"]("which environment?") == "gamma"
+    assert trace and trace[0]["answer"] == "gamma"
