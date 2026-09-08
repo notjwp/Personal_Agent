@@ -33,8 +33,9 @@ from textual.worker import Worker, WorkerState
 from agent import cli
 from agent import config as settings
 from agent import graph
+from agent import tools
 from agent.ui import panes, theme, tiling
-from agent.ui.modals import ApprovalScreen, PlanScreen
+from agent.ui.modals import ApprovalScreen, AskScreen, PlanScreen
 
 # ANSI Shadow, tightly kerned: zero added spacing between letters. The gaps
 # that remain are intrinsic to the letterforms - the diagonal of N and the
@@ -541,11 +542,24 @@ class WorkspaceScreen(Screen):
         self.start(graph.continue_state(prior, text) if prior.get("messages")
                    else graph.new_state(text))
 
+    def ask(self, question: str, choices: list[str]) -> str:
+        """`ask_user` reaching a person, from the graph's worker thread.
+
+        The same primitive the approval pause uses in reverse: call_from_thread
+        runs the modal on the event loop and BLOCKS this thread until it is
+        answered. A skipped question returns "", and the tool turns that into
+        its own use-your-best-judgement text.
+        """
+        return self.app.call_from_thread(
+            self.app.push_screen_wait, AskScreen(question, choices)) or ""
+
     @work(thread=True, exclusive=True)
     def start(self, payload: dict | None) -> None:
         """The graph, on a worker thread. Everything it says crosses back to the
         event loop through call_from_thread; nothing here touches a widget."""
         app = self.app
+        # The TOOL owns the schema, the SURFACE owns the asking.
+        tools.ASK = self.ask
         trace = cli.LiveTrace(sink=lambda e: app.call_from_thread(self.on_trace, e))
         cfg = {"configurable": {
             "thread_id": self.thread,

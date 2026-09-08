@@ -24,7 +24,7 @@ import uuid
 from langgraph.types import Command
 
 from agent import config as settings
-from agent import mcp, memory, skills
+from agent import mcp, memory, skills, tools
 from agent.graph import get_app, new_state
 
 RULE = "-" * 64
@@ -135,6 +135,29 @@ def ask_plan(payload: dict) -> str:
         print("    unrecognised - answer a, r or q")
 
 
+def ask_question(question: str, choices: list[str]) -> str:
+    """One question from the agent, and the answer (`ask_user`).
+
+    EOFError returns "" so the tool falls back to its own no-one-is-there
+    message: the same rule as the approval prompt, where silence is not
+    consent - here it is not an answer either.
+    """
+    print(f"\n  +-- THE AGENT IS ASKING {'-' * 38}")
+    print(f"  | {question}")
+    for number, choice in enumerate(choices, 1):
+        print(f"  |   {number}. {choice}")
+    print(f"  +{'-' * 61}")
+    prompt = "    answer (or a number) > " if choices else "    answer > "
+    try:
+        answer = input(prompt).strip()
+    except EOFError:
+        print("(no terminal)")
+        return ""
+    if choices and answer.isdigit() and 1 <= int(answer) <= len(choices):
+        return choices[int(answer) - 1]
+    return answer
+
+
 def ask_human(payload: dict) -> str:
     """Render a paused call and read one keystroke (FR-306, NFR-801).
 
@@ -181,6 +204,10 @@ def run_session(goal: str | None, thread: str, app) -> int:
     task's identity IS its thread id.
     """
     trace = LiveTrace()
+    # ask_user reaches a person through here. The TOOL owns the schema, the
+    # SURFACE owns the asking, and an unset hook answers "nobody is there"
+    # rather than blocking - which is what --worker and cron depend on.
+    tools.ASK = ask_question
     cfg = {"configurable": {
         "thread_id": thread,
         "autonomous": False,      # the switch that makes `confirm` pause, not refuse

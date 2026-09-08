@@ -759,3 +759,79 @@ def test_a_finished_run_leaves_no_spinner_behind():
         assert live_timers(app.screen) == []
 
     drive(app, script)
+
+
+# ===================================================== ask_user, on this surface
+
+def test_the_ask_modal_returns_what_was_typed():
+    from agent.ui.modals import AskScreen
+
+    class Asked(screens.NoesisApp):
+        def __init__(self):
+            super().__init__(FakeGraph(), thread="t")
+            self.answer = "UNSET"
+
+    app = Asked()
+
+    async def script(pilot):
+        app.push_screen(AskScreen("which file?", ["alpha", "beta"]),
+                        callback=lambda r: setattr(app, "answer", r))
+        await pilot.pause()
+        app.screen.query_one("#ask-answer", Input).value = "beta"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    drive(app, script)
+    assert app.answer == "beta"
+
+
+def test_a_number_picks_that_choice():
+    from agent.ui.modals import AskScreen
+
+    app = screens.NoesisApp(FakeGraph(), thread="t")
+    app.answer = "UNSET"
+
+    async def script(pilot):
+        app.push_screen(AskScreen("which?", ["alpha", "beta", "gamma"]),
+                        callback=lambda r: setattr(app, "answer", r))
+        await pilot.pause()
+        app.screen.query_one("#ask-answer", Input).value = "3"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    drive(app, script)
+    assert app.answer == "gamma"
+
+
+def test_skipping_the_question_costs_a_guess_not_the_run():
+    """Escape is not a refusal here - there is nothing to refuse. It returns ""
+    and the TOOL turns that into its own use-your-best-judgement text."""
+    from agent.ui.modals import AskScreen
+
+    app = screens.NoesisApp(FakeGraph(), thread="t")
+    app.answer = "UNSET"
+
+    async def script(pilot):
+        app.push_screen(AskScreen("which?", ["alpha"]),
+                        callback=lambda r: setattr(app, "answer", r))
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+
+    drive(app, script)
+    assert app.answer == ""
+
+
+def test_the_workspace_hands_the_tool_a_way_to_ask():
+    """The hook is what makes ask_user work here rather than answer "nobody is
+    there". Unset, every question would be a guess."""
+    from agent import tools
+
+    app = screens.NoesisApp(FakeGraph(), goal="do a thing", thread="t")
+
+    async def script(pilot):
+        await app.screen.workers.wait_for_complete()
+        await pilot.pause()
+        assert tools.ASK == app.screen.ask
+
+    drive(app, script)

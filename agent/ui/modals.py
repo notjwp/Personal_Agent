@@ -12,7 +12,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Static
+from textual.widgets import Button, Input, Label, Static
 
 from agent import cli
 
@@ -59,6 +59,44 @@ class ApprovalScreen(ModalScreen[str]):
 
     def action_refuse(self) -> None:
         self.dismiss("deny")
+
+
+class AskScreen(ModalScreen[str]):
+    """The agent's own question, and one answer (`ask_user`).
+
+    Unlike the two below, dismissing this is not a refusal - there is nothing to
+    refuse. An empty answer sends the tool back its own "use your best
+    judgement" text, so a dismissed question costs a guess rather than a run.
+    """
+
+    BINDINGS = [("escape", "skip", "skip")]
+
+    def __init__(self, question: str, choices: list[str]) -> None:
+        super().__init__()
+        self._question = question
+        self._choices = choices
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ask"):
+            yield Label("THE AGENT IS ASKING", id="ask-title")
+            yield Static(Text(self._question), classes="why")
+            for number, choice in enumerate(self._choices, 1):
+                yield Static(Text(f"  {number}. {choice}"), classes="arg")
+            yield Input(placeholder="answer, or a number  ·  escape to skip",
+                        id="ask-answer")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    @on(Input.Submitted, "#ask-answer")
+    def _answered(self, event: Input.Submitted) -> None:
+        answer = event.value.strip()
+        if self._choices and answer.isdigit() and 1 <= int(answer) <= len(self._choices):
+            answer = self._choices[int(answer) - 1]
+        self.dismiss(answer)
+
+    def action_skip(self) -> None:
+        self.dismiss("")
 
 
 class PlanScreen(ModalScreen[str]):

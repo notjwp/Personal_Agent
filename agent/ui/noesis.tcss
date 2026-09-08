@@ -439,3 +439,33 @@ Button.-error {
     background: $error;
     color: $background;
 }
+
+/* The agent's own question. Same chrome as the approval modal, accent rather
+   than error: it is asking, not warning. */
+AskScreen {
+    align: center middle;
+}
+
+#ask {
+    width: 78;
+    height: auto;
+    padding: 1 2;
+    background: $surface;
+    color: $foreground;
+    border: thick $accent;
+}
+
+#ask-title {
+    color: $accent;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#ask-answer {
+    height: 1;
+    margin-top: 1;
+    background: $panel;
+    color: $foreground;
+    border: none;
+    padding: 0 1;
+}

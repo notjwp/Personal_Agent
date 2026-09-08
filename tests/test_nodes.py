@@ -3498,3 +3498,75 @@ def test_reading_a_real_file_outside_the_workspace_works(tmp_workspace, tmp_path
     outside.write_text("hello from outside\n", encoding="utf-8")
     out = tools.TOOLS["read_file"]["fn"](str(outside), 0, 5)
     assert "hello from outside" in out
+
+
+# ===================================================== ask_user (FR-2xx, tool 1)
+
+def test_ask_user_returns_what_the_person_said(monkeypatch):
+    """The tool defines the schema; the INTERFACE does the asking. Hermes puts
+    the interaction in the platform layer for the same reason - a tool that
+    owned a prompt would work in one surface and hang in the others."""
+    from agent import tools
+
+    monkeypatch.setattr(tools, "ASK", lambda question, choices: "the second one")
+    assert tools.TOOLS["ask_user"]["fn"]("which file?") == "the second one"
+
+
+def test_ask_user_does_not_block_when_nobody_is_there(monkeypatch):
+    """A worker, a cron task and the eval harness all run with no human. The
+    tool must ANSWER rather than hang - the same shape as `confirm` degrading
+    to `deny` unattended."""
+    from agent import tools
+
+    monkeypatch.setattr(tools, "ASK", None)
+    out = tools.TOOLS["ask_user"]["fn"]("which file?")
+    assert "no one" in out.lower() or "best judgement" in out.lower()
+    assert "judgement" in out.lower()
+
+
+def test_ask_user_passes_the_choices_through(monkeypatch):
+    from agent import tools
+
+    seen = {}
+
+    def _ask(question, choices):
+        seen.update(question=question, choices=choices)
+        return choices[0]
+
+    monkeypatch.setattr(tools, "ASK", _ask)
+    got = tools.TOOLS["ask_user"]["fn"]("pick", "alpha | beta | gamma")
+    assert seen["choices"] == ["alpha", "beta", "gamma"]
+    assert got == "alpha"
+
+
+def test_ask_user_bounds_the_choice_list(monkeypatch):
+    """Hermes caps at 4. An unbounded list is a menu nobody reads, and it is
+    also unbounded schema-adjacent text in the transcript."""
+    from agent import tools
+
+    seen = {}
+    monkeypatch.setattr(tools, "ASK",
+                        lambda q, c: seen.setdefault("n", len(c)) or c[0])
+    tools.TOOLS["ask_user"]["fn"]("pick", " | ".join(f"o{i}" for i in range(12)))
+    assert seen["n"] <= tools.MAX_CHOICES
+
+
+def test_ask_user_survives_an_interface_that_raises(monkeypatch):
+    """FR-208: a tool never propagates. An interface that dies mid-question
+    must not end the run."""
+    from agent import tools
+
+    def _boom(question, choices):
+        raise RuntimeError("terminal closed")
+
+    monkeypatch.setattr(tools, "ASK", _boom)
+    out = tools.TOOLS["ask_user"]["fn"]("which file?")
+    assert "judgement" in out.lower()
+
+
+def test_ask_user_is_read_risk():
+    """Asking changes nothing, so it must not pause for approval - a confirm
+    prompt to permit a question is two prompts for one answer."""
+    from agent import policy
+
+    assert policy.risk_of("ask_user") == "read"

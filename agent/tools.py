@@ -509,6 +509,49 @@ def robots_allows(url: str, agent: str = "*") -> bool:
     return True if parser is None else parser.can_fetch(agent, url)
 
 
+# The interface supplies this: cli.py at a terminal, the TUI in a modal. The
+# TOOL owns the schema and the bounds, the SURFACE owns the asking - Hermes
+# splits it the same way, because a tool that owned a prompt would work in one
+# surface and hang in every other.
+ASK = None
+
+# Four, as Hermes caps it. A longer list is a menu nobody reads, and it is
+# unbounded text in the transcript on every turn that follows.
+MAX_CHOICES = 4
+
+# What comes back when no one is there. A worker, a cron task and the eval
+# harness all run unattended, and a tool that BLOCKS there hangs the run - the
+# same shape as `confirm` degrading to `deny` without a human.
+NOBODY_THERE = ("No one is available to answer. Use your best judgement, say "
+                "which reading you chose, and continue.")
+
+
+@tool(risk="read")
+def ask_user(question: str, choices: str = "") -> str:
+    """Ask the person a question and wait for their answer. Use it when the goal
+    is genuinely ambiguous and guessing would waste the run - which file they
+    meant, which of two behaviours they want. Do NOT use it for anything you can
+    find out by reading or searching; look first, ask second.
+
+    question: What to ask, in one sentence.
+    choices: Optional answers separated by ' | ', best first. Free text if empty.
+    """
+    if ASK is None:
+        return NOBODY_THERE
+    # A declared schema is not enforcement: `choices` arrives as a string here
+    # and as a list from a model that read the description loosely.
+    if isinstance(choices, (list, tuple)):
+        options = [str(c).strip() for c in choices]
+    else:
+        options = [part.strip() for part in str(choices or "").split("|")]
+    options = [option for option in options if option][:MAX_CHOICES]
+    try:
+        answer = ASK(str(question), options)
+    except Exception:                       # noqa: BLE001 - FR-208, never propagates
+        return NOBODY_THERE
+    return str(answer).strip() or NOBODY_THERE
+
+
 @tool(risk="read")
 def web_search(query: str, limit: int = 5) -> str:
     """Search the web for current information and return ranked results: title,
@@ -569,6 +612,7 @@ def web_search(query: str, limit: int = 5) -> str:
 # whole registration. Order is deterministic: tools render first in the prompt.
 TOOLS = {fn.__name__: fn.spec for fn in (
     read_file, search_files, write_file, edit_file, run_python, run_shell,
+    ask_user,
     web_search)}
 
 
