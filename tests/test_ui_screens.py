@@ -640,3 +640,122 @@ def test_a_split_starts_no_timer_either():
         assert live_timers(app.screen) == []
 
     drive(app, script)
+
+
+class Counting(FakeGraph):
+    """A graph that says how often the checkpoint database was read."""
+
+    def __init__(self, values=None):
+        super().__init__(values)
+        self.reads = 0
+
+    def get_state(self, cfg):
+        self.reads += 1
+        return super().get_state(cfg)
+
+
+def test_streaming_never_touches_the_checkpoint_database():
+    """Section 12.1: nothing touches disk or SQLite on the render path.
+    MEASURED at 200 reads for 200 tokens before the state was cached."""
+    graph = Counting()
+    app = screens.NoesisApp(graph, thread="t")
+
+    async def script(pilot):
+        before = graph.reads
+        for _ in range(200):
+            app.screen.on_text("token ")
+        await pilot.pause()
+        assert graph.reads == before, f"{graph.reads - before} reads while streaming"
+
+    drive(app, script)
+
+
+def test_a_tool_line_does_not_reread_the_state_either():
+    graph = Counting()
+    app = screens.NoesisApp(graph, thread="t")
+
+    async def script(pilot):
+        before = graph.reads
+        for _ in range(20):
+            app.screen.on_trace({"kind": "tool", "tool": "read_file",
+                                 "summary": "x.py", "duration_ms": 5})
+        await pilot.pause()
+        assert graph.reads == before
+
+    drive(app, script)
+
+
+def test_a_turn_boundary_DOES_reread_it():
+    """The cache would be a bug of its own if nothing ever refreshed it: turns,
+    tokens and the verdict all move at a turn boundary."""
+    graph = Counting()
+    app = screens.NoesisApp(graph, thread="t")
+
+    async def script(pilot):
+        before = graph.reads
+        app.screen.on_trace({"kind": "terminal", "verdict": "done", "turns": 2,
+                             "spent_tokens": 91})
+        await pilot.pause()
+        assert graph.reads > before
+
+    drive(app, script)
+
+
+def test_opening_a_thread_replaces_the_workspace_rather_than_stacking():
+    """Each workspace holds a transcript, panes and a worker, and nothing ever
+    popped one. MEASURED: five threads left six screens on the stack."""
+    app = screens.NoesisApp(FakeGraph(), thread="t")
+
+    async def script(pilot):
+        depth = len(app.screen_stack)
+        for index in range(5):
+            app.open_workspace(thread=f"thread{index}")
+            await pilot.pause()
+        assert len(app.screen_stack) == depth
+        assert app.screen.thread == "thread4"
+
+    drive(app, script)
+
+
+def test_the_landing_still_pushes_rather_than_replacing_itself():
+    app = screens.NoesisApp(FakeGraph())
+
+    async def script(pilot):
+        depth = len(app.screen_stack)
+        app.open_workspace(goal="do a thing")
+        await pilot.pause()
+        assert len(app.screen_stack) == depth + 1
+
+    drive(app, script)
+
+
+def test_the_status_bar_spins_only_while_the_graph_is_working():
+    """A turn takes tens of seconds. The old TUI said "working..."; dropping it
+    left the screen looking hung. The interval exists only while the graph does."""
+    app = workspace()
+
+    async def script(pilot):
+        assert live_timers(app.screen) == []
+        app.screen.spin(True)
+        await pilot.pause()
+        assert live_timers(app.screen) != []
+        node = app.screen.query_one("#status", Static)
+        shown = getattr(node.content, "plain", str(node.content))
+        assert shown[0] in screens.SPINNER
+        app.screen.spin(False)
+        await pilot.pause()
+        assert live_timers(app.screen) == [], "the spinner outlived the work"
+
+    drive(app, script)
+
+
+def test_a_finished_run_leaves_no_spinner_behind():
+    graph = FakeGraph()
+    app = screens.NoesisApp(graph, goal="do a thing", thread="t")
+
+    async def script(pilot):
+        await app.screen.workers.wait_for_complete()
+        await pilot.pause()
+        assert live_timers(app.screen) == []
+
+    drive(app, script)

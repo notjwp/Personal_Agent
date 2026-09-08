@@ -51,6 +51,9 @@ LOGO = (
 
 LOGO_WIDTH = 46
 
+# One frame per 80ms while the graph is working, and no timer at all otherwise.
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 # The slash commands, and the only list of them: the suggester completes from
 # these keys, `command()` dispatches on them, and /help prints them.
 COMMANDS = {
@@ -370,6 +373,12 @@ class WorkspaceScreen(Screen):
         self._stream = ""
         self._recalled = False
         self._step = None
+        self._spin = None
+        self._frame = 0
+        # The graph's state, cached. `values()` reads the checkpoint DATABASE,
+        # and section 12.1 keeps disk off the render path - measured at 200
+        # SQLite reads for 200 streamed tokens before this existed.
+        self._state: dict = {}
 
     # --------------------------------------------------------------- layout
 
@@ -392,8 +401,7 @@ class WorkspaceScreen(Screen):
             self.tiles = tiling.split(self.tiles, "chat", self._opening,
                                      *self.area())
         self.rebuild()
-        self.paint_status()
-        prior = self.values()
+        prior = self.reread()
         for renderable in replay(prior.get("messages") or []):
             self.transcript.append(renderable)
         if self.transcript:
@@ -521,8 +529,15 @@ class WorkspaceScreen(Screen):
     def values(self) -> dict:
         return self.app.graph.get_state(self.cfg()).values or {}
 
+    def reread(self) -> dict:
+        """Refresh the cached state. Called where it can actually have changed -
+        a turn boundary - and never from the streaming path."""
+        self._state = self.values()
+        self.paint_status()
+        return self._state
+
     def begin(self, text: str) -> None:
-        prior = self.values()
+        prior = self.values()          # a write path, not a render path
         self.start(graph.continue_state(prior, text) if prior.get("messages")
                    else graph.new_state(text))
 
@@ -596,7 +611,11 @@ class WorkspaceScreen(Screen):
                      "stuck": "row--muted"}.get(entry["verdict"], "row--denied")
             self.note(f"\n{entry['verdict']} - {entry['turns']} turns, "
                       f"{entry['spent_tokens']:,} tokens", style)
-        self.paint_status()
+        # Only a turn boundary can move turns, tokens or the verdict.
+        if kind in ("model", "step", "terminal"):
+            self.reread()
+        else:
+            self.paint_status()
 
     def on_text(self, text: str) -> None:
         """Model prose as it arrives, buffered on the status line.
@@ -635,11 +654,33 @@ class WorkspaceScreen(Screen):
 
     @on(Worker.StateChanged)
     def _worker_done(self, event: Worker.StateChanged) -> None:
+        if event.state is WorkerState.RUNNING:
+            self.spin(True)
+            return
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR,
                            WorkerState.CANCELLED):
+            self.spin(False)
             self.flush()
+            self.reread()
         if event.state is WorkerState.SUCCESS and self._queued:
             self.begin(self._queued.pop(0))
+
+    def spin(self, on: bool) -> None:
+        """A turn takes tens of seconds, and a screen that shows nothing for
+        that long reads as hung rather than busy. The interval exists only
+        while the graph does (section 11)."""
+        if on and self._spin is None:
+            self._spin = self.set_interval(0.08, self._tick)
+            self.paint_status()        # at once, not 80ms after work started
+        elif not on and self._spin is not None:
+            self._spin.stop()
+            self._spin = None
+            self._frame = 0
+            self.paint_status()
+
+    def _tick(self) -> None:
+        self._frame = (self._frame + 1) % len(SPINNER)
+        self.paint_status()
 
     def command(self, text: str) -> bool:
         """Run a slash command. False means it was an ordinary message."""
@@ -711,7 +752,7 @@ class WorkspaceScreen(Screen):
         Never blank. A status bar that can show no step is the requirement
         unmet, so the no-plan case says so rather than rendering nothing.
         """
-        values = self.values()
+        values = self._state
         plan = values.get("plan") or self.plan
         if values.get("phase") == "planning":
             step = "planning"
@@ -727,10 +768,11 @@ class WorkspaceScreen(Screen):
                 f"{values.get('max_turns', settings.MAX_TURNS)}",
                 f"{values.get('spent_tokens', 0):,}",
                 values.get("verdict") or "running"]
-        line = Text("  ·  ".join(bits), style="row--muted")
-        if self._stream.strip():
-            line = Text(self._stream.strip()[-160:], style="row--muted")
-        self.query_one("#status", Static).update(line)
+        body = (self._stream.strip()[-160:] if self._stream.strip()
+                else "  ·  ".join(bits))
+        mark = f"{SPINNER[self._frame]} " if self._spin is not None else ""
+        self.query_one("#status", Static).update(
+            Text(f"{mark}{body}", style="row--muted"))
 
 
 # ====================================================================== app
@@ -776,8 +818,17 @@ class NoesisApp(App):
 
     def open_workspace(self, goal: str | None = None, thread: str | None = None,
                        pane: str | None = None) -> None:
-        self.push_screen(WorkspaceScreen(thread or uuid.uuid4().hex[:8],
-                                         goal=goal, pane=pane))
+        """SWITCH when a workspace is already open, push when one is not.
+
+        Pushing every time stacked one screen per thread opened - each with its
+        own transcript, panes and worker - and nothing ever popped one.
+        """
+        screen = WorkspaceScreen(thread or uuid.uuid4().hex[:8],
+                                 goal=goal, pane=pane)
+        if self.screen_stack and isinstance(self.screen, WorkspaceScreen):
+            self.switch_screen(screen)
+        else:
+            self.push_screen(screen)
 
     def action_next_theme(self) -> None:
         theme.apply(self, theme.cycle(self.theme), self.mode)
