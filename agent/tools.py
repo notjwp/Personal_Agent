@@ -1,6 +1,6 @@
 """The built-in tools, and the risk each one carries.
 
-Seven of them, and their schemas are DERIVED from the signature and docstring by
+Nine of them, and their schemas are DERIVED from the signature and docstring by
 `@tool` in agent/registry.py (FR-207). They were hand-written until tool eight,
 when §13's arithmetic - ~25 lines plus ~5 per tool for the machinery against ~8
 per tool written out - stopped favouring the dicts.
@@ -15,8 +15,11 @@ one risk is what §13 cut the INSTALL set for.
 Adding a tool touches this file only (NFR-601).
 """
 import difflib
+import html
+import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import time
@@ -509,6 +512,98 @@ def robots_allows(url: str, agent: str = "*") -> bool:
     return True if parser is None else parser.can_fetch(agent, url)
 
 
+# Where the text lives inside each format, and the tag that ends a block. These
+# are all zip archives of XML, which is why no third-party library is needed -
+# Hermes reads docx, xlsx and ipynb the same way for the same reason.
+DOCUMENTS = {
+    ".docx": ("word/document.xml", "</w:p>"),
+    ".pptx": ("ppt/slides/", "</a:p>"),
+    ".xlsx": ("xl/sharedStrings.xml", "</si>"),
+}
+
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _document_text(path) -> str:
+    """Every run of text in an Office file, one block per line.
+
+    Splitting on the paragraph close tag BEFORE stripping the rest is the whole
+    trick: strip first and a document becomes one unreadable line.
+    """
+    import zipfile
+
+    where, breaks = DOCUMENTS[path.suffix.lower()]
+    out = []
+    with zipfile.ZipFile(path) as archive:
+        names = [n for n in archive.namelist()
+                 if n == where or (where.endswith("/") and n.startswith(where))]
+        for name in sorted(names):
+            xml = archive.read(name).decode("utf-8", errors="replace")
+            for block in xml.split(breaks):
+                line = html.unescape(_TAG.sub("", block)).strip()
+                if line:
+                    out.append(line)
+    return "\n".join(out)
+
+
+def _notebook_text(path) -> str:
+    """A .ipynb is JSON, and its outputs are usually noise."""
+    cells = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    out = []
+    for cell in cells.get("cells", []):
+        body = "".join(cell.get("source", [])).strip()
+        if body:
+            out.append(f"# --- {cell.get('cell_type', 'cell')}\n{body}")
+    return "\n\n".join(out)
+
+
+@tool(risk="read")
+def read_document(path: str) -> str:
+    """Read the text of a PDF, Word, Excel, PowerPoint or notebook file.
+    read_file refuses these because they are binary; this extracts what they
+    say. Use it for any document you cannot read with read_file.
+
+    path: The document to read. Absolute, or relative to the workspace.
+    """
+    target = config.resolve(path)
+    if not target.exists():
+        return f"{path} does not exist."
+    suffix = target.suffix.lower()
+    try:
+        if suffix in DOCUMENTS:
+            text = _document_text(target)
+        elif suffix == ".ipynb":
+            text = _notebook_text(target)
+        elif suffix == ".pdf":
+            text = _pdf_text(target)
+        else:
+            return (f"{path} is not a document this can read. It handles "
+                    f"pdf, docx, xlsx, pptx and ipynb.")
+    except Exception as exc:                # noqa: BLE001 - FR-208, never propagates
+        return f"could not read {path}: {type(exc).__name__}: {exc}"
+    if not text.strip():
+        # A scanned PDF or an image-only docx extracts to nothing and looks
+        # IDENTICAL to an empty file. Saying so is the difference between the
+        # model knowing it is blind and silently believing the page is empty.
+        return (f"{path} opened, but contains no extractable text - it is "
+                f"probably scanned images rather than text.")
+    return text
+
+
+def _pdf_text(path) -> str:
+    """PDF via poppler's pdftotext when the image has it.
+
+    Not a dependency: `pip.conf` sets no-index, so anything else would have to
+    be baked into the Containerfile, and that is a decision to take on its own
+    rather than smuggle in behind a tool.
+    """
+    if shutil.which("pdftotext") is None:
+        return ""
+    done = subprocess.run(["pdftotext", str(path), "-"],
+                          capture_output=True, text=True, timeout=60)
+    return done.stdout if done.returncode == 0 else ""
+
+
 # The interface supplies this: cli.py at a terminal, the TUI in a modal. The
 # TOOL owns the schema and the bounds, the SURFACE owns the asking - Hermes
 # splits it the same way, because a tool that owned a prompt would work in one
@@ -612,7 +707,7 @@ def web_search(query: str, limit: int = 5) -> str:
 # whole registration. Order is deterministic: tools render first in the prompt.
 TOOLS = {fn.__name__: fn.spec for fn in (
     read_file, search_files, write_file, edit_file, run_python, run_shell,
-    ask_user,
+    ask_user, read_document,
     web_search)}
 
 

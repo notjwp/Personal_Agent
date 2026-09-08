@@ -3570,3 +3570,129 @@ def test_ask_user_is_read_risk():
     from agent import policy
 
     assert policy.risk_of("ask_user") == "read"
+
+
+# ================================================ read_document (tool 2 of 7)
+
+def _docx(path, paragraphs):
+    """A minimal but REAL .docx: the format is a zip of XML, which is why this
+    needs no third-party library to read."""
+    import zipfile
+
+    body = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paragraphs)
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("word/document.xml",
+                    '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+                    f"{body}</w:body></w:document>")
+    return path
+
+
+def _xlsx(path, cells):
+    import zipfile
+
+    shared = "".join(f"<si><t>{c}</t></si>" for c in cells)
+    rows = "".join(f'<row><c t="s"><v>{i}</v></c></row>'
+                   for i in range(len(cells)))
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("xl/sharedStrings.xml",
+                    f'<?xml version="1.0"?><sst xmlns="x">{shared}</sst>')
+        zf.writestr("xl/worksheets/sheet1.xml",
+                    f'<?xml version="1.0"?><worksheet xmlns="x"><sheetData>'
+                    f"{rows}</sheetData></worksheet>")
+    return path
+
+
+def test_read_file_still_refuses_a_docx(tmp_workspace):
+    """The gap this tool exists for: read_file turns binaries away by extension,
+    so every PDF, docx and xlsx you own is invisible to the agent."""
+    from agent import tools
+
+    _docx(tmp_workspace / "notes.docx", ["hello"])
+    out = tools.TOOLS["read_file"]["fn"]("notes.docx")
+    assert "binary" in out.lower()
+
+
+def test_read_document_reads_a_docx(tmp_workspace):
+    from agent import tools
+
+    _docx(tmp_workspace / "notes.docx",
+          ["The quarterly figure is 41.", "Signed, the desk."])
+    out = tools.TOOLS["read_document"]["fn"]("notes.docx")
+    assert "quarterly figure is 41" in out
+    assert "Signed, the desk" in out
+
+
+def test_paragraphs_do_not_run_together(tmp_workspace):
+    """A docx is one XML blob. Stripping tags without honouring <w:p> turns a
+    document into a single unreadable line."""
+    from agent import tools
+
+    _docx(tmp_workspace / "n.docx", ["first", "second"])
+    out = tools.TOOLS["read_document"]["fn"]("n.docx")
+    assert "firstsecond" not in out
+
+
+def test_read_document_reads_an_xlsx(tmp_workspace):
+    from agent import tools
+
+    _xlsx(tmp_workspace / "book.xlsx", ["alpha", "beta", "gamma"])
+    out = tools.TOOLS["read_document"]["fn"]("book.xlsx")
+    assert "alpha" in out and "gamma" in out
+
+
+def test_a_document_with_no_text_says_so(tmp_workspace):
+    """Hermes's lesson, and it is the one that matters: a scanned PDF or an
+    image-only docx extracts to nothing and looks IDENTICAL to an empty file.
+    Silent data loss the model cannot detect."""
+    import zipfile
+
+    from agent import tools
+
+    path = tmp_workspace / "scan.docx"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("word/document.xml",
+                    '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+                    "</w:body></w:document>")
+    out = tools.TOOLS["read_document"]["fn"]("scan.docx")
+    assert "no extractable text" in out.lower()
+
+
+def test_an_unsupported_type_names_what_it_can_read(tmp_workspace):
+    from agent import tools
+
+    (tmp_workspace / "photo.png").write_bytes(b"\x89PNG\r\n")
+    out = tools.TOOLS["read_document"]["fn"]("photo.png")
+    assert "docx" in out and "xlsx" in out
+
+
+def test_a_missing_document_does_not_raise_a_zip_error(tmp_workspace):
+    from agent import tools
+
+    out = tools.TOOLS["read_document"]["fn"]("nope.docx")
+    assert "does not exist" in out.lower() or "not found" in out.lower()
+
+
+def test_a_corrupt_document_is_reported_not_raised(tmp_workspace):
+    """FR-208: a tool never propagates. A truncated download is a normal thing
+    to find on a real machine."""
+    from agent import tools
+
+    (tmp_workspace / "bad.docx").write_bytes(b"not a zip at all")
+    out = tools.TOOLS["read_document"]["fn"]("bad.docx")
+    assert "could not" in out.lower() or "not a" in out.lower()
+
+
+def test_read_document_reaches_outside_the_workspace(tmp_workspace, tmp_path):
+    """FR-302 as amended: reading your own documents is the point."""
+    from agent import tools
+
+    _docx(tmp_path.parent / "outside.docx", ["a note from elsewhere"])
+    out = tools.TOOLS["read_document"]["fn"](
+        str(tmp_path.parent / "outside.docx"))
+    assert "a note from elsewhere" in out
+
+
+def test_read_document_is_read_risk():
+    from agent import policy
+
+    assert policy.risk_of("read_document") == "read"
