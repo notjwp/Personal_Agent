@@ -5,6 +5,104 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Six tools measured for the first time, and the prompt was hiding them (2026-09-08)
+
+**One change: `prompts/SOUL.md` now names all thirteen builtins.** It named
+seven. Everything else in this entry is the rig work that had to happen before
+that change could be read at all.
+
+### The pilot: 15/18, and the pass rate was not the finding
+
+The `tools` split - six cases, one per tool shipped since 2026-09-07 - scored
+**15/18** on `20260908T104818Z`. Then the traces said what the score could not:
+
+| case | tool | pass | tool actually fired |
+|---|---|---|---|
+| `doc-headcount` | `read_document` | 3/3 | 3 of 3 |
+| `todo-outstanding` | `todo` | 3/3 | 3 of 3 |
+| `ask-environment` | `ask_user` | 2/3 | 2 of 3 |
+| `sort-downloads` | `move_files` | 3/3 | 1 of 3 |
+| `serve-token` | `start_terminal` | 2/3 | 1 of 3 |
+| `watch-build` | `read_terminal` | 2/3 | **0 of 3** |
+
+`watch-build` scored 2/3 having never once called the tool it exists for.
+`run_shell python3 pipeline.py` won instead: the pipeline never exits, so the
+120s timeout fires, and **the timeout path returns the partial output with the
+artifact id in it**. The tool that path was written for is the thing it made
+unnecessary. `sort-downloads` passed with eleven `run_shell` calls ending in a
+hand-written collision loop; `serve-token` with `python3 server.py &`.
+
+### The fixtures were rewritten, and two of three can now be closed
+
+Not a tuning change - three cases were not measuring what they claimed.
+
+- `watch-build` holds at three gates, each releasing only on a password printed
+  moments earlier, and the artifact id is not printed until all three are
+  answered. One shell call cannot observe, act, then observe again.
+- `serve-token` prints the phrase a token costs to its OUTPUT, never over HTTP,
+  and only when asked. A token needs the service held across two requests with
+  a read in between.
+- `sort-downloads` **cannot** be closed. `mv -n` is exactly `move_files`, so it
+  is strengthened - six files, three colliding - and stays behavioural.
+
+Verified 20 directions: untouched fails, a plausible wrong answer fails, the
+correct answer passes, and for the two rewritten cases **the exact shell command
+that beat the tool now fails**.
+
+### The cycle: naming the tools moved nothing
+
+`SOUL.md` named 7 of 13. The standing lesson says a prompt that lists SOME of
+the tools hides the rest - paid for once already, when 4 of 7 took 95.5% of all
+calls across 624 runs and 67% of `run_shell` was doing `search_files`'s job. So
+the pilot above was not a measurement of the tools; it was a measurement of
+tools the prompt never mentioned.
+
+`sort-downloads` is the one clean single-variable read: same rewritten fixture,
+old prompt on `20260908T124919Z`, new prompt on `20260908T131333Z`.
+
+### Result: `move_files` fired 0/3 -> 1/3, pass 3/3 -> 3/3 (+0)
+
+n=3 moving by one run is noise. **The confound was real and it was not the
+cause.** With the tool named, described, and told to be used instead of `mv`,
+the agent still hand-rolls `run_shell` - fourteen and twelve calls in the two
+passing runs, at 75,332 median tokens against 60,407 before.
+
+`ask_user` is the counter-example: it fired in `sort-downloads-0` and
+`todo-outstanding-1`, two cases that are not about it. Once named, the agent
+reaches for that one unprompted.
+
+### KEPT, and this is a deliberate exception to the Iron Law
+
+The number did not move, which normally means revert. It is kept because the
+change fixes a **measurement** defect rather than buying performance: a tool the
+prompt never names cannot be measured, and reverting would restore a prompt that
+violates a rule this project already paid to learn. The score effect is recorded
+as ~zero rather than claimed as a gain.
+
+`dev` and `real` have NOT been re-checked against the new prompt. Tool
+descriptions are load-bearing - `edit_file`'s wording took real repositories
+0/9 -> 4/7 - so six new entries could move either, and until they are re-run
+this prompt is a known unknown on those splits.
+
+### UNMEASURED: the terminal pair
+
+`serve-token` and `watch-build` have failed to run three times. The last attempt
+aborted on two consecutive blocked case-runs - provider down, not flapping - with
+7 of 18 case-runs unwritten. `start_terminal` and `read_terminal` have never had
+a scored row on their rewritten fixtures. Unknown, not zero, and it stays written
+that way until the endpoint holds for six runs.
+
+### Standing lesson this paid for
+
+**A capability the shell already has is not measured by giving the agent a task;
+it is measured by making the shell path fail.** Three of six cases scored a pass
+rate while their tool sat unused, because `run_shell` and `run_python` are a
+superset of most tools. Two were fixable by forcing an observe-act-observe
+sequence into the task. The third was not fixable at all, and that is the
+finding about `move_files`, not a gap in the fixture.
+
+---
+
 ## Profile distillation measured, and the split cannot answer the question (2026-09-08)
 
 **One change: `AGENT_PROFILE_DISTIL`.** `on` (the committed default, shipped

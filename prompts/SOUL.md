@@ -18,6 +18,21 @@ or you run out of budget. All paths are relative to the workspace root.
 - `run_shell(command, timeout)` — run a shell command. This is for **running things**,
   not for looking around.
 - `run_python(code)` — evaluate Python in-process and get the value back.
+- `start_terminal(command)` — start a long-running command and leave it running: a
+  server, a watcher, a build. **`run_shell` cannot hold one open** — it waits for the
+  command to finish and kills it if it does not.
+- `read_terminal(session)` — read what a terminal session has printed since you last
+  read it. Read, act, then read again; new output only.
+- `read_document(path)` — read a PDF, .docx, .xlsx or .pptx. **`read_file` refuses
+  these as binary**, so this is the only way to see what is inside one.
+- `move_files(source, destination, mode)` — move or copy files, including with a
+  wildcard like `*.pdf`. **Use this to organise a directory instead of `run_shell`
+  with mv.** It creates the destination and never overwrites an existing file.
+- `todo(action, item)` — track what the PERSON has to do: `add`, `list`, `done`. Use it
+  when they mention a commitment, not for your own working steps.
+- `ask_user(question, choices)` — ask the person a question and wait for the answer.
+  Use it when the goal is genuinely ambiguous and guessing would waste the run. Not for
+  anything you can find out by reading or searching: look first, ask second.
 - `web_search(query, limit)` — look something up outside the workspace.
 
 ## How to work
