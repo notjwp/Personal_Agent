@@ -3876,3 +3876,105 @@ def test_a_move_out_of_the_workspace_asks_first(tmp_workspace):
                           {"source": "a.txt", "destination": "/etc"},
                           autonomous=False)
     assert verdict == "confirm"
+
+
+# ============================================ start/read_terminal (5-6 of 7)
+
+def test_a_session_keeps_running_between_reads(tmp_workspace):
+    """The gap: run_shell is one-shot with a timeout, so it cannot hold a dev
+    server, tail a log, or keep a REPL. This is the same process, twice."""
+    import sys
+    import time
+
+    from agent import tools
+
+    code = "import sys,time\nfor i in range(30):\n print(i,flush=True);time.sleep(0.05)"
+    out = tools.TOOLS["start_terminal"]["fn"](f'{sys.executable} -c "{code}"')
+    assert "started" in out.lower()
+    name = out.split()[-1]
+    time.sleep(0.5)
+    first = tools.TOOLS["read_terminal"]["fn"](name)
+    time.sleep(0.4)
+    second = tools.TOOLS["read_terminal"]["fn"](name)
+    tools.stop_terminals()
+    assert first.strip(), "nothing came back from the first read"
+    assert first != second, "the session is not still running"
+
+
+def test_reading_an_unknown_session_names_the_ones_that_exist(tmp_workspace):
+    from agent import tools
+
+    tools.stop_terminals()
+    out = tools.TOOLS["read_terminal"]["fn"]("nope")
+    assert "no " in out.lower() or "unknown" in out.lower()
+
+
+def test_a_read_returns_only_what_is_new(tmp_workspace):
+    """Re-sending the whole buffer every read is how a long-running log floods
+    the context - the flood shrink() exists to stop, arriving by another door."""
+    import sys
+    import time
+
+    from agent import tools
+
+    code = "import sys,time\nfor i in range(20):\n print('line',i,flush=True);time.sleep(0.05)"
+    name = tools.TOOLS["start_terminal"]["fn"](
+        f'{sys.executable} -c "{code}"').split()[-1]
+    time.sleep(0.4)
+    first = tools.TOOLS["read_terminal"]["fn"](name)
+    time.sleep(0.4)
+    second = tools.TOOLS["read_terminal"]["fn"](name)
+    tools.stop_terminals()
+    overlap = set(first.split()) & set(second.split()) - {"line"}
+    assert not overlap, f"the same output came back twice: {overlap}"
+
+
+def test_a_finished_session_says_it_finished(tmp_workspace):
+    import sys
+    import time
+
+    from agent import tools
+
+    name = tools.TOOLS["start_terminal"]["fn"](
+        f'{sys.executable} -c "print(42)"').split()[-1]
+    time.sleep(0.6)
+    out = tools.TOOLS["read_terminal"]["fn"](name)
+    tools.stop_terminals()
+    assert "42" in out
+    assert "exit" in out.lower() or "finished" in out.lower()
+
+
+def test_sessions_are_bounded(tmp_workspace):
+    """An agent that starts one per turn would hold the machine. Hermes bounds
+    its pool for the same reason."""
+    import sys
+
+    from agent import tools
+
+    tools.stop_terminals()
+    started = [tools.TOOLS["start_terminal"]["fn"](f'{sys.executable} -c "input()"')
+               for _ in range(tools.MAX_TERMINALS + 2)]
+    tools.stop_terminals()
+    assert any("too many" in s.lower() or "refused" in s.lower() for s in started)
+
+
+def test_stop_terminals_leaves_nothing_running(tmp_workspace):
+    """The orphan case is the one that matters: two `sleep 60` once survived a
+    timeout and held the workspace for the rest of the run."""
+    import sys
+
+    from agent import tools
+
+    name = tools.TOOLS["start_terminal"]["fn"](
+        f'{sys.executable} -c "import time;time.sleep(60)"').split()[-1]
+    assert tools._TERMINALS
+    tools.stop_terminals()
+    assert not tools._TERMINALS
+    assert "no " in tools.TOOLS["read_terminal"]["fn"](name).lower()
+
+
+def test_the_terminal_tools_carry_the_right_risk():
+    from agent import policy
+
+    assert policy.risk_of("start_terminal") == "destructive"
+    assert policy.risk_of("read_terminal") == "read"

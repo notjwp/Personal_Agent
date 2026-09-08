@@ -1,6 +1,6 @@
 """The built-in tools, and the risk each one carries.
 
-Eleven of them, and their schemas are DERIVED from the signature and docstring by
+Thirteen of them, and their schemas are DERIVED from the signature and docstring by
 `@tool` in agent/registry.py (FR-207). They were hand-written until tool eight,
 when §13's arithmetic - ~25 lines plus ~5 per tool for the machinery against ~8
 per tool written out - stopped favouring the dicts.
@@ -14,6 +14,7 @@ one risk is what §13 cut the INSTALL set for.
 
 Adding a tool touches this file only (NFR-601).
 """
+import atexit
 import difflib
 import html
 import json
@@ -512,6 +513,88 @@ def robots_allows(url: str, agent: str = "*") -> bool:
     return True if parser is None else parser.can_fetch(agent, url)
 
 
+# A live session per turn would hold the machine, so the pool is bounded the
+# way Hermes bounds its own. Killed at exit through the same atexit path
+# mcp.shutdown() uses - an orphaned process outliving the run is the failure
+# already recorded, when two `sleep 60` survived a timeout and held the
+# workspace for everything after.
+MAX_TERMINALS = 4
+_TERMINALS: dict = {}
+
+
+def _drain(session) -> str:
+    """Everything printed since the last read, and nothing before it.
+
+    Re-sending the whole buffer each time is how a long-running log floods the
+    context - the flood shrink() exists to stop, arriving through another door.
+    """
+    process, buffer = session["process"], session["buffer"]
+    while True:
+        line = process.stdout.readline() if process.stdout else ""
+        if not line:
+            break
+        buffer.append(line)
+        if len(buffer) > 500:
+            del buffer[:-500]
+    fresh, session["buffer"] = list(buffer), []
+    return "".join(fresh)
+
+
+def stop_terminals() -> None:
+    """Kill every session. Best effort, never raises."""
+    for session in list(_TERMINALS.values()):
+        _kill_group(session["process"])
+    _TERMINALS.clear()
+
+
+atexit.register(stop_terminals)
+
+
+@tool(risk="destructive")
+def start_terminal(command: str) -> str:
+    """Start a long-running command and leave it running - a dev server, a
+    watcher, a build. Returns a session name; read its output with
+    read_terminal. Use run_shell for anything that finishes on its own.
+
+    command: The command to start.
+    """
+    if len(_TERMINALS) >= MAX_TERMINALS:
+        return (f"refused: too many sessions open ({len(_TERMINALS)}). "
+                f"Sessions: {', '.join(_TERMINALS)}.")
+    name = f"t{len(_TERMINALS) + 1}"
+    while name in _TERMINALS:
+        name = f"t{int(name[1:]) + 1}"
+    try:
+        process = subprocess.Popen(
+            command, shell=True, cwd=config.WORKSPACE, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            # Its own process GROUP, so stopping it stops what it started.
+            start_new_session=True, bufsize=1)
+    except OSError as exc:
+        return f"could not start it: {exc}"
+    _TERMINALS[name] = {"process": process, "buffer": [], "command": command}
+    return f"started {name}"
+
+
+@tool(risk="read")
+def read_terminal(session: str) -> str:
+    """Read what a terminal session has printed since you last read it.
+
+    session: The name start_terminal returned, e.g. 't1'.
+    """
+    name = str(session or "").strip()
+    if name not in _TERMINALS:
+        return (f"no session {name!r}. Open sessions: "
+                f"{', '.join(_TERMINALS) or 'none'}.")
+    entry = _TERMINALS[name]
+    output = _drain(entry)
+    code = entry["process"].poll()
+    if code is None:
+        return output or f"{name} is running, nothing new."
+    _TERMINALS.pop(name, None)
+    return f"{output}\n{name} finished, exit code {code}."
+
+
 @tool(risk="destructive")
 def move_files(source: str, destination: str, mode: str = "move") -> str:
     """Move or copy files, including with a wildcard like '*.pdf'. Use it to
@@ -811,7 +894,8 @@ def web_search(query: str, limit: int = 5) -> str:
 # whole registration. Order is deterministic: tools render first in the prompt.
 TOOLS = {fn.__name__: fn.spec for fn in (
     read_file, search_files, write_file, edit_file, run_python, run_shell,
-    ask_user, read_document, todo, move_files,
+    ask_user, read_document, todo, move_files, start_terminal,
+    read_terminal,
     web_search)}
 
 
