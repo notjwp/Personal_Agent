@@ -638,3 +638,35 @@ def test_the_custom_fields_appear_only_for_the_custom_choice(monkeypatch):
         assert app.screen.query_one("#base-url").display is False
 
     drive(app, script)
+
+
+def test_the_wizard_ticks_only_while_the_probe_is_running(monkeypatch):
+    """The spinner is the one timer section 11 allows, and only for as long as
+    something is actually happening."""
+    from tests.test_ui_screens import live_timers
+
+    app = screen_app(monkeypatch, "misconfigured", "401")
+
+    async def script(pilot):
+        assert live_timers(app.screen) == []
+        await verify(app, pilot)
+        assert live_timers(app.screen) == [], "the spinner outlived the probe"
+
+    drive(app, script)
+
+
+def test_the_wizard_does_not_import_the_workspace():
+    """`run()` opens this on first launch, before anything else is needed, so
+    it must not drag langgraph and the graph in behind it."""
+    import pathlib
+    import subprocess
+    import sys
+
+    done = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, agent.ui.setup;"
+         "assert 'langgraph' not in sys.modules, 'langgraph';"
+         "assert 'agent.ui.screens' not in sys.modules, 'screens'"],
+        cwd=pathlib.Path(__file__).resolve().parent.parent,
+        capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr

@@ -79,6 +79,10 @@ class SetupScreen(Screen):
         return out
 
     def on_mount(self) -> None:
+        # Section 11 allows no timer while nothing is moving, and an Input
+        # blinks its cursor on a live interval for as long as it has focus.
+        for box in self.query(Input):
+            box.cursor_blink = False
         self.query_one("#after").display = False
         # An empty Static still occupies its row, and four blank rows between
         # the list and the key box read as a layout that lost something.

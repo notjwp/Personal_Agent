@@ -68,6 +68,17 @@ OPENS = {"/threads": "threads", "/tasks": "tasks", "/schedules": "schedules",
          "/doctor": "doctor"}
 
 
+def still(box: Input) -> Input:
+    """An Input with no blinking cursor.
+
+    Section 11 allows no timer while nothing is moving, and a blink is a live
+    interval for as long as the box has focus - which for the composer is the
+    whole session. Set before mount, so the timer is created already paused.
+    """
+    box.cursor_blink = False
+    return box
+
+
 def is_command(text: str) -> str:
     """The command a line names, or "" if the line is a message.
 
@@ -152,9 +163,9 @@ class LandingScreen(Screen):
             yield Static(id="logotype")
             yield Static(id="landing-status")
             yield Static(id="landing-list")
-            yield Input(placeholder="›", id="landing-input",
-                        suggester=SuggestFromList(COMMANDS,
-                                                  case_sensitive=False))
+            yield still(Input(placeholder="›", id="landing-input",
+                              suggester=SuggestFromList(COMMANDS,
+                                                        case_sensitive=False)))
             yield Static(id="landing-hint")
 
     def on_mount(self) -> None:
@@ -369,9 +380,10 @@ class WorkspaceScreen(Screen):
         # and the composer landed on top of each other and FR-702's step was
         # the half that lost.
         with Vertical(id="chrome"):
-            yield Input(placeholder="say something, or /help", id="composer",
-                        suggester=SuggestFromList(COMMANDS,
-                                                  case_sensitive=False))
+            yield still(Input(placeholder="say something, or /help",
+                              id="composer",
+                              suggester=SuggestFromList(COMMANDS,
+                                                        case_sensitive=False)))
             yield Static(id="status")
 
     def on_mount(self) -> None:

@@ -592,3 +592,51 @@ def test_the_chrome_stays_painted_in_every_mode(mode):
             assert bare == 0, f"{mode}: {name} has {bare} unpainted cells"
 
     drive(app, script)
+
+
+def live_timers(node) -> list:
+    """Every REPEATING timer under a widget that is actually ticking.
+
+    One-shots are excluded on purpose: textual sets one to un-highlight a
+    pressed Button, and it fires once and dies. Section 11 forbids a timer
+    running while nothing MOVES, which is an interval, not a self-terminating
+    animation - `_repeat = 0` is one shot, `None` is forever.
+    """
+    out = []
+    for widget in [node, *node.query("*")]:
+        for timer in getattr(widget, "_timers", ()) or ():
+            active = getattr(timer, "_active", None)
+            if timer._repeat == 0 or active is None or not active.is_set():
+                continue
+            out.append(f"{type(widget).__name__}.{timer.name}")
+    return out
+
+
+@pytest.mark.parametrize("kw", [{}, {"thread": "t"}], ids=["landing", "workspace"])
+def test_nothing_ticks_while_nothing_is_moving(kw):
+    """Section 11 and section 17: idle CPU is 0%.
+
+    MEASURED and it was not: an Input blinks its cursor on a live interval for
+    as long as it has focus, and the composer holds focus for the whole session.
+    """
+    app = screens.NoesisApp(FakeGraph(), **kw)
+
+    async def script(pilot):
+        await app.screen.workers.wait_for_complete()
+        await pilot.pause()
+        assert live_timers(app.screen) == []
+
+    drive(app, script)
+
+
+def test_a_split_starts_no_timer_either():
+    app = workspace()
+
+    async def script(pilot):
+        await pilot.press("alt+enter")
+        await pilot.pause()
+        await pilot.press("alt+z")
+        await pilot.pause()
+        assert live_timers(app.screen) == []
+
+    drive(app, script)
