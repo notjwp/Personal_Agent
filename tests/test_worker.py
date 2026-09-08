@@ -439,11 +439,17 @@ def test_a_dead_worker_does_not_deadlock_the_cap(tmp_workspace, monkeypatch):
 
 
 def test_an_amended_call_is_reclassified_not_waved_through(tmp_workspace):
-    """FR-307, and this is the whole safety property: amending a path to escape the
-    workspace must still be DENIED, or the approval prompt becomes a bypass."""
+    """FR-307, and this is the whole safety property: amending a path so the call
+    WRITES outside the workspace must still be denied unattended, or the approval
+    prompt becomes a bypass.
+
+    A read was the example until FR-302 was amended 2026-09-08 and reading the
+    user's own files became the point. The property under test is unchanged - the
+    gate re-runs classify() on the amended input - so the example moves to a write.
+    """
     from agent.policy import classify
 
-    verdict, _ = classify("read_file", {"path": "../../etc/passwd"}, autonomous=True)
+    verdict, _ = classify("write_file", {"path": "../../etc/passwd"}, autonomous=True)
     assert verdict == "deny", "the gate re-runs classify() on the amended input"
 
 

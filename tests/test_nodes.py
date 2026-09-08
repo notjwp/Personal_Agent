@@ -71,7 +71,7 @@ def test_gate_produces_mixed_verdicts_in_one_turn(tmp_workspace):
     out = gate(s, cfg())
     assert [c["id"] for c in out["approved"]] == ["ok"]
     assert [c["id"] for c in out["denied"]] == ["bad"]
-    assert "escapes workspace" in out["denied"][0]["reason"]
+    assert "outside the workspace" in out["denied"][0]["reason"]
 
 
 def test_gate_has_no_side_effects(tmp_workspace):
@@ -3472,3 +3472,29 @@ def test_a_rejected_key_stays_FATAL():
         pass
 
     assert _classify(AuthenticationError('401')) == 'ProviderMisconfigured'
+
+
+def test_a_missing_path_outside_the_workspace_hints_rather_than_raising(
+        tmp_workspace, tmp_path):
+    """FR-302 as amended lets a path resolve outside the workspace, and
+    `relative_to` RAISES on one. Measured: read_file on a missing outside path
+    died with ValueError inside the not-found hint."""
+    from agent import tools
+
+    outside = tmp_path.parent / "definitely-not-here.txt"
+    with pytest.raises(FileNotFoundError) as caught:
+        tools.TOOLS["read_file"]["fn"](str(outside), 0, 5)
+    # A ValueError here would be the bug; FileNotFoundError with a listing is
+    # the design - a wrong path names what IS in the nearest real directory.
+    assert "does not exist" in str(caught.value)
+    assert "contains" in str(caught.value) or "empty" in str(caught.value)
+
+
+def test_reading_a_real_file_outside_the_workspace_works(tmp_workspace, tmp_path):
+    """The point of the amendment: an assistant can read your own files."""
+    from agent import tools
+
+    outside = tmp_path.parent / "outside-note.txt"
+    outside.write_text("hello from outside\n", encoding="utf-8")
+    out = tools.TOOLS["read_file"]["fn"](str(outside), 0, 5)
+    assert "hello from outside" in out

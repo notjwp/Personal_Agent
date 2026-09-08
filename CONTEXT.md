@@ -328,8 +328,10 @@ Only [M] items are in scope for the first build. See section 9.
 
   FR-301  [M]  Classify every tool call as auto, confirm, or deny before any
                side effect occurs.
-  FR-302  [M]  Reject any argument whose resolved path falls outside the
-               workspace root.
+  FR-302  [M]  No call may write outside the workspace root without consent.
+               AMENDED 2026-09-08: outside is `confirm`, not `deny` - see 8.2.
+               Rejection confined the wrong half; run_shell was never confined
+               at all, and the interactive agent never ran in a container.
   FR-303  [M]  Suspend execution and await human input on a confirm verdict in
                interactive mode.
   FR-304  [M]  Downgrade confirm to deny in autonomous mode and record the
@@ -423,7 +425,8 @@ A requirement without a number is not testable. Targets are the point.
   NFR-104   Context          No single tool result exceeds 2,000 tokens after
                              shrinking
   NFR-201   Safety           Zero writes outside the workspace root across the
-                             full eval suite
+                             full EVAL SUITE, where the container is real. It
+                             does not describe interactive use - see 8.2
                              AMENDED 2026-08-21: exactly TWO declared writable
                              roots - the workspace, and the agent home. State
                              must survive reset.sh, which wipes the workspace,
@@ -606,6 +609,37 @@ exists.
     This reopens the GATE, not the design. Vellum's four-lane shape measured
     1/6 and a dense lane alone 3/6; both stay rejected. A single lane fused
     with keyword must move recall@3 on THIS corpus or it reverts.
+
+  FR-302 vs what this actually is            ADDED 2026-09-08
+    "Reject any argument whose resolved path falls outside the workspace root"
+    was written for an agent confined to a container. It confines the WRONG
+    HALF, and the measurement says so:
+      - run_shell is subprocess.Popen(shell=True, cwd=WORKSPACE) with NO
+        confinement. `cd / && ls` from inside it lists the drive root -
+        demonstrated, not reasoned. It is 95.5% of all tool calls across 624
+        runs.
+      - read_file, write_file, edit_file and search_files ARE confined, on
+        resolved paths, and they are the tools that could act precisely.
+    So the most-used tool has no boundary and the careful ones are penned into
+    a scratch directory. That is not a safety posture, it is an accident of
+    which code path grew the check.
+    The container never applied here either. docker appears in eval/harness.py
+    and in NO runtime module: `python -m agent` has always run natively on the
+    host. §11's "execution is confined to a container" describes SCORED RUNS.
+    Resolution: THE GATE IS THE BOUNDARY, which is what it was already.
+      - a path outside the workspace no longer denies. It can never be `auto`.
+      - read-only calls outside keep their risk verdict, because reading the
+        user's own files is the point of a personal agent
+      - anything that can WRITE outside is `confirm` in interactive mode and
+        `deny` in autonomous mode, which is how `confirm` already degrades
+    FR-302's INTENT - no silent writes outside the declared root - survives
+    intact. Its mechanism moves from refusal to consent, which is where Hermes
+    puts it too: approval modes manual / smart / off, and no OS sandbox around
+    tool execution anywhere in its 127k lines.
+    NFR-201 keeps its wording FOR THE SCORED SUITE, where the container is
+    real and the claim is measured. It no longer describes interactive use,
+    and pretending otherwise would be the defaulted-AGENT_EGRESS mistake
+    again: a row claiming a condition nobody checked.
 
   NFR-802 vs FR-302 and NFR-201            ADDED 2026-08-23
     "All agent artifacts under ONE inspectable directory" cannot be satisfied

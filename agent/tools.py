@@ -47,6 +47,19 @@ def _int(value, default: int) -> int:
 SEARCH_HINT = "Search wider with run_shell(command='find . -type f | head -50')."
 
 
+def _label(path) -> str:
+    """A path named relative to the workspace, or in full when it is outside.
+
+    FR-302 as amended lets a path resolve outside the workspace, and
+    `relative_to` RAISES on one rather than returning something useless -
+    measured, on the missing-file hint.
+    """
+    try:
+        return path.relative_to(config.WORKSPACE).as_posix() or "."
+    except ValueError:
+        return path.as_posix()
+
+
 def _nearby(target) -> str:
     """What IS in the directory the agent guessed at, so the retry can be informed.
 
@@ -58,10 +71,15 @@ def _nearby(target) -> str:
     directory = target.parent
     while not directory.is_dir() and config.WORKSPACE in directory.parents:
         directory = directory.parent
+    if not directory.is_dir():
+        # Outside the workspace the loop above never runs, so a missing path
+        # leaves a directory that is not one. Walk up until something exists.
+        while directory.parent != directory and not directory.is_dir():
+            directory = directory.parent
     try:
         names = sorted(p.name + ("/" if p.is_dir() else "")
                        for p in directory.iterdir())
-        where = directory.relative_to(config.WORKSPACE).as_posix() or "."
+        where = _label(directory)
     except OSError:
         return SEARCH_HINT
     if not names:
@@ -81,7 +99,7 @@ def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
     limit: How many lines to return. Default 500.
     """
     offset, limit = _int(offset, 0), _int(limit, 500)
-    target = config.WORKSPACE / path
+    target = config.resolve(path)
     if target.is_dir():
         # FR-201's "list directories": read_file on a directory returns the listing
         # rather than an error, so the agent needs no second tool to look around.
@@ -129,7 +147,7 @@ def write_file(path: str, content: str) -> str:
     path: Path relative to the workspace root.
     content: The complete new contents of the file.
     """
-    target = config.WORKSPACE / path
+    target = config.resolve(path)
     # OVERWRITING one, not creating one. Plain text written over an existing binary
     # destroys it irrecoverably and the write SUCCEEDS, so the agent never learns.
     # Measured on both a .docx and a .png. Creating a new file with that name stays
@@ -188,7 +206,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     old_string: The exact text to replace, copied from the file including indentation.
     new_string: The text to put in its place.
     """
-    target = config.WORKSPACE / path
+    target = config.resolve(path)
     if target.is_dir():
         raise IsADirectoryError(
             f"{path} is a directory, not a file. "

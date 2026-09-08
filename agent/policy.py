@@ -9,23 +9,73 @@ the latter binds the value at import time, so a test redirecting the workspace r
 would leave this module still pointing at the real one.
 """
 import re
-from pathlib import Path
 
 from agent import config
 
+# A home directory, however it is spelled. `~`, $HOME and ${HOME} all reach the
+# same files and a rule matching one of the three protects nothing.
+_HOME = r"(?:~|\$HOME|\$\{HOME\})"
+
+# On macOS /etc, /var, /tmp and /home are symlinks into /private/. A command
+# written against /private/etc/sudoers works exactly like /etc/sudoers and walks
+# straight past a plain "/etc/" check. Hermes's approval layer catches this and
+# it is not something reasoning from scratch would produce.
+_SYSTEM_PATH = r"(?:/etc/|/private/(?:etc|var|tmp|home)/|/boot/|/dev/sd)"
+
+# Files that hand over the next session, or the account. Writing one is not
+# destructive TODAY, which is exactly why it needs a person to see it.
+_SENSITIVE_FILE = (
+    rf"{_HOME}/\.ssh(?:/|\b)"
+    rf"|{_HOME}/\.(?:bashrc|zshrc|profile|bash_profile|zprofile)\b"
+    rf"|{_HOME}/\.(?:netrc|pgpass|npmrc|pypirc|aws|config/gh)\b"
+    rf"|\.env\b"
+)
+
+# An interpreter given inline source is a shell by another name: `python -c` can
+# do anything `rm -rf` can, and the old pattern list saw none of them. The flags
+# are Hermes's table; the shape is ours.
+_INLINE_SOURCE = (
+    r"\bpython[\d.]*\s+(?:-\w+\s+)*-c\b"
+    r"|\bnode\s+(?:-\w+\s+)*(?:-e|--eval|-p|--print)\b"
+    r"|\b(?:perl|ruby)\s+(?:-\w+\s+)*-e\b"
+    r"|\bphp\s+(?:-\w+\s+)*-r\b"
+    r"|\bpowershell(?:\.exe)?\s+.*?-(?:command|c|file|f)\b"
+)
+
+# The same list as a standalone pattern, for PATH arguments. `cat ~/.ssh/id_rsa`
+# and read_file(path="~/.ssh/id_rsa") are the same act and must get the same
+# answer, which they did not while only run_shell was inspected.
+SENSITIVE = re.compile(_SENSITIVE_FILE, re.IGNORECASE)
+
 # Commands that must never run unreviewed. Matched against run_shell's command
 # string; a hit escalates the tool's declared risk to `destructive`.
+#
+# WIDENED 2026-09-08, when FR-302 stopped refusing paths outside the workspace
+# and this became the only thing between the model and the filesystem. The gaps
+# were measured by reading it, not guessed: `mv ~/Documents /tmp`, `> ~/.bashrc`,
+# `python -c "shutil.rmtree(...)"` and `git clean -fdx` all passed the old list.
+# Categories taken from hermes_copy/hermes-agent/tools/approval.py (5,498 lines,
+# not lifted); the regex is ours and much smaller.
 DANGER = re.compile(
     r"\brm\s+(-\w+\s+)*-\w*[rf]"
     r"|\bgit\s+push\b[^|]*--force"
     r"|\bgit\s+reset\s+--hard\b"
+    r"|\bgit\s+clean\b[^|]*-\w*[fd]"
     r"|\bsudo\b"
     r"|\bmkfs(\.\w+)?\b"
     r"|\bdd\s+if="
     r"|\b(shutdown|reboot|halt|poweroff)\b"
     r"|\bchmod\s+-R\s+777\b"
     r"|\bcurl\b[^|]*\|\s*(ba)?sh\b"
-)
+    # moving or copying the home directory somewhere else is a wipe with a
+    # different verb, and `mv` was absent from the list entirely
+    rf"|\b(?:mv|cp|rsync)\b[^|]*{_HOME}/"
+    rf"|{_SYSTEM_PATH}"
+    rf"|{_SENSITIVE_FILE}"
+    rf"|{_INLINE_SOURCE}"
+    # a redirect INTO anything sensitive, which no verb above would catch
+    rf"|>>?\s*{_HOME}/\."
+    , re.IGNORECASE)
 
 # The single source of a tool's risk and the single path through classify().
 # Built from tools.TOOLS so a new tool cannot be offered unclassified.
@@ -130,9 +180,8 @@ def classify(name: str, args: dict, autonomous: bool,
     and re-executes from its first line, so this function must be safe to run
     twice.
     """
-    for key in PATH_ARGS:
-        if key in args and not _inside_workspace(str(args[key])):
-            return "deny", f"path escapes workspace: {args[key]}"
+    outside = next((str(args[key]) for key in PATH_ARGS
+                    if key in args and not _inside_workspace(str(args[key]))), "")
 
     risk = risk_of(name)
     if risk is None:
@@ -150,9 +199,33 @@ def classify(name: str, args: dict, autonomous: bool,
         risk = "destructive"
 
     verdict = VERDICT_BY_RISK[risk]
+    # A credential is the one thing READING is not free. Applied to path
+    # arguments and not only to run_shell, or the same file gets two answers
+    # depending on which tool asks for it.
+    secret = next((str(args[key]) for key in PATH_ARGS
+                   if key in args and SENSITIVE.search(str(args[key]))), "")
+    if secret:
+        return _unattended("confirm", autonomous,
+                           f"{name} touches a credential: {secret}")
+
+    # FR-302 as amended 2026-09-08. Outside the workspace can never be `auto`,
+    # and reading is still auto because reading the user's own files is the
+    # point. A write out there asks; unattended, `confirm` degrades to deny
+    # below, so nothing writes outside without a person present.
+    if outside and not _read_only(name, args, risk):
+        verdict = "confirm"
+        return _unattended(verdict, autonomous,
+                           f"{name} writes outside the workspace: {outside}")
     if autonomous and verdict == "confirm":
         return "deny", f"{name} is {risk}; denied in autonomous mode, queued for review"
     return verdict, f"{name} classified {risk}"
+
+
+def _unattended(verdict: str, autonomous: bool, reason: str) -> tuple[str, str]:
+    """A confirm nobody can answer is a deny, which is what autonomous means."""
+    if autonomous and verdict == "confirm":
+        return "deny", f"{reason}; denied in autonomous mode, queued for review"
+    return verdict, reason
 
 
 def _inside_workspace(value: str) -> bool:
@@ -163,8 +236,7 @@ def _inside_workspace(value: str) -> bool:
     """
     root = config.WORKSPACE
     try:
-        candidate = Path(value)
-        resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        resolved = config.resolve(value).resolve()
     except (OSError, ValueError, RuntimeError):
         return False
     return resolved == root or root in resolved.parents

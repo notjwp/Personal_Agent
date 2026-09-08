@@ -73,7 +73,7 @@ def test_a_third_party_path_argument_cannot_escape_the_workspace():
         verdict, reason = policy.classify(
             "write_report", {name: "/etc/passwd"}, autonomous=True)
         assert verdict == "deny", f"{name} escaped the workspace check"
-        assert "escapes workspace" in reason
+        assert "outside the workspace" in reason
 
 
 def test_a_url_is_not_treated_as_a_path():

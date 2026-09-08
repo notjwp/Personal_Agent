@@ -72,6 +72,18 @@ RETRY_BASE = float(_env("AGENT_RETRY_BASE", "1.0"))
 RETRY_CAP = float(_env("AGENT_RETRY_CAP", "8.0"))
 
 
+def resolve(path) -> Path:
+    """A tool argument as a real filesystem path.
+
+    ONE definition, because the gate and the tool must resolve identically - a
+    gate that checks a different path than the one written is not a gate.
+    `~` is expanded first: without it `~/.bashrc` is a relative path naming a
+    directory called `~`, which lands INSIDE the workspace and reads as safe.
+    """
+    candidate = Path(str(path)).expanduser()
+    return candidate if candidate.is_absolute() else WORKSPACE / candidate
+
+
 def _clean(value: str | None) -> str:
     """Strip whitespace and surrounding quotes.
 

@@ -1,21 +1,80 @@
 """classify() — path confinement, danger escalation, mode downgrade, purity."""
+from pathlib import Path
+
 import pytest
 
 from agent.policy import classify
 
 
-# --- FR-302: path confinement ---------------------------------------------
+# --- FR-302 as amended 2026-09-08: consent, not refusal --------------------
+#
+# Outside the workspace no longer denies. It can never be `auto` either: a read
+# out there keeps its risk verdict, because reading the user's own files is the
+# point of a personal agent, and anything that can WRITE out there asks first.
+# CONTEXT.md 8.2 records why - the old rule confined the careful tools and left
+# run_shell, 95.5% of all calls, with no boundary at all.
+
+OUTSIDE = ["../etc/passwd", "../../etc/passwd", "/etc/passwd",
+           "subdir/../../outside.txt"]
+
+
+@pytest.mark.parametrize("path", OUTSIDE)
+def test_reading_outside_the_workspace_is_allowed(tmp_workspace, path):
+    """An assistant that cannot read your files is a code-repair tool."""
+    assert classify("read_file", {"path": path}, autonomous=False)[0] == "auto"
+
+
+@pytest.mark.parametrize("path", ["~/scratch.txt", "~/.bashrc", "~/Documents/a.md"])
+def test_a_tilde_path_is_expanded_before_it_is_judged(tmp_workspace, path):
+    """MEASURED: `~/x` is not absolute, so it was joined onto the workspace as a
+    directory literally named `~` and read as INSIDE. Every home path bypassed
+    the check, and the tool then wrote to a junk location nobody asked for."""
+    assert classify("write_file", {"path": path}, autonomous=False)[0] != "auto"
+
+
+def test_the_gate_and_the_tool_resolve_a_path_identically(tmp_workspace):
+    """A gate that checks a different path than the one written is not a gate,
+    so both go through config.resolve()."""
+    from agent import config
+
+    assert config.resolve("~/x.txt") == Path("~/x.txt").expanduser()
+    assert config.resolve("notes.md") == config.WORKSPACE / "notes.md"
+
 
 @pytest.mark.parametrize("path", [
-    "../etc/passwd",
-    "../../etc/passwd",
-    "/etc/passwd",
-    "subdir/../../outside.txt",
+    "~/.ssh/id_rsa", "~/.netrc", "~/.aws", "D:/project/.env", "~/.pypirc",
 ])
-def test_path_escape_is_denied(tmp_workspace, path):
-    verdict, reason = classify("read_file", {"path": path}, autonomous=True)
+def test_a_credential_asks_even_to_be_READ(tmp_workspace, path):
+    """The one thing reading is not free. Applied to path arguments and not
+    only to run_shell, or `cat ~/.ssh/id_rsa` and read_file on the same file
+    get different answers."""
+    verdict, reason = classify("read_file", {"path": path}, autonomous=False)
+    assert verdict == "confirm", path
+    assert "credential" in reason
+
+
+@pytest.mark.parametrize("path", OUTSIDE)
+def test_writing_outside_the_workspace_asks_first(tmp_workspace, path):
+    verdict, reason = classify("write_file", {"path": path}, autonomous=False)
+    assert verdict == "confirm"
+    assert "outside the workspace" in reason
+
+
+@pytest.mark.parametrize("path", OUTSIDE)
+def test_writing_outside_is_denied_when_nobody_can_answer(tmp_workspace, path):
+    """`confirm` degrades to `deny` unattended, which is what autonomous means -
+    so nothing writes outside the workspace without a person present."""
+    verdict, reason = classify("write_file", {"path": path}, autonomous=True)
     assert verdict == "deny"
-    assert "escapes workspace" in reason
+    assert "autonomous" in reason
+
+
+def test_a_write_outside_is_never_auto_however_it_is_classified(tmp_workspace):
+    """The one invariant this change must not break. `write_file` is risk=write,
+    which is `auto` inside the workspace; outside it must not be."""
+    for name in ("write_file", "edit_file"):
+        verdict, _ = classify(name, {"path": "/etc/passwd"}, autonomous=False)
+        assert verdict != "auto", name
 
 
 def test_path_inside_workspace_is_allowed(tmp_workspace):
@@ -26,7 +85,16 @@ def test_workspace_root_itself_is_allowed(tmp_workspace):
     assert classify("read_file", {"path": "."}, autonomous=True)[0] == "auto"
 
 
-def test_symlink_escape_is_denied(tmp_workspace):
+def test_a_symlink_is_resolved_and_not_a_bypass(tmp_workspace):
+    """`.resolve()` follows the link, so a link inside pointing out is treated as
+    what it points AT - which is the property that matters. Under FR-302 as
+    amended that means a write through it asks, and unattended it is refused;
+    a read through it is a read, exactly as a plain outside path is.
+
+    Deliberately not stricter than an explicit `/etc/passwd`. A rule that
+    refused the sneaky spelling and allowed the obvious one would protect
+    nothing and only be harder to explain.
+    """
     outside = tmp_workspace.parent / "secret.txt"
     outside.write_text("secret")
     link = tmp_workspace / "link.txt"
@@ -34,12 +102,55 @@ def test_symlink_escape_is_denied(tmp_workspace):
         link.symlink_to(outside)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not permitted on this platform")
-    assert classify("read_file", {"path": "link.txt"}, autonomous=True)[0] == "deny"
+    assert classify("write_file", {"path": "link.txt"}, autonomous=True)[0] == "deny"
+    assert classify("write_file", {"path": "link.txt"}, autonomous=False)[0] == "confirm"
+    assert classify("read_file", {"path": "link.txt"}, autonomous=False)[0] == "auto"
 
 
 def test_every_path_argument_is_checked(tmp_workspace):
+    """The widened PATH_ARGS list is what makes a third-party tool's `filename`
+    reach the check at all; the verdict it produces is FR-302's business."""
     for key in ("path", "file", "cwd"):
-        assert classify("run_shell", {key: "../outside"}, autonomous=True)[0] == "deny"
+        assert classify("write_file", {key: "../outside"}, autonomous=True)[0] == "deny"
+        assert classify("write_file", {key: "../outside"},
+                        autonomous=False)[0] == "confirm"
+
+
+# --- the gaps FR-302's amendment exposed, closed 2026-09-08 ----------------
+#
+# When a path outside the workspace stopped being refused, DANGER became the
+# only thing between the model and the filesystem. Every command below passed
+# the old list. Categories from hermes_copy/hermes-agent/tools/approval.py.
+
+@pytest.mark.parametrize("command", [
+    "mv ~/Documents /tmp",                        # a wipe with a different verb
+    "cp -r $HOME/photos /tmp",
+    "echo x > ~/.bashrc",                         # owns the next shell
+    "echo x >> ~/.zshrc",
+    "cat ~/.ssh/id_rsa",
+    "python -c 'import shutil; shutil.rmtree(\"/\")'",   # a shell by another name
+    "node -e 'require(\"fs\").rmSync(\"/\")'",
+    "perl -e 'unlink glob \"*\"'",
+    "git clean -fdx",                             # deletes untracked work
+    "vi /private/etc/sudoers",                    # the macOS /etc symlink
+    "cat /etc/shadow",
+])
+def test_a_command_that_reaches_past_the_workspace_needs_a_human(
+        tmp_workspace, command):
+    verdict, _ = classify("run_shell", {"command": command}, autonomous=False)
+    assert verdict == "confirm", f"{command!r} ran unreviewed"
+
+
+@pytest.mark.parametrize("command", [
+    "pytest -q", "python -m pytest", "ls -la", "git status", "git diff",
+    "grep -rn parse src", "npm run build", "cat README.md",
+    "git commit -m 'fix the parser'",
+])
+def test_ordinary_work_is_not_escalated(tmp_workspace, command):
+    """A gate that stops everything trains people to approve without looking -
+    the same reason planning denies rather than confirms."""
+    assert classify("run_shell", {"command": command},
+                    autonomous=False)[0] == "auto", command
 
 
 # --- danger escalation, and correction (d): RISK is the single path --------
@@ -149,13 +260,19 @@ def test_planning_refuses_a_shell_command_that_could_write(tmp_workspace, comman
     assert "planning" in reason
 
 
-def test_planning_still_refuses_a_path_escape_first(tmp_workspace):
-    """Order matters: the workspace check runs before the planning check, so the
-    reason names the real problem rather than the phase."""
-    verdict, reason = classify("read_file", {"path": "../../etc/passwd"},
+def test_planning_still_refuses_a_write_outside_the_workspace(tmp_workspace):
+    """The planning gate is unchanged by FR-302's amendment: it refuses anything
+    that could write, and being outside the workspace does not make it milder."""
+    verdict, reason = classify("write_file", {"path": "../../etc/passwd"},
                                autonomous=False, planning=True)
     assert verdict == "deny"
-    assert "escapes workspace" in reason
+    assert "planning" in reason
+
+
+def test_planning_still_lets_it_read_outside(tmp_workspace):
+    """Reading is what planning is FOR, and the amendment did not narrow it."""
+    assert classify("read_file", {"path": "../../etc/passwd"},
+                    autonomous=False, planning=True)[0] == "auto"
 
 
 def test_planning_is_off_by_default(tmp_workspace):
