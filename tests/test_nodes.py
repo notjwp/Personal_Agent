@@ -3777,3 +3777,102 @@ def test_the_store_survives_a_second_open(tmp_workspace):
     tools.TOOLS["todo"]["fn"]("add", "persisted")
     tools._todos().close()
     assert "persisted" in tools.TOOLS["todo"]["fn"]("list")
+
+
+# =================================================== move_files (tool 4 of 7)
+
+def test_a_file_moves(tmp_workspace):
+    from agent import tools
+
+    (tmp_workspace / "a.txt").write_text("hello", encoding="utf-8")
+    (tmp_workspace / "done").mkdir()
+    out = tools.TOOLS["move_files"]["fn"]("a.txt", "done")
+    assert (tmp_workspace / "done" / "a.txt").read_text(encoding="utf-8") == "hello"
+    assert not (tmp_workspace / "a.txt").exists()
+    assert "1" in out
+
+
+def test_a_glob_moves_many(tmp_workspace):
+    """"Sort my Downloads" is the request this exists for, and it is never
+    one file."""
+    from agent import tools
+
+    for name in ("one.md", "two.md", "keep.txt"):
+        (tmp_workspace / name).write_text("x", encoding="utf-8")
+    (tmp_workspace / "notes").mkdir()
+    out = tools.TOOLS["move_files"]["fn"]("*.md", "notes")
+    assert (tmp_workspace / "notes" / "one.md").exists()
+    assert (tmp_workspace / "notes" / "two.md").exists()
+    assert (tmp_workspace / "keep.txt").exists(), "the glob took too much"
+    assert "2" in out
+
+
+def test_it_refuses_to_overwrite(tmp_workspace):
+    """A move onto an existing file destroys it and SUCCEEDS, so the agent
+    never learns - the same failure write_file already refuses on binaries."""
+    from agent import tools
+
+    (tmp_workspace / "a.txt").write_text("new", encoding="utf-8")
+    (tmp_workspace / "done").mkdir()
+    (tmp_workspace / "done" / "a.txt").write_text("precious", encoding="utf-8")
+    out = tools.TOOLS["move_files"]["fn"]("a.txt", "done")
+    assert (tmp_workspace / "done" / "a.txt").read_text(encoding="utf-8") == "precious"
+    assert "refused" in out.lower() or "exists" in out.lower()
+
+
+def test_a_missing_source_says_what_is_there(tmp_workspace):
+    from agent import tools
+
+    (tmp_workspace / "real.txt").write_text("x", encoding="utf-8")
+    out = tools.TOOLS["move_files"]["fn"]("nope.txt", ".")
+    assert "nothing matched" in out.lower() or "no " in out.lower()
+
+
+def test_copy_leaves_the_original(tmp_workspace):
+    from agent import tools
+
+    (tmp_workspace / "a.txt").write_text("hello", encoding="utf-8")
+    (tmp_workspace / "backup").mkdir()
+    tools.TOOLS["move_files"]["fn"]("a.txt", "backup", "copy")
+    assert (tmp_workspace / "a.txt").exists()
+    assert (tmp_workspace / "backup" / "a.txt").exists()
+
+
+def test_a_partial_failure_reports_both_halves(tmp_workspace):
+    """Moving ten files where one collides must not look like total success or
+    total failure. The agent needs to know which half happened."""
+    from agent import tools
+
+    (tmp_workspace / "one.md").write_text("x", encoding="utf-8")
+    (tmp_workspace / "two.md").write_text("x", encoding="utf-8")
+    (tmp_workspace / "out").mkdir()
+    (tmp_workspace / "out" / "two.md").write_text("keep", encoding="utf-8")
+    out = tools.TOOLS["move_files"]["fn"]("*.md", "out")
+    assert "one.md" in out or "1" in out
+    assert "two.md" in out
+
+
+def test_it_creates_the_destination(tmp_workspace):
+    from agent import tools
+
+    (tmp_workspace / "a.txt").write_text("x", encoding="utf-8")
+    tools.TOOLS["move_files"]["fn"]("a.txt", "new/place")
+    assert (tmp_workspace / "new" / "place" / "a.txt").exists()
+
+
+def test_move_files_is_destructive_risk():
+    """It is not `write`. A move can destroy work that no edit_file could, and
+    the gate should pause on it the way it pauses on rm."""
+    from agent import policy
+
+    assert policy.risk_of("move_files") == "destructive"
+
+
+def test_a_move_out_of_the_workspace_asks_first(tmp_workspace):
+    """FR-302 as amended, through the tool that most needs it."""
+    from agent.policy import classify
+
+    verdict, _ = classify("move_files",
+                          {"source": "a.txt", "destination": "/etc"},
+                          autonomous=False)
+    assert verdict == "confirm"
