@@ -146,6 +146,21 @@ TASKS: list[tuple[str, list[str]]] = [
                )""",
         ],
     ),
+    (
+        # v4: the USER's todo list, added 2026-09-08. `tasks` above is the
+        # agent's own queue; this is what the person is doing, which nothing
+        # tracked. Same database because it is the same lifetime and the same
+        # AGENT_HOME - a second file would buy isolation nothing needs.
+        "todos",
+        [
+            """CREATE TABLE IF NOT EXISTS todos (
+                   item     TEXT PRIMARY KEY,
+                   status   TEXT NOT NULL CHECK(status IN ('open','done')),
+                   added_at REAL NOT NULL,
+                   done_at  REAL
+               )""",
+        ],
+    ),
 ]
 
 

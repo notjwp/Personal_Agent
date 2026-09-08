@@ -3696,3 +3696,84 @@ def test_read_document_is_read_risk():
     from agent import policy
 
     assert policy.risk_of("read_document") == "read"
+
+
+# ======================================================== todo (tool 3 of 7)
+
+def test_a_todo_added_in_one_session_is_there_in_the_next(tmp_workspace):
+    """The whole point: --tasks tracks the AGENT's queue, and nothing tracked
+    yours. Durable in AGENT_HOME beside tasks.db and memory.db."""
+    from agent import tools
+
+    tools.TOOLS["todo"]["fn"]("add", "call the dentist")
+    tools.TOOLS["todo"]["fn"]("add", "renew the domain")
+    out = tools.TOOLS["todo"]["fn"]("list")
+    assert "call the dentist" in out and "renew the domain" in out
+
+
+def test_listing_an_empty_list_says_so(tmp_workspace):
+    from agent import tools
+
+    out = tools.TOOLS["todo"]["fn"]("list")
+    assert "nothing" in out.lower() or "no " in out.lower()
+
+
+def test_an_item_can_be_finished_and_stops_being_outstanding(tmp_workspace):
+    from agent import tools
+
+    tools.TOOLS["todo"]["fn"]("add", "buy milk")
+    tools.TOOLS["todo"]["fn"]("done", "buy milk")
+    out = tools.TOOLS["todo"]["fn"]("list")
+    assert "buy milk" not in out or "done" in out.lower()
+
+
+def test_finishing_something_that_is_not_there_says_so(tmp_workspace):
+    from agent import tools
+
+    out = tools.TOOLS["todo"]["fn"]("done", "a thing never added")
+    assert "no" in out.lower()
+
+
+def test_a_duplicate_is_not_added_twice(tmp_workspace):
+    """An agent re-reading its own list and re-adding is the obvious failure,
+    and it would grow the list without bound."""
+    from agent import tools
+
+    tools.TOOLS["todo"]["fn"]("add", "one thing")
+    tools.TOOLS["todo"]["fn"]("add", "one thing")
+    out = tools.TOOLS["todo"]["fn"]("list")
+    assert out.count("one thing") == 1
+
+
+def test_an_unknown_action_names_the_ones_that_exist(tmp_workspace):
+    from agent import tools
+
+    out = tools.TOOLS["todo"]["fn"]("obliterate", "everything")
+    assert "add" in out and "list" in out and "done" in out
+
+
+def test_the_content_is_bounded(tmp_workspace):
+    """Hermes caps it. An unbounded item is unbounded text on every turn that
+    lists it, and the transcript pays for it repeatedly."""
+    from agent import tools
+
+    tools.TOOLS["todo"]["fn"]("add", "x" * 5000)
+    out = tools.TOOLS["todo"]["fn"]("list")
+    assert len(out) < 2000
+
+
+def test_todo_is_write_risk():
+    """It changes durable state, unlike ask_user and read_document."""
+    from agent import policy
+
+    assert policy.risk_of("todo") == "write"
+
+
+def test_the_store_survives_a_second_open(tmp_workspace):
+    """CREATE TABLE IF NOT EXISTS is not a migration - user_version carries it,
+    and opening twice must not raise or lose rows."""
+    from agent import tools
+
+    tools.TOOLS["todo"]["fn"]("add", "persisted")
+    tools._todos().close()
+    assert "persisted" in tools.TOOLS["todo"]["fn"]("list")

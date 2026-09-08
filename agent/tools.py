@@ -1,6 +1,6 @@
 """The built-in tools, and the risk each one carries.
 
-Nine of them, and their schemas are DERIVED from the signature and docstring by
+Ten of them, and their schemas are DERIVED from the signature and docstring by
 `@tool` in agent/registry.py (FR-207). They were hand-written until tool eight,
 when §13's arithmetic - ~25 lines plus ~5 per tool for the machinery against ~8
 per tool written out - stopped favouring the dicts.
@@ -512,9 +512,71 @@ def robots_allows(url: str, agent: str = "*") -> bool:
     return True if parser is None else parser.can_fetch(agent, url)
 
 
+# An item longer than this is unbounded text on every turn that lists it, and
+# the transcript pays for it again each time.
+MAX_TODO = 120
+TODO_ACTIONS = ("add", "list", "done")
+
+
+def _todos():
+    """The todo store, in the same database as the agent's own queue.
+
+    Its own connection rather than worker's: tools must not depend on worker,
+    which imports graph. The SCHEMA is shared through migrations, which is the
+    part that has to have one definition.
+    """
+    import sqlite3
+
+    from agent import migrations
+
+    config.TASKS_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(config.TASKS_DB), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    migrations.apply(conn, migrations.TASKS)
+    return conn
+
+
+@tool(risk="write")
+def todo(action: str, item: str = "") -> str:
+    """Track what the USER is doing, across sessions. `add` records something
+    they need to do, `list` shows what is outstanding, `done` closes one out.
+    Use it when they mention a commitment, not for your own working steps.
+
+    action: One of add, list, done.
+    item: The thing to add or close. Ignored by list.
+    """
+    action = str(action or "").strip().lower()
+    if action not in TODO_ACTIONS:
+        return f"unknown action {action!r}. Use one of: {', '.join(TODO_ACTIONS)}."
+    text = str(item or "").strip()[:MAX_TODO]
+    conn = _todos()
+    try:
+        if action == "add":
+            if not text:
+                return "nothing to add - say what the item is."
+            # An agent re-reading its own list and re-adding is the obvious
+            # failure, and it grows the list without bound.
+            conn.execute("INSERT OR IGNORE INTO todos VALUES (?,'open',?,NULL)",
+                         (text, time.time()))
+            return f"added: {text}"
+        if action == "done":
+            changed = conn.execute(
+                "UPDATE todos SET status='done', done_at=? "
+                "WHERE item=? AND status='open'", (time.time(), text)).rowcount
+            return (f"done: {text}" if changed
+                    else f"no open item matching {text!r}.")
+        rows = conn.execute("SELECT item FROM todos WHERE status='open' "
+                            "ORDER BY added_at").fetchall()
+        if not rows:
+            return "nothing outstanding."
+        return "\n".join(f"- {row['item']}" for row in rows)
+    finally:
+        conn.close()
+
+
 # Where the text lives inside each format, and the tag that ends a block. These
 # are all zip archives of XML, which is why no third-party library is needed -
-# Hermes reads docx, xlsx and ipynb the same way for the same reason.
 DOCUMENTS = {
     ".docx": ("word/document.xml", "</w:p>"),
     ".pptx": ("ppt/slides/", "</a:p>"),
@@ -707,7 +769,7 @@ def web_search(query: str, limit: int = 5) -> str:
 # whole registration. Order is deterministic: tools render first in the prompt.
 TOOLS = {fn.__name__: fn.spec for fn in (
     read_file, search_files, write_file, edit_file, run_python, run_shell,
-    ask_user, read_document,
+    ask_user, read_document, todo,
     web_search)}
 
 
