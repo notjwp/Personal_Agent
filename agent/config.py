@@ -253,6 +253,13 @@ MCP_CALL_TIMEOUT = float(_env("AGENT_MCP_CALL_TIMEOUT", "60"))
 WEB_ENABLED = _env("AGENT_WEB", "on").strip().lower() not in (
     "0", "off", "false")
 
+# The same switch, for any tool. AGENT_WEB predates it and stays because the
+# search split's numbers are quoted against that name; everything since needs a
+# control arm too, and a knob per tool is how a config file rots.
+TOOLS_OFF = frozenset(
+    name.strip() for name in _env("AGENT_TOOLS_OFF", "").split(",")
+    if name.strip())
+
 # --- memory (Phase M) ------------------------------------------------------
 
 # In the agent home, not the workspace: reset.sh wipes the workspace between

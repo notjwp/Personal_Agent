@@ -1,6 +1,6 @@
 """The built-in tools, and the risk each one carries.
 
-Thirteen of them, and their schemas are DERIVED from the signature and docstring by
+Twelve of them, and their schemas are DERIVED from the signature and docstring by
 `@tool` in agent/registry.py (FR-207). They were hand-written until tool eight,
 when §13's arithmetic - ~25 lines plus ~5 per tool for the machinery against ~8
 per tool written out - stopped favouring the dicts.
@@ -595,48 +595,6 @@ def read_terminal(session: str) -> str:
     return f"{output}\n{name} finished, exit code {code}."
 
 
-@tool(risk="destructive")
-def move_files(source: str, destination: str, mode: str = "move") -> str:
-    """Move or copy files, including with a wildcard like '*.pdf'. Use it to
-    organise a directory - the destination is created if it does not exist, and
-    an existing file is never overwritten.
-
-    source: A path or a glob, e.g. 'notes.txt' or '*.md'.
-    destination: The directory to put them in.
-    mode: 'move' to relocate, 'copy' to duplicate. Default move.
-    """
-    root = config.resolve(source)
-    matches = ([root] if root.exists()
-               else sorted(config.resolve(".").glob(source)))
-    matches = [m for m in matches if m.is_file()]
-    if not matches:
-        return f"nothing matched {source!r}. {_nearby(root)}"
-    target = config.resolve(destination)
-    target.mkdir(parents=True, exist_ok=True)
-    copying = str(mode or "").strip().lower() == "copy"
-    moved, refused = [], []
-    for path in matches:
-        landing = target / path.name
-        if landing.exists():
-            # A move onto an existing file destroys it and SUCCEEDS, so the
-            # agent never learns. write_file refuses the same shape.
-            refused.append(path.name)
-            continue
-        try:
-            shutil.copy2(path, landing) if copying else shutil.move(str(path),
-                                                                   str(landing))
-            moved.append(path.name)
-        except OSError as exc:
-            refused.append(f"{path.name} ({exc.strerror or exc})")
-    verb = "copied" if copying else "moved"
-    out = f"{verb} {len(moved)} to {_label(target)}"
-    if refused:
-        # Ten files where one collides is neither success nor failure, and the
-        # agent needs to know WHICH half happened to decide what to do next.
-        out += f"; refused {len(refused)}: {', '.join(refused[:10])}"
-    return out
-
-
 # An item longer than this is unbounded text on every turn that lists it, and
 # the transcript pays for it again each time.
 MAX_TODO = 120
@@ -894,23 +852,25 @@ def web_search(query: str, limit: int = 5) -> str:
 # whole registration. Order is deterministic: tools render first in the prompt.
 TOOLS = {fn.__name__: fn.spec for fn in (
     read_file, search_files, write_file, edit_file, run_python, run_shell,
-    ask_user, read_document, todo, move_files, start_terminal,
-    read_terminal,
+    ask_user, read_document, todo, start_terminal, read_terminal,
     web_search)}
 
 
 def builtins() -> dict:
     """The built-ins exposed for THIS run - the same shape as memory.tools().
 
-    web_search is dropped when AGENT_WEB is off, and that switch is what makes
-    Stage 4's control run a controlled comparison rather than two numbers measured
-    on different binaries. Gated here rather than by rebuilding TOOLS at import,
-    so `policy.sync()` can still classify the tool and a test can flip the flag
-    without reloading the module.
+    web_search is dropped when AGENT_WEB is off, and AGENT_TOOLS_OFF drops any
+    named tool. That switch is what makes a control run a controlled comparison
+    rather than two numbers measured on different binaries. Gated here rather
+    than by rebuilding TOOLS at import, so `policy.sync()` can still classify the
+    tool and a test can flip the flag without reloading the module.
     """
-    if config.WEB_ENABLED:
+    dropped = set(config.TOOLS_OFF)
+    if not config.WEB_ENABLED:
+        dropped.add("web_search")
+    if not dropped:
         return TOOLS
-    return {name: entry for name, entry in TOOLS.items() if name != "web_search"}
+    return {name: entry for name, entry in TOOLS.items() if name not in dropped}
 
 SCHEMAS = [entry["schema"] for entry in TOOLS.values()]
 

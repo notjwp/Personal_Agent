@@ -3779,105 +3779,6 @@ def test_the_store_survives_a_second_open(tmp_workspace):
     assert "persisted" in tools.TOOLS["todo"]["fn"]("list")
 
 
-# =================================================== move_files (tool 4 of 7)
-
-def test_a_file_moves(tmp_workspace):
-    from agent import tools
-
-    (tmp_workspace / "a.txt").write_text("hello", encoding="utf-8")
-    (tmp_workspace / "done").mkdir()
-    out = tools.TOOLS["move_files"]["fn"]("a.txt", "done")
-    assert (tmp_workspace / "done" / "a.txt").read_text(encoding="utf-8") == "hello"
-    assert not (tmp_workspace / "a.txt").exists()
-    assert "1" in out
-
-
-def test_a_glob_moves_many(tmp_workspace):
-    """"Sort my Downloads" is the request this exists for, and it is never
-    one file."""
-    from agent import tools
-
-    for name in ("one.md", "two.md", "keep.txt"):
-        (tmp_workspace / name).write_text("x", encoding="utf-8")
-    (tmp_workspace / "notes").mkdir()
-    out = tools.TOOLS["move_files"]["fn"]("*.md", "notes")
-    assert (tmp_workspace / "notes" / "one.md").exists()
-    assert (tmp_workspace / "notes" / "two.md").exists()
-    assert (tmp_workspace / "keep.txt").exists(), "the glob took too much"
-    assert "2" in out
-
-
-def test_it_refuses_to_overwrite(tmp_workspace):
-    """A move onto an existing file destroys it and SUCCEEDS, so the agent
-    never learns - the same failure write_file already refuses on binaries."""
-    from agent import tools
-
-    (tmp_workspace / "a.txt").write_text("new", encoding="utf-8")
-    (tmp_workspace / "done").mkdir()
-    (tmp_workspace / "done" / "a.txt").write_text("precious", encoding="utf-8")
-    out = tools.TOOLS["move_files"]["fn"]("a.txt", "done")
-    assert (tmp_workspace / "done" / "a.txt").read_text(encoding="utf-8") == "precious"
-    assert "refused" in out.lower() or "exists" in out.lower()
-
-
-def test_a_missing_source_says_what_is_there(tmp_workspace):
-    from agent import tools
-
-    (tmp_workspace / "real.txt").write_text("x", encoding="utf-8")
-    out = tools.TOOLS["move_files"]["fn"]("nope.txt", ".")
-    assert "nothing matched" in out.lower() or "no " in out.lower()
-
-
-def test_copy_leaves_the_original(tmp_workspace):
-    from agent import tools
-
-    (tmp_workspace / "a.txt").write_text("hello", encoding="utf-8")
-    (tmp_workspace / "backup").mkdir()
-    tools.TOOLS["move_files"]["fn"]("a.txt", "backup", "copy")
-    assert (tmp_workspace / "a.txt").exists()
-    assert (tmp_workspace / "backup" / "a.txt").exists()
-
-
-def test_a_partial_failure_reports_both_halves(tmp_workspace):
-    """Moving ten files where one collides must not look like total success or
-    total failure. The agent needs to know which half happened."""
-    from agent import tools
-
-    (tmp_workspace / "one.md").write_text("x", encoding="utf-8")
-    (tmp_workspace / "two.md").write_text("x", encoding="utf-8")
-    (tmp_workspace / "out").mkdir()
-    (tmp_workspace / "out" / "two.md").write_text("keep", encoding="utf-8")
-    out = tools.TOOLS["move_files"]["fn"]("*.md", "out")
-    assert "one.md" in out or "1" in out
-    assert "two.md" in out
-
-
-def test_it_creates_the_destination(tmp_workspace):
-    from agent import tools
-
-    (tmp_workspace / "a.txt").write_text("x", encoding="utf-8")
-    tools.TOOLS["move_files"]["fn"]("a.txt", "new/place")
-    assert (tmp_workspace / "new" / "place" / "a.txt").exists()
-
-
-def test_move_files_is_destructive_risk():
-    """It is not `write`. A move can destroy work that no edit_file could, and
-    the gate should pause on it the way it pauses on rm."""
-    from agent import policy
-
-    assert policy.risk_of("move_files") == "destructive"
-
-
-def test_a_move_out_of_the_workspace_asks_first(tmp_workspace):
-    """FR-302 as amended, through the tool that most needs it."""
-    from agent.policy import classify
-
-    verdict, _ = classify("move_files",
-                          {"source": "a.txt", "destination": "/etc"},
-                          autonomous=False)
-    assert verdict == "confirm"
-
-
 # ============================================ start/read_terminal (5-6 of 7)
 
 def test_a_session_keeps_running_between_reads(tmp_workspace):
@@ -3978,3 +3879,78 @@ def test_the_terminal_tools_carry_the_right_risk():
 
     assert policy.risk_of("start_terminal") == "destructive"
     assert policy.risk_of("read_terminal") == "read"
+
+
+# ================================================= AGENT_TOOLS_OFF (ablation)
+
+def test_a_named_tool_is_dropped_from_the_live_set(monkeypatch):
+    """The control arm. Without this the comparison is two numbers measured on
+    two different binaries, which is not a control."""
+    from agent import config, tools
+
+    monkeypatch.setattr(config, "TOOLS_OFF", frozenset({"todo"}))
+    live = tools.builtins()
+    assert "todo" not in live
+    assert "read_file" in live
+
+
+def test_several_tools_drop_at_once(monkeypatch):
+    from agent import config, tools
+
+    monkeypatch.setattr(config, "TOOLS_OFF",
+                        frozenset({"todo", "ask_user", "read_document"}))
+    live = tools.builtins()
+    assert not {"todo", "ask_user", "read_document"} & set(live)
+    assert len(live) == len(tools.TOOLS) - 3
+
+
+def test_an_empty_switch_changes_nothing(monkeypatch):
+    """The default path must be the SAME object, not a copy - every turn pays
+    for this and a rebuilt dict per call is rent for nothing."""
+    from agent import config, tools
+
+    monkeypatch.setattr(config, "TOOLS_OFF", frozenset())
+    monkeypatch.setattr(config, "WEB_ENABLED", True)
+    assert tools.builtins() is tools.TOOLS
+
+
+def test_the_web_switch_still_works_on_its_own(monkeypatch):
+    """AGENT_WEB predates AGENT_TOOLS_OFF and the search split's 9/9 vs 0/9 is
+    quoted against that name."""
+    from agent import config, tools
+
+    monkeypatch.setattr(config, "TOOLS_OFF", frozenset())
+    monkeypatch.setattr(config, "WEB_ENABLED", False)
+    assert "web_search" not in tools.builtins()
+
+
+def test_both_switches_compose(monkeypatch):
+    from agent import config, tools
+
+    monkeypatch.setattr(config, "TOOLS_OFF", frozenset({"todo"}))
+    monkeypatch.setattr(config, "WEB_ENABLED", False)
+    live = tools.builtins()
+    assert "todo" not in live and "web_search" not in live
+
+
+def test_a_name_that_is_not_a_tool_is_ignored(monkeypatch):
+    """A typo in the switch must not silently drop nothing AND look like it
+    worked - it drops nothing, and the run's `tools` field says what was live."""
+    from agent import config, tools
+
+    monkeypatch.setattr(config, "TOOLS_OFF", frozenset({"no_such_tool"}))
+    assert len(tools.builtins()) == len(tools.TOOLS)
+
+
+def test_the_switch_parses_a_comma_list(monkeypatch):
+    import importlib
+
+    from agent import config
+
+    monkeypatch.setenv("AGENT_TOOLS_OFF", " todo , ask_user ,, ")
+    reloaded = importlib.reload(config)
+    try:
+        assert reloaded.TOOLS_OFF == frozenset({"todo", "ask_user"})
+    finally:
+        monkeypatch.delenv("AGENT_TOOLS_OFF")
+        importlib.reload(config)
