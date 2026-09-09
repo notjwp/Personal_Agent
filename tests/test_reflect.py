@@ -618,6 +618,27 @@ def test_a_greeting_answers_once_and_stops():
     assert reflect(s)["verdict"] == "done"
 
 
+def test_off_a_code_workspace_ONE_reply_is_the_whole_answer(monkeypatch):
+    """Reported second: the first fix still spent two model calls on "hi whats
+    up". The extra turn protects a coding preamble, and there is no preamble to
+    protect when nothing was going to be edited."""
+    monkeypatch.setattr("agent.graph.is_code_workspace", lambda: False)
+    s = state(messages=[{"role": "user", "content": "hi whats up"},
+                        _text("Not much! How can I help?")])
+
+    assert reflect(s)["verdict"] == "done"
+
+
+def test_ON_a_code_workspace_the_preamble_turn_survives(monkeypatch):
+    """The other side, and the one already paid for: "Let me look at the test
+    file first." must still not end a repair run."""
+    monkeypatch.setattr("agent.graph.is_code_workspace", lambda: True)
+    s = state(messages=[{"role": "user", "content": "fix it"},
+                        _text("Let me look at the test file first.")])
+
+    assert reflect(s)["verdict"] == "continue"
+
+
 def test_a_session_that_HAS_called_a_tool_is_untouched():
     """The discriminator, and why a streak would have been wrong: across 942
     recorded rows `add-endpoint` repeats itself identically up to four times

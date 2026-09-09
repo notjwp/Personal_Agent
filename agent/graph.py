@@ -494,7 +494,14 @@ def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
             # An answer given in words is still an answer. `pass` is decided by
             # the check command reading the workspace, so ending here cannot
             # turn a failing case into a passing one.
-            if _answered_without_working(state["messages"]):
+            #
+            # The extra turn is the CODING posture's. "Let me look at the test
+            # file first." must not end a repair run, and that was paid for on
+            # code cases. Off a code workspace the first reply IS the answer,
+            # and spending a second model call on "hi whats up" is waste the
+            # same lesson never asked for.
+            if _answered_without_working(state["messages"],
+                                         once=not is_code_workspace()):
                 return {"verdict": "done"}
             return {"verdict": "continue"}
         plan = state.get("plan") or []
@@ -827,8 +834,11 @@ def _made_a_call(messages: list[dict]) -> bool:
     return any(_tool_calls(m) for m in messages if m.get("role") == "assistant")
 
 
-def _answered_without_working(messages: list[dict]) -> bool:
-    """Whether a session with NO tool call has now replied twice.
+def _answered_without_working(messages: list[dict], once: bool = False) -> bool:
+    """Whether a session with NO tool call has replied enough times to stop.
+
+    `once` is the non-coding posture: one reply ends it, because there is no
+    preamble to protect - nothing was going to be edited.
 
     `turns` is incremented by `execute`, so a session that never reaches it
     never advances and `max_turns` cannot bind. The thrash detector misses the
@@ -847,7 +857,7 @@ def _answered_without_working(messages: list[dict]) -> bool:
     if _made_a_call(messages):
         return False
     said = [_final_text([m]) for m in messages if m.get("role") == "assistant"]
-    return len([s for s in said if s]) >= 2
+    return len([s for s in said if s]) >= (1 if once else 2)
 
 
 def _signature(call: dict) -> str:

@@ -426,7 +426,14 @@ def test_full_loop_offline(fresh_app, tmp_workspace, monkeypatch):
 
 
 def test_text_only_first_turn_does_not_finish(fresh_app, tmp_workspace, monkeypatch):
-    """Correction (b) end to end: a preamble must not terminate the run."""
+    """Correction (b) end to end: a preamble must not terminate the run.
+
+    The marker is load bearing and was implicit before: the preamble turn is
+    the CODING posture's, and `tmp_workspace` is a bare directory. Without it
+    this asserts the coding rule against a workspace that is not one.
+    """
+    (tmp_workspace / "pyproject.toml").write_text(
+        "[project]\nname='x'\n", encoding="utf-8")
     use_fake(monkeypatch, [
         text_turn("Let me look at the test file first."),
         tool_turn("run_shell", command="echo ok"),
@@ -435,6 +442,20 @@ def test_text_only_first_turn_does_not_finish(fresh_app, tmp_workspace, monkeypa
     final = run(fresh_app, "loop-2")
     assert final["verdict"] == "done"
     assert final["turns"] == 1, "the run continued past the preamble"
+
+
+def test_off_a_code_workspace_a_single_reply_ends_it(fresh_app, tmp_workspace,
+                                                     monkeypatch):
+    """The same loop with no marker: one reply, no tool call, done. This is
+    "hi whats up" end to end - it used to run until MAX_SECONDS, then cost two
+    model calls, and now costs one."""
+    use_fake(monkeypatch, [
+        text_turn("Not much! How can I help?"),
+        text_turn("Hey there - what's on your mind?"),
+    ])
+    final = run(fresh_app, "chat-1")
+    assert final["verdict"] == "done"
+    assert final["turns"] == 0
 
 
 def test_denied_call_keeps_the_loop_running(fresh_app, tmp_workspace, monkeypatch):

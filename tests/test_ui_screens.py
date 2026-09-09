@@ -83,6 +83,24 @@ def test_the_wordmark_is_one_colour_and_never_a_fade():
     assert {span.style for span in art.spans} == {"row--logo"}
 
 
+def test_every_palette_separates_a_pane_from_the_ground_behind_it():
+    """Reported twice from the TUI: panes invisible against the background.
+
+    The mechanism was never wrong - `Pane { background: $surface }` painted
+    exactly what it was told. tokyo-night set surface 4/5/8 points off its own
+    background and mono 8/9/10, which no display resolves. This is the guard,
+    because the next palette added would have had nothing to check it against.
+    """
+    from textual.color import Color
+
+    for one in (theme.MONO, theme.MOCHA, theme.TOKYO):
+        ground = Color.parse(one.background)
+        raised = Color.parse(one.surface)
+        apart = sum(abs(a - b) for a, b in
+                    zip((ground.r, ground.g, ground.b), (raised.r, raised.g, raised.b)))
+        assert apart >= 40, f"{one.name}: surface is {apart} from background"
+
+
 # ================================================================== the landing
 
 def test_the_landing_shows_the_wordmark_and_every_command():
@@ -386,14 +404,28 @@ def test_the_status_bar_always_names_a_step(values, expected):
     drive(app, script)
 
 
-def test_the_composer_keeps_focus_so_typing_always_reaches_the_agent():
+def test_typing_always_reaches_the_agent_even_from_another_pane():
+    """This asserted that the composer NEVER yields focus, which is why
+    `focus_id` was only a border colour: arrows moved the text cursor, a
+    table's row cursor could not move, and Enter submitted the composer
+    instead of resuming a thread. Reported from the TUI.
+
+    The property it was protecting is kept, by a different route - a printable
+    key hands focus back and is not lost."""
     app = workspace()
 
     async def script(pilot):
         assert app.screen.focused is app.screen.query_one("#composer")
         await pilot.press("alt+enter")
         await pilot.pause()
-        assert app.screen.focused is app.screen.query_one("#composer")
+        # Focus follows the active pane now, so the split pane has the keys.
+        assert app.screen.focused is not app.screen.query_one("#composer")
+
+        await pilot.press("h")
+        await pilot.pause()
+        composer = app.screen.query_one("#composer")
+        assert app.screen.focused is composer
+        assert composer.value == "h", "the keystroke must not be swallowed"
 
     drive(app, script)
 
@@ -833,5 +865,89 @@ def test_the_workspace_hands_the_tool_a_way_to_ask():
         await app.screen.workers.wait_for_complete()
         await pilot.pause()
         assert tools.ASK == app.screen.ask
+
+    drive(app, script)
+
+
+# ============================================== dragging a divider with a mouse
+
+def test_the_gap_between_two_panes_is_where_the_divider_is():
+    tree = tiling.Split("v", 0.5, tiling.Leaf("chat"), tiling.Leaf("threads"))
+    boxes = tiling.rects(tree, 100, 30)
+    found = tiling.dividers(tree, 100, 30)
+
+    assert len(found) == 1
+    gap = found[0].box
+    # Exactly the cells between the two panes - not inside either of them.
+    assert gap.x == boxes["chat"].x + boxes["chat"].w
+    assert gap.x + gap.w == boxes["threads"].x
+
+
+def test_a_one_cell_gap_is_grabbable_from_either_side():
+    """A single column is a hard thing to hit with a mouse, so a cell either
+    side counts. Without this the feature is technically present and unusable."""
+    tree = tiling.Split("v", 0.5, tiling.Leaf("chat"), tiling.Leaf("threads"))
+
+    for x in (48, 49, 50):
+        assert tiling.divider_at(tree, x, 10, 100, 30) is not None
+    assert tiling.divider_at(tree, 20, 10, 100, 30) is None
+
+
+def test_a_nested_divider_is_not_shadowed_by_its_parent():
+    tree = tiling.Split("v", 0.5, tiling.Leaf("chat"),
+                        tiling.Split("h", 0.5, tiling.Leaf("threads"),
+                                     tiling.Leaf("tasks")))
+    inner = tiling.divider_at(tree, 75, 14, 100, 30)
+
+    assert inner is not None
+    assert inner.leaves == ("threads", "tasks")
+
+
+def test_a_drag_cannot_make_a_pane_the_keys_would_refuse():
+    """The same MIN/MAX_RATIO the keyboard clamps to. A mouse that could drag a
+    pane to nothing would be a second set of rules for one layout."""
+    tree = tiling.Split("v", 0.5, tiling.Leaf("chat"), tiling.Leaf("threads"))
+    div = tiling.dividers(tree, 100, 30)[0]
+
+    assert tiling.ratio_at(div, -40, 10) == tiling.MIN_RATIO
+    assert tiling.ratio_at(div, 400, 10) == tiling.MAX_RATIO
+
+
+def test_set_ratio_returns_the_same_tree_when_nothing_moved():
+    """Identity is what lets the drag handler skip the widget write."""
+    tree = tiling.Split("v", 0.5, tiling.Leaf("chat"), tiling.Leaf("threads"))
+    div = tiling.dividers(tree, 100, 30)[0]
+
+    assert tiling.set_ratio(tree, div, 0.5) is tree
+    assert tiling.set_ratio(tree, div, 0.7) is not tree
+
+
+def test_dragging_resizes_without_remounting_the_tree():
+    """A rebuild per mouse-move would drop the transcript and the focus, so the
+    drag writes the two `fr` weights `build` already sets."""
+    app = workspace()
+
+    async def script(pilot):
+        await pilot.press("alt+enter")
+        await pilot.pause()
+        assert len(tiling.leaves(app.screen.tiles)) == 2
+        screen = app.screen
+        rebuilds, before = screen.rebuilds, screen.tiles.ratio
+
+        div = tiling.dividers(screen.tiles, *screen.area())[0]
+        await pilot.mouse_down(screen, offset=(div.box.x, div.box.y + 2))
+        await pilot.pause()
+        assert screen.dragging is not None
+
+        # Pilot has no mouse_move; `hover` posts the MouseMove, which the
+        # capture routes to the screen exactly as a real drag would.
+        await pilot.hover(screen, offset=(div.box.x - 12, div.box.y + 2))
+        await pilot.pause()
+        await pilot.mouse_up(screen, offset=(div.box.x - 12, div.box.y + 2))
+        await pilot.pause()
+
+        assert screen.dragging is None
+        assert screen.tiles.ratio != before, "the drag moved nothing"
+        assert screen.rebuilds == rebuilds, "a drag must not re-mount"
 
     drive(app, script)

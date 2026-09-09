@@ -72,6 +72,20 @@ OPENS = {"/threads": "threads", "/tasks": "tasks", "/schedules": "schedules",
          "/doctor": "doctor"}
 
 
+def weigh(first, second, ratio: float, side_by_side: bool) -> None:
+    """Express a split's ratio as the two children's `fr` weights.
+
+    One definition, because `build` and a live drag both set it and a drag that
+    weighed differently would jump back on the next rebuild.
+    """
+    for child, share in ((first, ratio), (second, 1 - ratio)):
+        weight = f"{max(1, round(share * 100))}fr"
+        if side_by_side:
+            child.styles.width = weight
+        else:
+            child.styles.height = weight
+
+
 def still(box: Input) -> Input:
     """An Input with no blinking cursor.
 
@@ -370,6 +384,10 @@ class WorkspaceScreen(Screen):
         self.cursor = 0
         self.artifact: Path | None = None
         self.rebuilds = 0
+        # Widgets per split, refilled by every build; and the divider being
+        # dragged, or None. Both belong to the mounted tree, not to the model.
+        self.boxes: dict[tuple, tuple] = {}
+        self.dragging: tiling.Divider | None = None
         self._queued: list[str] = []
         self._stream = ""
         self._recalled = False
@@ -416,6 +434,24 @@ class WorkspaceScreen(Screen):
             self.start(None)
         self.query_one(Input).focus()
 
+    def on_key(self, event) -> None:
+        """Typing always reaches the agent, even while a table holds the keys.
+
+        Focus follows the active pane so arrows and Enter work in a table
+        (without that, `focus_id` is only a border colour). A printable
+        character means you are composing, not navigating, so the composer
+        takes it back and receives the keystroke.
+        """
+        composer = self.query_one("#composer", Input)
+        if (getattr(event, "is_printable", False)
+                and self.focused is not composer):
+            self.focus_id = "chat"
+            self.mark_focus()
+            if event.character:
+                composer.insert_text_at_cursor(event.character)
+            event.stop()
+            event.prevent_default()
+
     def area(self) -> tuple[int, int]:
         """The tiled area, which is the screen minus the two docked rows."""
         return max(1, self.size.width), max(1, self.size.height - 2)
@@ -426,6 +462,7 @@ class WorkspaceScreen(Screen):
         self.rebuilds += 1
         region = self.query_one("#tiled", Vertical)
         region.remove_children()
+        self.boxes.clear()          # every widget it named is being discarded
         region.mount(self.build(tiling.Leaf(self.zoomed) if self.zoomed
                                 else self.tiles))
         # Each pane refreshes itself on ITS mount; the border can only be
@@ -440,12 +477,10 @@ class WorkspaceScreen(Screen):
         # One gap BETWEEN siblings and none on the outer edge, which is what
         # tiling.rects computes and what the eye expects.
         first.add_class("gutter-right" if side_by_side else "gutter-below")
-        for child, share in ((first, node.ratio), (second, 1 - node.ratio)):
-            weight = f"{max(1, round(share * 100))}fr"
-            if side_by_side:
-                child.styles.width = weight
-            else:
-                child.styles.height = weight
+        weigh(first, second, node.ratio, side_by_side)
+        # Keyed by the leaf ids under the split, not by the node: a drag builds
+        # a new frozen node every move, and the widgets do not change.
+        self.boxes[tuple(tiling.leaves(node))] = (first, second, side_by_side)
         return (Horizontal(first, second) if side_by_side
                 else Vertical(first, second))
 
@@ -459,11 +494,67 @@ class WorkspaceScreen(Screen):
             widget = self.pane(pane_id)
             if widget is not None:
                 widget.set_class(pane_id == self.focus_id, "-active")
+        self.give_keys_to(self.focus_id)
+
+    def give_keys_to(self, pane_id: str) -> None:
+        """Real keyboard focus, not only the border colour.
+
+        Without this `focus_id` is a class name: the composer is focused on
+        mount and never yields, so arrows move the text cursor, a table's row
+        cursor cannot move, and Enter submits the composer instead of reaching
+        RowSelected. Reported from the TUI as "arrow keys don't work" and
+        "I cannot select the previous chats".
+        """
+        if pane_id == "chat":
+            self.query_one("#composer", Input).focus()
+            return
+        pane = self.pane(pane_id)
+        if pane is None:
+            return
+        inner = next((w for w in pane.walk_children() if w.focusable), None)
+        (inner or pane).focus()
 
     def showing(self) -> list[str]:
         return [self.zoomed] if self.zoomed else tiling.leaves(self.tiles)
 
     # ------------------------------------------------------------- the keys
+
+    # ------------------------------------------------------------- the mouse
+
+    def on_mouse_down(self, event) -> None:
+        """Grab a divider. Anything else is left to the widget under it."""
+        if self.zoomed or isinstance(self.tiles, tiling.Leaf):
+            return
+        width, height = self.area()
+        found = tiling.divider_at(self.tiles, event.screen_x, event.screen_y,
+                                  width, height)
+        if found is None:
+            return
+        self.dragging = found
+        self.capture_mouse()
+        event.stop()
+
+    def on_mouse_move(self, event) -> None:
+        """Resize live, WITHOUT a rebuild: `build` already expresses the ratio
+        as two `fr` weights, so a drag is those two numbers changing. Re-mounting
+        the tree per mouse-move would drop the transcript and the focus."""
+        if self.dragging is None:
+            return
+        ratio = tiling.ratio_at(self.dragging, event.screen_x, event.screen_y)
+        moved = tiling.set_ratio(self.tiles, self.dragging, ratio)
+        if moved is not self.tiles:
+            self.tiles = moved
+            found = self.boxes.get(self.dragging.leaves)
+            if found is not None:
+                weigh(found[0], found[1], ratio, found[2])
+        event.stop()
+
+    def on_mouse_up(self, event) -> None:
+        if self.dragging is None:
+            return
+        self.dragging = None
+        self.release_mouse()
+        event.stop()
 
     def action_move(self, direction: str) -> None:
         if self.zoomed:

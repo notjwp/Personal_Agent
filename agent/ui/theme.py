@@ -27,8 +27,12 @@ STYLESHEET = Path(__file__).with_name("noesis.tcss")
 MONO = Theme(
     name="noesis-mono",
     background="#0A0B0D",
-    surface="#121417",
-    panel="#1A1D21",
+    # Raised until a pane is VISIBLY a pane. #121417 sat 8-10 points off
+    # the background, which no display resolves - reported as "the theme
+    # only affects the outer background". Separation matches mocha, the
+    # one palette that always read correctly.
+    surface="#1A1D21",
+    panel="#24282E",
     foreground="#E6E8EB",
     accent="#A3E635",
     primary="#A3E635",
@@ -69,8 +73,9 @@ MOCHA = Theme(
 TOKYO = Theme(
     name="tokyo-night",
     background="#16161E",
-    surface="#1A1B26",
-    panel="#1A1B26",
+    # Was #1A1B26 for BOTH, 4/5/8 points off the background.
+    surface="#24283B",
+    panel="#1F2335",
     foreground="#C0CAF5",
     accent="#7DCFFF",              # cyan
     primary="#7DCFFF",

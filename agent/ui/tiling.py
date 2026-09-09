@@ -234,3 +234,95 @@ def _replace_node(node: Node, old: Node, new: Node) -> Node:
     return replace(node,
                    a=_replace_node(node.a, old, new),
                    b=_replace_node(node.b, old, new))
+
+
+# ------------------------------------------------------------------ dividers
+
+@dataclass(frozen=True)
+class Divider:
+    """A gap between two siblings, and what is needed to drag it.
+
+    Identified by the leaf ids beneath it rather than by the `Split` object:
+    every resize builds a new frozen node, so an identity captured on
+    mouse-down would be stale by the first mouse-move.
+    """
+    leaves: tuple
+    orientation: str
+    box: Rect                 # the gap's own cells - what the pointer must hit
+    area: Rect                # the region the split divides
+
+
+def dividers(tree: Node, width: int, height: int, gap: int = 1) -> list[Divider]:
+    """Every draggable gap, outermost first."""
+    out: list[Divider] = []
+    _gaps(tree, Rect(0, 0, max(0, width), max(0, height)), gap, out)
+    return out
+
+
+def _gaps(node: Node, box: Rect, gap: int, out: list[Divider]) -> None:
+    if isinstance(node, Leaf):
+        return
+    across = node.orientation == "v"
+    span = box.w if across else box.h
+    usable = max(0, span - gap)
+    first = min(usable, max(0, int(usable * node.ratio)))
+    second = usable - first
+    key = tuple(leaves(node))
+    if across:
+        out.append(Divider(key, node.orientation,
+                           Rect(box.x + first, box.y, gap, box.h), box))
+        _gaps(node.a, Rect(box.x, box.y, first, box.h), gap, out)
+        _gaps(node.b, Rect(box.x + first + gap, box.y, second, box.h), gap, out)
+    else:
+        out.append(Divider(key, node.orientation,
+                           Rect(box.x, box.y + first, box.w, gap), box))
+        _gaps(node.a, Rect(box.x, box.y, box.w, first), gap, out)
+        _gaps(node.b, Rect(box.x, box.y + first + gap, box.w, second), gap, out)
+
+
+def divider_at(tree: Node, x: int, y: int, width: int, height: int,
+               gap: int = 1, grab: int = 1) -> Divider | None:
+    """The divider under the pointer, or None.
+
+    `grab` widens the target: a one-cell gap is a hard thing to hit with a
+    mouse, so a cell either side counts as the divider. Where two overlap -
+    which nesting makes possible - the nearer centre wins, so the inner
+    divider is not shadowed by its parent.
+    """
+    hits = []
+    for div in dividers(tree, width, height, gap):
+        near = (div.box.x - grab <= x < div.box.x + div.box.w + grab
+                and div.box.y - grab <= y < div.box.y + div.box.h + grab)
+        if near:
+            away = (abs(x - (div.box.x + div.box.w / 2))
+                    + abs(y - (div.box.y + div.box.h / 2)))
+            hits.append((away, div))
+    return min(hits, key=lambda pair: pair[0])[1] if hits else None
+
+
+def ratio_at(div: Divider, x: int, y: int, gap: int = 1) -> float:
+    """Where the pointer puts the divider, as `a`'s share of the usable span.
+
+    Clamped by the same MIN/MAX_RATIO the keyboard uses, so a drag cannot
+    produce a pane the keys would have refused to make.
+    """
+    across = div.orientation == "v"
+    span = (div.area.w if across else div.area.h) - gap
+    if span <= 0:
+        return MIN_RATIO
+    offset = (x - div.area.x) if across else (y - div.area.y)
+    return min(MAX_RATIO, max(MIN_RATIO, offset / span))
+
+
+def set_ratio(tree: Node, div: Divider, ratio: float) -> Node:
+    """The tree with that one divider moved. Same object if nothing changed."""
+    def walk(node: Node) -> Node:
+        if isinstance(node, Leaf):
+            return node
+        if tuple(leaves(node)) == div.leaves:
+            return node if node.ratio == ratio else replace(node, ratio=ratio)
+        moved_a, moved_b = walk(node.a), walk(node.b)
+        if moved_a is node.a and moved_b is node.b:
+            return node
+        return replace(node, a=moved_a, b=moved_b)
+    return walk(tree)

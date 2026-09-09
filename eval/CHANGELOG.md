@@ -5,6 +5,110 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Four things reported from the TUI, three of them one defect each (2026-09-09)
+
+Found by using the interface, not by the rig. None of these had a failing test;
+two had PASSING tests asserting the behaviour that was wrong.
+
+### 1. A greeting cost two model calls, and the fix earlier today was half of it
+
+Counting replies stopped the infinite loop and still spent a second call on
+"hi whats up". The extra turn exists for one reason - "Let me look at the test
+file first." must not end a repair run - and that was measured on CODE cases.
+
+Gated on `is_code_workspace()`, which already exists and is deterministic:
+
+    NON-CODE workspace   1 reply -> done
+    CODE workspace       1 reply -> continue, 2 -> done
+
+`test_text_only_first_turn_does_not_finish` was asserting the coding rule
+against `tmp_workspace`, a bare directory. The marker was implicit and is now
+written into the fixture, because the test could otherwise pass for the wrong
+reason.
+
+### 2. `focus_id` was a border colour, not focus
+
+    widget.set_class(pane_id == self.focus_id, "-active")
+
+`mark_focus()` never called `.focus()`. The composer is focused on mount and
+never yields, so:
+
+- arrow keys moved the text cursor, never a table's row cursor
+- Enter submitted the composer, so `DataTable.RowSelected` could not fire
+- **past threads could not be selected at all** - the pane rendered, listed
+  every thread, and could not be used
+
+Reported as three separate complaints; one cause. Focus now follows the active
+pane.
+
+### 3. The rule that made it that way, kept by another route
+
+`test_the_composer_keeps_focus_so_typing_always_reaches_the_agent` pinned focus
+to the composer deliberately, so typing always reaches the agent. That property
+is real and worth keeping; pinning was the wrong way to get it. A printable key
+now returns focus to the composer AND is inserted rather than swallowed. The
+test asserts the new contract and says in its docstring why it changed.
+
+### 4. Not a defect: the theme
+
+`gaps` is the default transparency mode and sets `Screen { background:
+transparent }` on purpose, so the terminal shows through while panes stay
+painted. "The theme only affects the outer background" is that, seen from the
+outside. `ctrl+g` cycles opaque -> gaps -> bare. Recorded rather than changed.
+
+### 5. Mouse-resizable panes, which did not exist
+
+Resizing was `alt+H/J/K/L` only. `tiling.py` gains the geometry as pure
+functions - `dividers`, `divider_at`, `ratio_at`, `set_ratio` - and the screen
+gains mouse down/move/up with `capture_mouse`.
+
+Two decisions worth keeping:
+
+- **A drag does not re-mount.** `build` already writes the ratio as two `fr`
+  weights, so a drag writes those two numbers. A rebuild per mouse-move would
+  drop the transcript and the focus. `weigh()` is now the single definition
+  both paths use, and a test asserts `rebuilds` is unchanged across a drag.
+- **The mouse clamps to the same MIN/MAX_RATIO the keys do.** Two sets of
+  rules for one layout is how a pane comes to exist at a size the keyboard
+  would have refused to make.
+
+A one-cell gap is grabbable from either side, and where nesting overlaps two
+targets the nearer centre wins, so an inner divider is not shadowed.
+
+### dev 14/15 (-1), and it is a guard rather than a measurement
+
+`20260909T100432Z`. `off-by-one` 3/3 -> 2/3; everything else 3/3, zero tamper.
+
+**The change cannot be the cause and the reason is structural, not a
+judgement:** `_answered_without_working` runs only where NO tool call was ever
+made, and the failing row called `search_files`. What ended it is the older
+rule that `done` is gated on any call having been made - one search, a text
+reply, `stop_reason=stop`, no edit. By this project's own rule a 1-of-3
+movement is noise, so this is neither a clean 15/15 nor a regression, and it is
+written as neither. dev has now read 15/15, 15/15, 14/15 today on three code
+states.
+
+1,063 -> 1,073 tests.
+
+### Unexplained, second entry running: tokens
+
+49,485 -> 56,646 -> 67,919 -> **73,672**, now 23% over NFR-402's ceiling, with
+only the first step attributed (six tool schemas). Turn counts swing hard on
+unrelated cases within one run - `missing-dep` 19/16/8. This looks like the
+provider rather than the repository, and it stays recorded as unexplained until
+something measures it.
+
+### Standing lesson this paid for
+
+**A passing test can assert the bug.** Two here did: one demanded `continue`
+for a conversational reply, the other pinned focus so tables could never be
+used. The suite was green through both, and neither was found by running it -
+they were found by typing into the interface. A test written from the
+implementation records what the code does; only a test written from the
+BEHAVIOUR records what it should do.
+
+---
+
 ## A greeting looped until MAX_SECONDS, because the guard compared strings (2026-09-09)
 
 **One change: `_repeated_its_answer` -> `_answered_without_working` in
