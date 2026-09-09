@@ -246,8 +246,8 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     updated = text.replace(old_string, new_string)
     target.write_text(updated, encoding="utf-8", errors="surrogateescape")
 
-    # A write that did not land must not report success. Hermes makes this a
-    # hard error rather than a silent flag and that is the right call.
+    # A write that did not land must not report success. The reference makes
+    # this a hard error rather than a silent flag and that is the right call.
     # Read back the SAME WAY it was written. Comparing a surrogateescape write
     # against an errors="replace" read reports every non-UTF-8 file as a failed
     # write, which is how this check first fired on a correct edit.
@@ -825,13 +825,13 @@ def _pdf_text(path) -> str:
 
 
 # The interface supplies this: cli.py at a terminal, the TUI in a modal. The
-# TOOL owns the schema and the bounds, the SURFACE owns the asking - Hermes
-# splits it the same way, because a tool that owned a prompt would work in one
-# surface and hang in every other.
+# TOOL owns the schema and the bounds, the SURFACE owns the asking - the
+# reference splits it the same way, because a tool that owned a prompt would
+# work in one surface and hang in every other.
 ASK = None
 
-# Four, as Hermes caps it. A longer list is a menu nobody reads, and it is
-# unbounded text in the transcript on every turn that follows.
+# Four, as the reference caps it. A longer list is a menu nobody reads, and
+# it is unbounded text in the transcript on every turn that follows.
 MAX_CHOICES = 4
 
 # What comes back when no one is there. A worker, a cron task and the eval
