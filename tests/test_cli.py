@@ -356,3 +356,38 @@ def test_the_offline_flags_start_nothing():
     at logon. --channel only queues and answers; --worker runs the graph.
     """
     assert cli._calls_model(_args()) is False
+
+
+# ============================ the workspace guard (entry point, 2026-09-09)
+
+def test_a_missing_workspace_names_itself_instead_of_WinError_267(tmp_path, capsys):
+    """`/workspace` is the CONTAINER's mount point. Off it, Path('/workspace')
+    .resolve() is drive-relative and does not exist, and the first tool call died
+    as NotADirectoryError: [WinError 267] - which names nothing a user can act on."""
+    import pytest
+
+    from agent.__main__ import _require_workspace
+
+    with pytest.raises(SystemExit) as exit_:
+        _require_workspace(tmp_path / "nope", [])
+
+    assert exit_.value.code == 2
+    said = capsys.readouterr().err
+    assert "workspace does not exist" in said
+    assert "AGENT_WORKSPACE" in said
+    assert "--doctor" in said
+
+
+def test_an_existing_workspace_starts_normally(tmp_path):
+    from agent.__main__ import _require_workspace
+
+    _require_workspace(tmp_path, [])          # returns, does not raise
+
+
+def test_the_guard_never_blocks_the_command_that_REPORTS_it(tmp_path, capsys):
+    """--doctor exists to say the workspace is missing. A guard that stops it
+    running is worse than the fault it guards against."""
+    from agent.__main__ import _require_workspace
+
+    _require_workspace(tmp_path / "nope", ["--doctor"])   # must not raise
+    assert capsys.readouterr().err == ""

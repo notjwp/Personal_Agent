@@ -12,6 +12,7 @@ task - started with no API key and no mail credentials, and the channel exited
 on its first tick.
 """
 import os
+import sys
 from pathlib import Path
 
 
@@ -36,6 +37,31 @@ def _load_env(path: Path) -> int:
     return loaded
 
 
+def _require_workspace(root: Path, argv: list[str]) -> None:
+    """Refuse to start when the workspace does not exist. Returns, or exits 2.
+
+    `/workspace` is the CONTAINER's mount point and the right default there. Off
+    it - the CLI, the TUI, a scheduled task - `Path("/workspace").resolve()` is a
+    drive-relative path that does not exist, and the first tool call died as
+    `NotADirectoryError: [WinError 267]`, which names nothing.
+
+    NOT given a fallback on purpose. A default that quietly redirects every write
+    to a directory nobody chose is the same defect as AGENT_EGRESS defaulting to
+    "restricted": it asserts the safe-looking answer and hides what it did.
+
+    `--doctor` is exempt. It exists to REPORT this, and a guard that blocks the
+    diagnostic is worse than the fault it guards against.
+    """
+    if "--doctor" in argv or root.is_dir():
+        return
+    print(f"workspace does not exist: {root}\n"
+          f"Set AGENT_WORKSPACE to the directory the agent may work in, or "
+          f"create that one.\nThe default /workspace is the container's mount "
+          f"point.\nRun `python -m agent --doctor` to see every precondition.",
+          file=sys.stderr)
+    raise SystemExit(2)
+
+
 # Guarded so a test can import _load_env without running the CLI, and so the
 # load happens BEFORE agent.cli pulls in config, which reads every tunable at
 # import time.
@@ -53,6 +79,10 @@ if __name__ == "__main__":
         from agent import config
 
         importlib.reload(config)
+
+    from agent import config
+
+    _require_workspace(config.WORKSPACE, sys.argv[1:])
 
     from agent.cli import main
 
