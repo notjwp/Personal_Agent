@@ -5,6 +5,77 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `search_files` can list a directory - BUILT, UNMEASURED (2026-09-09)
+
+**No number yet.** The `dev` run to decide this was abandoned at 1 blocked row of
+15 - a third consecutive 429 after roughly 65 scored runs in a day.
+
+### The finding: an instruction the tool could not obey
+
+A four-exchange TUI session cost 71,631 tokens. Deleting one file took four
+calls - `del`, `dir`, `find . -type f | wc -l`, `dir /b /a-d | find /c /v ""` -
+so five prompt resends for one deletion. The header is ~2,391 tokens
+(SOUL.md 798 + twelve schemas 1,592) and there is no caching, so cost tracks the
+NUMBER OF MODEL CALLS.
+
+SOUL.md already said: use `search_files` **instead of `run_shell` with grep, find
+or ls**. The agent could not obey it. `search_files(pattern, glob, paths_only)`
+required a regex and searched CONTENTS; there was no way to ask what is in a
+directory. The nearest workaround, `search_files(".", "**/*", paths_only=True)`,
+opens every file, misses one with no content, and answers a listing request with
+a match COUNT.
+
+**Not a prompt failure and not the loop.** `VERIFY_ON_STOP` is off by default
+(on took dev 15/15 -> 12/15), and `edited_unverified` is set only by
+`edit_file`/`write_file`, so `_verify_nudge` never fired in that session. The
+tool was simply missing a capability its own instruction assumed.
+
+### The change
+
+An omitted `pattern` lists the files matching `glob`, without opening any of
+them. Three places moved together, because leaving one behind is exactly how
+this defect existed: the signature, the DOCSTRING (which IS the schema the model
+reads, FR-207), and SOUL.md's line.
+
+Costs 163 schema chars, ~40 tokens on every call: 6,369 -> 6,532 of 10,000.
+
+### The baseline it has to beat
+
+`20260909T100432Z`, dev, 15 runs:
+
+| | |
+|---|---|
+| total tool calls | **158** |
+| `run_shell` used to look around | **21** of 59 run_shell calls (36%) |
+| `search_files` calls | **26** |
+
+**Token median is deliberately NOT the metric.** It read 49,485 -> 56,646 ->
+67,919 -> 73,672 across four runs today with no attributed cause and is 23% over
+NFR-402's ceiling. Until that drift is explained it cannot attribute anything.
+
+### One anecdote, recorded as an anecdote
+
+The provider preflight - one call, "say ok" with tools offered - chose
+`search_files({"glob": "**"})`. Before the change the same probe chose
+`run_shell({"command": "ls -la"})`. That is n=1 and proves nothing; it is the
+swap the change exists to cause, and it is written here so tomorrow's number is
+not read through it.
+
+### Revert condition, set before the measurement
+
+If the look-around count does not fall, revert. A tool the agent does not reach
+for is schema rent charged on every call for nothing - the verdict `move_files`
+got, and the one `read_document` and `todo` are still owed.
+
+### Standing lesson this paid for
+
+**A mutation that does not apply is not a mutation check.** The cap mutation here
+silently matched nothing - the replace found zero occurrences and the test
+"passed", which reads exactly like a test doing its job. Assert the mutation
+CHANGED the file before trusting the run.
+
+---
+
 ## Phase R: skills that correct themselves - BUILT, UNMEASURED (2026-09-09)
 
 **The mechanism ships and has no number.** Say that first: the `revision` split
