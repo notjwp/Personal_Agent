@@ -596,19 +596,33 @@ def test_ONE_text_reply_is_still_a_preamble():
     assert reflect(s)["verdict"] == "continue"
 
 
-def test_two_DIFFERENT_text_replies_do_not_end_it():
+def test_two_DIFFERENT_text_replies_END_it():
+    """This test asserted `continue` and that was the bug: requiring the two
+    replies to be identical meant a chat reply never matched. Reproduced by
+    hand on "hi whats up" - varied phrasings, no tool call, no cap able to
+    bind, running until MAX_SECONDS."""
     s = state(messages=[{"role": "user", "content": "fix it"},
                         _text("Let me look at the tests."),
                         _text("The failure is in the parser.")])
 
-    assert reflect(s)["verdict"] == "continue"
+    assert reflect(s)["verdict"] == "done"
+
+
+def test_a_greeting_answers_once_and_stops():
+    """The reported case, end to end: two varied conversational replies and no
+    tool call anywhere."""
+    s = state(messages=[{"role": "user", "content": "hi whats up"},
+                        _text("Not much! How can I help?"),
+                        _text("Hey there - what's on your mind?")])
+
+    assert reflect(s)["verdict"] == "done"
 
 
 def test_a_session_that_HAS_called_a_tool_is_untouched():
     """The discriminator, and why a streak would have been wrong: across 942
     recorded rows `add-endpoint` repeats itself identically up to four times
     mid-run and still passes. It always calls tools."""
-    from agent.graph import _repeated_its_answer
+    from agent.graph import _answered_without_working
 
     messages = [{"role": "user", "content": "fix it"},
                 assistant_call(), tool_result(),
@@ -616,7 +630,7 @@ def test_a_session_that_HAS_called_a_tool_is_untouched():
 
     # It ends `done` either way - a text reply after a tool call always did.
     # What must not happen is THIS guard being the reason.
-    assert _repeated_its_answer(messages) is False
+    assert _answered_without_working(messages) is False
 
 
 def test_the_guard_reads_text_not_whitespace():

@@ -5,6 +5,73 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## A greeting looped until MAX_SECONDS, because the guard compared strings (2026-09-09)
+
+**One change: `_repeated_its_answer` -> `_answered_without_working` in
+`agent/graph.py`.** It counts replies instead of comparing them.
+
+Found by hand, not by the rig. Typing "hi whats up" into the TUI produced
+answers that never stopped.
+
+### The guard existed and could not fire
+
+Three caps miss a conversational reply, and the third was supposed to be the
+backstop:
+
+- `turns` is incremented by `execute`, and a reply with no tool call never
+  reaches it, so `max_turns` cannot bind.
+- The thrash detector reads tool-call SIGNATURES. There are none.
+- `_repeated_its_answer` required the last two replies to be **byte-identical**.
+  A model asked "hi whats up" phrases it differently every time.
+
+`reflect` then returns `continue` with nothing added to the message list, so the
+model answers again. Probed directly:
+
+    1 reply   -> continue      2 varied -> continue      3 varied -> continue
+    2 identical -> done                  <- the only case that ended
+
+Only `MAX_SECONDS` and the token budget stop it, which is the 53 model calls and
+200,681 tokens already recorded against "just acknowledge this". That entry
+called the fix shipped. It was shipped and it was keyed on the wrong thing.
+
+### The change
+
+    -    return len(said) >= 2 and said[-1] == said[-2]
+    +    return len([s for s in said if s]) >= 2
+
+Repetition was the symptom; answering without working is the state. One no-call
+reply still gets a second turn - "Let me look at the tests first" must not end a
+run - and the second ends it. A greeting now costs 2 model calls, not ~50.
+
+**A test asserted the bug.** `test_two_DIFFERENT_text_replies_do_not_end_it`
+demanded `continue` for exactly this case, which is why 1,062 tests were green
+while the loop ran. Inverted and renamed, with the reason in its docstring.
+1,062 -> 1,063. Mutation-checked: restoring the string comparison fails
+`test_two_DIFFERENT_text_replies_END_it` and
+`test_a_greeting_answers_once_and_stops` by name.
+
+### dev 15/15 (+0), and it is a guard, not a measurement
+
+`20260909T084929Z`, `done` x15, zero tamper. **The change was never executed in
+any of the 15 runs**: `_answered_without_working` returns False as soon as any
+call exists, and 0 of 15 rows had zero tool calls. dev shows the code-repair
+path is unharmed. It cannot show the fix works, and the reproduction and the two
+tests are the evidence that it does.
+
+### Unexplained: tokens up 20% and NFR-402 now breached
+
+Median 56,646 -> **67,919, over the 60,000 ceiling**, on identical code paths,
+caps and prompt, hours apart. Turns rose on unrelated cases too -
+`broken-fixture` 8 -> 20, `missing-dep` 10 -> 17. The fix cannot be the cause;
+it does not execute in these runs. Third reading in a day: 49,485 -> 56,646 ->
+67,919, where only the first step has an attributed cause (six tool schemas).
+
+Recorded as unexplained rather than assigned. A ceiling breach with no
+identified cause is not a cycle to tune against - it needs a re-measurement on a
+day when the endpoint is not also hanging.
+
+---
+
 ## The control arm, dev re-checked, and a tool the gate had made unreachable (2026-09-09)
 
 Three measurements the previous entry left open, and one defect they exposed.

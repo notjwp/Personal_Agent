@@ -494,7 +494,7 @@ def reflect(state: AgentState, config: RunnableConfig | None = None) -> dict:
             # An answer given in words is still an answer. `pass` is decided by
             # the check command reading the workspace, so ending here cannot
             # turn a failing case into a passing one.
-            if _repeated_its_answer(state["messages"]):
+            if _answered_without_working(state["messages"]):
                 return {"verdict": "done"}
             return {"verdict": "continue"}
         plan = state.get("plan") or []
@@ -827,23 +827,27 @@ def _made_a_call(messages: list[dict]) -> bool:
     return any(_tool_calls(m) for m in messages if m.get("role") == "assistant")
 
 
-def _repeated_its_answer(messages: list[dict]) -> bool:
-    """Whether a session with NO tool call has now said the same thing twice.
+def _answered_without_working(messages: list[dict]) -> bool:
+    """Whether a session with NO tool call has now replied twice.
 
     `turns` is incremented by `execute`, so a session that never reaches it
     never advances and `max_turns` cannot bind. The thrash detector misses the
     same case because it reads tool-call signatures. Measured live: 53 model
     calls, 200,681 tokens, `turns` 0, on "just acknowledge this".
 
-    Keyed on NO CALL EVER rather than on a streak, because a streak is not
-    safe: across 942 recorded rows, `add-endpoint` repeats itself identically
-    up to four times mid-run and still passes - and it always calls tools.
+    COUNTS replies rather than comparing them. The first version required the
+    last two to be byte-identical, which a chat reply never is - "hi whats up"
+    looped on varied phrasings until MAX_SECONDS, because nothing else here can
+    bind. Repetition was the symptom; answering without working is the state.
+
+    Keyed on NO CALL EVER, never on a streak: across 942 recorded rows,
+    `add-endpoint` repeats itself identically up to four times mid-run and
+    still passes - and it always calls tools, so it never reaches this.
     """
     if _made_a_call(messages):
         return False
     said = [_final_text([m]) for m in messages if m.get("role") == "assistant"]
-    said = [s for s in said if s]
-    return len(said) >= 2 and said[-1] == said[-2]
+    return len([s for s in said if s]) >= 2
 
 
 def _signature(call: dict) -> str:
