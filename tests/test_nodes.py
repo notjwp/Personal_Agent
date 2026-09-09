@@ -4233,3 +4233,38 @@ def test_the_control_arm_marks_nothing(tmp_workspace, monkeypatch):
     _finished(monkeypatch, "stuck")
 
     assert memory.is_suspect("deploy-guide") is False
+
+
+def test_a_missing_ddgs_says_so_instead_of_raising_ModuleNotFoundError(monkeypatch):
+    """Measured in the TUI: web_search failed at 0.0s with a bare
+    ModuleNotFoundError, because `ddgs` was installed in the Containerfile and
+    declared in no dependency list - so the container had it and every other
+    install shipped a tool that could only fail. A blocked engine and an absent
+    library must not look identical."""
+    import sys
+
+    from agent.tools import web_search
+
+    monkeypatch.setitem(sys.modules, "ddgs", None)
+    with pytest.raises(RuntimeError) as raised:
+        web_search("anything")
+
+    message = str(raised.value)
+    assert "not installed" in message
+    assert "pip install ddgs" in message
+
+
+def test_web_search_is_a_declared_dependency_and_not_only_a_container_one():
+    """The defect above in one line: the tool imports it, so the package
+    declares it."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    declared = (root / "pyproject.toml").read_text(encoding="utf-8")
+    pinned = re.search(r'"ddgs==([\d.]+)"', declared)
+    assert pinned, "web_search imports ddgs; pyproject must declare it"
+
+    container = (root / "Containerfile").read_text(encoding="utf-8")
+    assert f'"ddgs=={pinned.group(1)}"' in container, (
+        "the container and the package must install the SAME ddgs")

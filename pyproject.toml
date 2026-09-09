@@ -17,6 +17,10 @@ dependencies = [
   # eval/fixtures/real-rich, so a run that picks the wrong one is visible.
   "textual==8.0.1",
   "rich==14.3.3",
+  # web_search (FR-501). It was installed in the Containerfile and declared
+  # NOWHERE, so the container had it and every other install shipped a tool that
+  # could only fail - which is what the TUI did, instantly, before any request.
+  "ddgs==9.16.0",
 ]
 
 [project.optional-dependencies]

@@ -880,8 +880,17 @@ def web_search(query: str, limit: int = 5) -> str:
     """
     # Imported here so this file stays importable without ddgs, and so a run that
     # never searches does not pay a Rust extension load.
-    from ddgs import DDGS
-    from ddgs.exceptions import DDGSException
+    try:
+        from ddgs import DDGS
+        from ddgs.exceptions import DDGSException
+    except ImportError as exc:
+        # A missing package is not a failed search, and it must not read like
+        # one: this surfaced in the TUI as a bare ModuleNotFoundError at 0.0s,
+        # where a blocked engine and an absent library look identical.
+        raise RuntimeError(
+            "web_search needs the `ddgs` package and it is not installed here. "
+            "The container has it; this interpreter does not. Install it with "
+            "`pip install ddgs==9.16.0`.") from exc
 
     query = " ".join(str(query).split())
     if not query:
