@@ -989,3 +989,69 @@ def test_opening_threads_by_name_hands_it_the_keys(monkeypatch):
         assert app.screen.thread == "bbbb2222", "Enter must resume that row"
 
     drive(app, script)
+
+
+# ============================================================ /exit (2026-09-09)
+
+def test_exit_is_one_of_the_listed_commands():
+    """COMMANDS is the ONLY list: the suggester completes from it, command()
+    dispatches on it, and /help prints it. A command missing here is a command
+    that cannot be typed."""
+    assert "/exit" in screens.COMMANDS
+    assert "/exit" in screens.help_text().plain
+
+
+def test_exit_typed_in_a_session_closes_the_app():
+    app = workspace()
+
+    async def script(pilot):
+        left = []
+        app.exit = lambda *a, **k: left.append(True)
+
+        box = app.screen.query_one("#composer", Input)
+        box.value = "/exit"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert left, "/exit did not close the app"
+        assert box.value == "", "the command must not be left in the composer"
+
+    drive(app, script)
+
+
+def test_exit_typed_on_the_landing_closes_the_app():
+    """The landing has its own dispatcher, and its fallback OPENS a workspace -
+    so an unhandled /exit there would start a session instead of ending one."""
+    app = screens.NoesisApp(FakeGraph())
+
+    async def script(pilot):
+        left = []
+        app.exit = lambda *a, **k: left.append(True)
+
+        app.screen.query_one(Input).value = "/exit"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert left, "/exit did not close the app"
+        assert isinstance(app.screen, screens.LandingScreen), "it opened a session"
+
+    drive(app, script)
+
+
+def test_exit_is_not_treated_as_a_goal():
+    """`/exit` must never reach the model. A slash command that falls through to
+    begin() bills a turn for the word 'exit'."""
+    app = workspace()
+
+    async def script(pilot):
+        app.exit = lambda *a, **k: None
+        started = []
+        app.screen.begin = lambda text: started.append(text)
+
+        app.screen.query_one("#composer", Input).value = "/exit"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert started == [], "/exit was sent to the model"
+
+    drive(app, script)

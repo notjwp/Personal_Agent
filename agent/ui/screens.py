@@ -65,6 +65,7 @@ COMMANDS = {
     "/doctor": "every precondition, ok or FAIL",
     "/setup": "change model or API key",
     "/help": "this list",
+    "/exit": "close NOESIS",
 }
 
 # Which pane a command opens beside chat. /chat is an empty workspace.
@@ -301,6 +302,12 @@ class LandingScreen(Screen):
     def run_command(self, word: str) -> None:
         if word == "/help":
             self.query_one(Input).value = ""
+            return
+        if word == "/exit":
+            # Handled here as well as in the workspace: this dispatcher's
+            # fallback OPENS a session, so an unlisted command would start one
+            # rather than end it.
+            self.app.exit()
             return
         if word == "/setup":
             self.app.action_setup()
@@ -805,6 +812,10 @@ class WorkspaceScreen(Screen):
             return True
         if word == "/help":
             self.write(help_text())
+        elif word == "/exit":
+            # A checkpoint is written after every node, so leaving mid-run costs
+            # at most one node and the thread resumes by id.
+            self.app.exit()
         elif word == "/setup":
             self.app.action_setup()
         elif word == "/chat":
