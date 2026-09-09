@@ -391,26 +391,60 @@ SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "node_modules", ".venv",
              ".agent", ".mypy_cache", ".tox", "dist", "build", ".eggs"}
 
 
+def _listing(glob: str) -> str:
+    """The paths matching `glob`, bounded exactly as a search is.
+
+    A separate walk rather than a search for a pattern matching everything:
+    `search_files(".")` was the workaround and it opens every file, misses one
+    with no content, and reports a match COUNT for what the caller asked to be a
+    listing.
+    """
+    root = config.WORKSPACE.resolve()
+    found = []
+    for target in sorted(config.WORKSPACE.glob(glob)):
+        if not target.is_file() or SKIP_DIRS & set(target.parts):
+            continue
+        resolved = target.resolve()
+        if root not in resolved.parents:
+            continue            # a symlink out of the workspace. Fails closed.
+        found.append(resolved.relative_to(root).as_posix())
+
+    if not found:
+        return (f"no files match {glob!r}. Widen it - '**/*' is everything, "
+                f"'**/*.py' one file type.")
+    body = "\n".join(found[:MATCH_CAP])
+    if len(found) > MATCH_CAP:
+        body += (f"\n[{MATCH_CAP} of {len(found)} files shown. Narrow it with "
+                 f"glob=, e.g. '**/*.py'.]")
+    return body
+
+
 # Python rather than grep/ripgrep so the walk is rooted at WORKSPACE and the
 # gate need not parse a command line. THE ROOT ALONE IS NOT A BOUNDARY: a test
 # caught Path.glob("../*") escaping it, so FR-302 is enforced on resolved paths.
 @tool(risk="read")
-def search_files(pattern: str, glob: str = "**/*", paths_only: bool = False) -> str:
-    """Find where something appears in the workspace. Returns path:line: matches,
-    never whole files. **Use this instead of run_shell with grep** -
-    it is bounded, so it cannot flood your context the way a raw grep across a
-    large repository will. Use read_file once this has told you which file and
+def search_files(pattern: str = "", glob: str = "**/*", paths_only: bool = False) -> str:
+    """List what is in the workspace, or find where something appears in it.
+    **Use this instead of run_shell with ls, dir, find or grep** - it is bounded,
+    so it cannot flood your context the way those can on a large tree.
+
+    With no pattern it LISTS the files matching glob - this is how you see what
+    is there. With a pattern it searches their contents and returns path:line:
+    matches, never whole files; use read_file once it has told you which file and
     which line to look at.
 
-    pattern: Regular expression to search for.
-    glob: Which files to search, e.g. '**/*.py'. Default all files.
-    paths_only: Return only the file paths, one per file, without the matching lines. Default false.
+    pattern: Regular expression to search for. Omit it to list files instead.
+    glob: Which files to look at, e.g. '**/*.py'. Default all files.
+    paths_only: Return only the file paths, without the matching lines. Default false.
     """
     if glob.startswith("/") or ".." in Path(glob).parts:
         raise ValueError(
             f"glob {glob!r} points outside the workspace. Patterns are relative "
             f"to the workspace root - use '**/*' to search everything, or "
             f"'**/*.py' for one file type.")
+    if not pattern:
+        return _listing(glob)
+
     try:
         matcher = re.compile(pattern)
     except re.error as exc:
