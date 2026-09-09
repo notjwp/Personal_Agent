@@ -36,7 +36,7 @@ import re
 import sys
 from pathlib import Path
 
-from agent import config, policy
+from agent import config, memory, policy
 
 # Names this module put into policy.RISK, so deactivate() removes exactly those.
 # Per-module, like mcp.py and memory.py: a snapshot taken by whichever imported
@@ -507,7 +507,8 @@ def _when(path: str, body: str) -> str:
             f"creating or changing files.")
 
 
-def extract(messages: list[dict], goal: str) -> list[str]:
+def extract(messages: list[dict], goal: str, verdict: str = "",
+            opened: str = "") -> list[str]:
     """Write a skill from each reference document the agent read. Returns slugs.
 
     Phase O-redux. `learn` asks the MODEL to decide what is worth keeping, and the
@@ -520,6 +521,13 @@ def extract(messages: list[dict], goal: str) -> list[str]:
     """
     if not config.SKILL_EXTRACTION:
         return []
+    # Phase R. A skill that was open when a run failed is marked suspect; the
+    # first usable document of the next run that SUCCEEDS replaces it, under the
+    # suspect skill's name rather than the document's. Naming it for the document
+    # would write a sibling and leave the bad skill matching goals - which is the
+    # gap, not the missing permission: `learn` has always allowed a rewrite.
+    correcting = bool(config.SKILL_REVISION and verdict == "done" and opened
+                      and memory.is_suspect(opened))
     written = []
     for path, content in read_but_not_edited(messages):
         body = _undecorate(content)[:config.EXTRACT_MAX_CHARS]
@@ -527,10 +535,16 @@ def extract(messages: list[dict], goal: str) -> list[str]:
             continue
         stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
         try:
-            learn(name=stem, description=_when(path, body), body=body)
+            learn(name=opened if correcting else stem,
+                  description=_when(path, body), body=body)
         except ValueError:
             # The library cap, or a name that slugs to nothing. Both are ordinary
             # outcomes here, not failures of the run.
+            continue
+        if correcting:
+            memory.clear_suspect(opened)
+            written.append(_slug(opened))
+            correcting = False           # one correction per session
             continue
         written.append(_slug(stem))
     return written

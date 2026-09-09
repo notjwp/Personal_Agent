@@ -9,6 +9,21 @@ from agent import config
 from agent.graph import reflect
 
 
+@pytest.fixture(autouse=True)
+def _coding_posture(monkeypatch):
+    """Pin the CODING posture for this module.
+
+    Every test here predates the posture gate and asserts its rule - one text reply
+    is a preamble and must not end a run. That rule is the coding posture's, and
+    `is_code_workspace()` reads whatever workspace the process happens to have, so
+    without this they pass or fail on TEST ORDER. Measured: they passed in a full
+    run and failed running test_skills.py and test_nodes.py together.
+
+    The two tests that assert the other posture patch it False themselves.
+    """
+    monkeypatch.setattr("agent.graph.is_code_workspace", lambda: True)
+
+
 def state(**over):
     base = {
         "messages": [{"role": "user", "content": "fix it"}],

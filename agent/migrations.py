@@ -82,6 +82,22 @@ MEMORY: list[tuple[str, list[str]]] = [
                )""",
         ],
     ),
+    (
+        # v4: which skill was open when a run FAILED (Phase R). One row per skill
+        # and not a log - this is state the next successful run consumes and
+        # clears, so a skill that keeps failing is one suspect, not a pile.
+        # MEMORY and not TASKS: it is consumed by skills.extract beside the
+        # episodes, and shares their lifetime.
+        "skill_failures",
+        [
+            """CREATE TABLE IF NOT EXISTS skill_failures (
+                   skill    TEXT PRIMARY KEY,
+                   goal     TEXT NOT NULL,
+                   verdict  TEXT NOT NULL,
+                   at       REAL NOT NULL
+               )""",
+        ],
+    ),
 ]
 
 TASKS: list[tuple[str, list[str]]] = [

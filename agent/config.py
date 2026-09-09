@@ -368,6 +368,12 @@ DISTIL_MAX_CHARS = 200
 SKILL_EXTRACTION = _env("AGENT_SKILL_EXTRACTION", "on").strip().lower() not in (
     "0", "off", "false")
 
+# Phase R: a skill open when a run failed is replaced by the next run that works.
+# `off` is the control arm, and it has to change the MECHANISM rather than a
+# number - two arms of the same build are two controls.
+SKILL_REVISION = _env("AGENT_SKILL_REVISION", "on").strip().lower() not in (
+    "0", "off", "false")
+
 # The floor rejects a file carrying no procedure; the ceiling refuses a whole
 # source file, which would eventually overflow the index and brick a run.
 EXTRACT_MIN_CHARS = 80

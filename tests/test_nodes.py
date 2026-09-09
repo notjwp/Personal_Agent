@@ -1293,10 +1293,16 @@ def test_reflect_says_done_on_the_last_step():
     assert reflect(s)["verdict"] == "done"
 
 
-def test_the_made_a_call_guard_survives_with_planning_off():
+def test_the_made_a_call_guard_survives_with_planning_off(monkeypatch):
     """With AGENT_PLAN=off the plan is [] and the cursor check would evaluate
     1 >= 0 - the exact false `done` on a first text-only reply that section 9
-    step 2 (b) was written to prevent."""
+    step 2 (b) was written to prevent.
+
+    The posture is pinned because the preamble rule is the CODING posture's, and
+    `is_code_workspace()` otherwise reads whatever workspace the process has -
+    which made this pass or fail on test order.
+    """
+    monkeypatch.setattr("agent.graph.is_code_workspace", lambda: True)
     s = state(messages=[{"role": "user", "content": "fix it"},
                         {"role": "assistant", "content": [
                             {"type": "text", "text": "Let me look at the test first."}]}])
@@ -4154,3 +4160,76 @@ def test_the_injected_skill_is_named_not_just_counted(tmp_workspace, monkeypatch
     opened = [e for e in trace if e.get("kind") == "skill_opened"]
     assert opened, "the skill was injected and the trace does not say so"
     assert opened[0]["name"] == "qz-release"
+# =============================== finish marks a failed skill suspect (Phase R)
+
+def _finished(monkeypatch, verdict, matched="deploy-guide", failures=0):
+    """Run `finish` with a named skill matching this goal, and return nothing.
+
+    `skills.matched` is patched rather than a library staged: what is under test is
+    the RULE finish applies, not the matcher, which test_skills covers.
+    """
+    from agent import graph, skills
+
+    monkeypatch.setattr(skills, "matched", lambda goal: matched)
+    monkeypatch.setattr(skills, "extract",
+                        lambda *a, **k: [])          # R2 is a separate rule
+    graph.finish(state(verdict=verdict, failures=failures),
+                 {"configurable": {"thread_id": "t1", "trace": []}})
+
+
+def test_finish_marks_the_open_skill_when_the_run_ends_badly(tmp_workspace,
+                                                             monkeypatch):
+    from agent import memory
+
+    _finished(monkeypatch, "stuck")
+
+    assert memory.is_suspect("deploy-guide") is True
+
+
+def test_finish_marks_on_budget_too_not_only_stuck(tmp_workspace, monkeypatch):
+    """`budget` is the other way a run ends without finishing. Leaving it out would
+    make the mark depend on WHICH cap bound, which says nothing about the skill."""
+    from agent import memory
+
+    _finished(monkeypatch, "budget")
+
+    assert memory.is_suspect("deploy-guide") is True
+
+
+def test_finish_marks_when_the_run_kept_failing_even_if_it_ended_done(tmp_workspace,
+                                                                      monkeypatch):
+    """Three consecutive failed calls is the third trigger."""
+    from agent import memory
+
+    _finished(monkeypatch, "done", failures=3)
+
+    assert memory.is_suspect("deploy-guide") is True
+
+
+def test_finish_does_NOT_mark_a_skill_on_a_run_that_worked(tmp_workspace, monkeypatch):
+    from agent import memory
+
+    _finished(monkeypatch, "done")
+
+    assert memory.is_suspect("deploy-guide") is False
+
+
+def test_a_bad_run_with_NO_skill_open_marks_nothing(tmp_workspace, monkeypatch):
+    """A failure with no skill injected is a failure, not evidence about a skill."""
+    from agent import memory
+
+    _finished(monkeypatch, "stuck", matched="")
+
+    assert memory._connect().execute(
+        "SELECT count(*) FROM skill_failures").fetchone()[0] == 0
+
+
+def test_the_control_arm_marks_nothing(tmp_workspace, monkeypatch):
+    """AGENT_SKILL_REVISION=off must change the mechanism, or the two eval arms are
+    the same build measured twice."""
+    from agent import config, memory
+
+    monkeypatch.setattr(config, "SKILL_REVISION", False)
+    _finished(monkeypatch, "stuck")
+
+    assert memory.is_suspect("deploy-guide") is False
