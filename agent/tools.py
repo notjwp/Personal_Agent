@@ -278,8 +278,14 @@ def run_shell(command: str, timeout: int = 120) -> str:
     # timeout kills /bin/sh and its children keep running - measured: two orphaned
     # `sleep 60` survived, holding the workspace for the rest of the run. This is
     # the same orphan failure the harness already records for `timeout`.
+    # `text=True` alone decodes with the PLATFORM default - cp1252 on Windows,
+    # where one UTF-8 byte raises inside subprocess's reader thread and this
+    # returned `exit code: 0` with stdout `None`. The command succeeded and its
+    # output was destroyed. `replace` and not `strict`: a shell command may emit
+    # any bytes at all, and a mangled character beats a dead tool.
     process = subprocess.Popen(
         command, shell=True, cwd=config.WORKSPACE, text=True,
+        encoding="utf-8", errors="replace",
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
     )
     try:
@@ -318,7 +324,13 @@ def _kill_group(process) -> None:
 _PYTHON_DRIVER = """
 import ast, sys, traceback
 
-source = sys.stdin.read()
+# The CHILD's own encoding, which the parent cannot set for it. Without this it
+# reads stdin and writes stdout as the platform default - cp1252 on Windows -
+# so UTF-8 the parent sent arrives as surrogates and ast.parse refuses it, and
+# a print() of any non-ASCII character kills the script.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+source = sys.stdin.buffer.read().decode("utf-8", "replace")
 try:
     tree = ast.parse(source)
 except SyntaxError:
@@ -356,7 +368,8 @@ def run_python(code: str, timeout: int = 120) -> str:
     done = subprocess.run(
         [sys.executable, "-c", _PYTHON_DRIVER],
         input=code, cwd=config.WORKSPACE,
-        capture_output=True, text=True, timeout=_int(timeout, 120),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=_int(timeout, 120),
     )
     return (
         f"exit code: {done.returncode}\n"
@@ -642,6 +655,7 @@ def start_terminal(command: str) -> str:
     try:
         process = subprocess.Popen(
             command, shell=True, cwd=config.WORKSPACE, text=True,
+            encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             # Its own process GROUP, so stopping it stops what it started.
             start_new_session=True, bufsize=1)
@@ -820,7 +834,8 @@ def _pdf_text(path) -> str:
     if shutil.which("pdftotext") is None:
         return ""
     done = subprocess.run(["pdftotext", str(path), "-"],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=60)
     return done.stdout if done.returncode == 0 else ""
 
 

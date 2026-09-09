@@ -4268,3 +4268,61 @@ def test_web_search_is_a_declared_dependency_and_not_only_a_container_one():
     container = (root / "Containerfile").read_text(encoding="utf-8")
     assert f'"ddgs=={pinned.group(1)}"' in container, (
         "the container and the package must install the SAME ddgs")
+
+
+# ============================== subprocess text decoding (Windows host, 2026-09-09)
+
+def test_shell_output_survives_bytes_the_platform_default_cannot_decode(tmp_workspace):
+    """Measured on the Windows host: `text=True` with no encoding decodes as
+    cp1252, and a UTF-8 byte raises UnicodeDecodeError INSIDE subprocess's reader
+    thread. run_shell then returned `exit code: 0` with stdout `None` - the command
+    succeeded, its output was destroyed, and the agent was told there was nothing
+    there. Never fired in the container, which is Linux and UTF-8."""
+    import sys as _sys
+
+    from agent.tools import run_shell
+
+    out = run_shell(
+        f'{_sys.executable} -c "import sys; '
+        f'sys.stdout.buffer.write(bytes([0x42,0xc4,0x81,0x64]))"')
+
+    assert "None" not in out, "output was lost to a decode error"
+    assert "B\u0101d" in out
+
+
+def test_every_subprocess_call_declares_its_encoding():
+    """The guard, at the source. Four sites carried `text=True` and no encoding;
+    a fifth added later would reintroduce a failure that only appears off Linux,
+    which is exactly the kind that reaches a user before a test."""
+    import pathlib
+    import re
+
+    source = (pathlib.Path(__file__).resolve().parent.parent
+              / "agent" / "tools.py").read_text(encoding="utf-8")
+    calls = re.findall(r"subprocess\.(?:Popen|run)\((?:[^()]|\([^()]*\))*\)", source)
+
+    assert calls, "the scan found no subprocess calls - the pattern is wrong"
+    for call in calls:
+        if "text=True" in call:
+            assert "encoding=" in call, f"no encoding declared in: {call[:90]}"
+
+
+def test_run_python_carries_non_ascii_in_BOTH_directions(tmp_workspace):
+    """Two ends, two defects. The parent's `encoding=` says how it ENCODES what
+    it sends; the child still read stdin and wrote stdout as the platform
+    default. On Windows the source arrived as surrogates and ast.parse refused
+    it, and a print() of any non-ASCII character killed the script."""
+    from agent.tools import run_python
+
+    out = run_python('print("Ganar\u0101jya \u4e2d\u6587")')
+    assert "exit code: 0" in out
+    assert "Ganar\u0101jya \u4e2d\u6587" in out
+
+
+def test_the_python_driver_sets_the_childs_own_encoding():
+    """The parent cannot set it for the child, so the driver does. A source-level
+    guard because the failure only appears off Linux."""
+    from agent.tools import _PYTHON_DRIVER
+
+    assert 'sys.stdin.buffer.read().decode("utf-8"' in _PYTHON_DRIVER
+    assert 'sys.stdout.reconfigure(encoding="utf-8"' in _PYTHON_DRIVER
