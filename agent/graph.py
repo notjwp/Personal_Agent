@@ -11,6 +11,7 @@ Corrections mandated by the build spec, all applied below:
   (d) the risk map in policy.py is the single path to a verdict
   (e) tracing is present now, not deferred
 """
+import datetime
 import inspect
 import json
 import re
@@ -203,6 +204,12 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
         if trace is not None:
             trace.append({"kind": "step", "cursor": cursor, "of": len(plan),
                           "text": plan[cursor]})
+
+    # The agent has no clock. Asked what happened "yesterday" it answered about
+    # its training cutoff - thirteen months out - searched five times for the
+    # wrong year and fetched that year's archive. One line, because this is
+    # charged on every call and the provider caches nothing.
+    system = f"{system}{NEWLINES}Today is {_today()}."
 
     # Retrieved memory goes in the SYSTEM PROMPT, not the message list - a fake
     # turn in the history is indistinguishable from something the agent did.
@@ -799,6 +806,16 @@ def _tool_calls(message: dict) -> list[dict]:
     return [{"id": b["id"], "name": b["name"], "input": b.get("input", {})}
             for b in message["content"]
             if isinstance(b, dict) and b.get("type") == "tool_use"]
+
+
+def _today() -> str:
+    """Today, ISO, read per turn.
+
+    A constant bound at import is wrong for every process that outlives a day -
+    the worker, a cron task, a TUI left open overnight - and CE-05 forbids the
+    library resolving it at import anyway.
+    """
+    return datetime.date.today().isoformat()
 
 
 def _goal(messages: list[dict]) -> str:

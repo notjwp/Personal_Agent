@@ -4452,3 +4452,51 @@ def test_the_schema_says_it_lists(tmp_path):
 
     described = TOOLS["search_files"]["schema"]["description"].lower()
     assert "list" in described
+# ================================ the current date (2026-09-09)
+
+def test_the_system_prompt_states_todays_date(tmp_workspace, monkeypatch):
+    """Nothing told the agent what day it was. Reported from the TUI: asked what
+    happened "yesterday", it answered about August 17 2025 - its training cutoff -
+    searching five times for 2025 news and fetching a 2025 Wikipedia archive. It
+    hedged "assuming yesterday was August 17, 2025", so it knew it was guessing
+    and had no way to find out."""
+    import datetime
+
+    from agent.graph import act
+
+    seen = use_fake(monkeypatch, [text_turn("ok")])
+    act(state(), {"configurable": {}})
+
+    assert seen, "act did not build a system prompt"
+    assert datetime.date.today().isoformat() in seen[0]["system"]
+
+
+def test_the_date_is_read_per_turn_not_pinned_at_import(monkeypatch):
+    """A date bound at import is wrong for every long-running process - the
+    worker, a cron task, a TUI left open overnight - and CE-05 forbids the
+    library resolving it at import anyway."""
+    from agent import graph
+
+    live = graph._today()
+    monkeypatch.setattr(graph, "_today", lambda: "2030-01-01")
+
+    assert graph._today() == "2030-01-01"
+    assert live != "2030-01-01", "the real one must not be a frozen constant"
+
+
+def test_the_date_line_is_cheap(tmp_workspace, monkeypatch):
+    """It is charged on EVERY model call, on a provider that caches nothing.
+    A paragraph here is rent; one line is the whole budget for knowing the date."""
+    from agent.graph import act
+
+    seen = use_fake(monkeypatch, [text_turn("ok")])
+    act(state(), {"configurable": {}})
+
+    dated = [line for line in seen[0]["system"].splitlines() if graph_today() in line]
+    assert len(dated) == 1, "the date must appear once, not throughout the prompt"
+    assert len(dated[0]) < 120, f"the date line is {len(dated[0])} chars"
+
+
+def graph_today():
+    from agent import graph
+    return graph._today()
