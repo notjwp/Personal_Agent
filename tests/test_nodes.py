@@ -4135,3 +4135,22 @@ def test_a_trailing_dot_does_not_evade_the_name_blocklist(monkeypatch):
     monkeypatch.delenv("HTTPS_PROXY", raising=False)
     ok, _ = tools.url_is_safe("http://metadata.google.internal./")
     assert not ok
+
+
+def test_the_injected_skill_is_named_not_just_counted(tmp_workspace, monkeypatch):
+    """`skill_opened` carried a character count and nothing else, so no later node
+    could say WHICH skill was injected. Phase R needs the identity: `finish` marks
+    that skill suspect when the run fails, and the eval verifies the mechanism fired
+    by matching this name against the skill written afterwards."""
+    from agent import skills
+    from agent.graph import act
+
+    monkeypatch.setattr(skills, "opening", lambda goal: "# The skill\n\nbody")
+    monkeypatch.setattr(skills, "best_match", lambda goal: {"name": "qz-release"})
+    use_fake(monkeypatch, [text_turn("Done.")])
+    trace = []
+    act(state(), {"configurable": {"trace": trace}})
+
+    opened = [e for e in trace if e.get("kind") == "skill_opened"]
+    assert opened, "the skill was injected and the trace does not say so"
+    assert opened[0]["name"] == "qz-release"

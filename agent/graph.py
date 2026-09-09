@@ -233,7 +233,8 @@ def act(state: AgentState, config: RunnableConfig) -> dict:
         system = system + NEWLINES + opened
         trace = cfg.get("trace")
         if trace is not None:
-            trace.append({"kind": "skill_opened", "chars": len(opened)})
+            trace.append({"kind": "skill_opened", "chars": len(opened),
+                          "name": skills.matched(_goal(state["messages"]))})
 
     # Rebuilt per turn rather than bound at import: which tools exist depends on
     # what activated for THIS run, and CE-05 forbids deciding that at import.

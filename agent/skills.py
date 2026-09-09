@@ -244,6 +244,18 @@ def opening(goal: str) -> str:
     return header + BLANK + body
 
 
+def matched(goal: str) -> str:
+    """The name `opening` would inject for this goal, or "".
+
+    `finish` needs the identity and not the body. Deriving it there instead would
+    make two sources of truth for one fact.
+    """
+    if not config.AUTO_SKILL:
+        return ""
+    skill = best_match(goal)
+    return skill["name"] if skill else ""
+
+
 def _resolve(skill: dict, filename: str) -> Path:
     """A bundled file inside this skill's own directory, or an error.
 
