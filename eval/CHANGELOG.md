@@ -5,6 +5,86 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Phase R: skills that correct themselves - BUILT, UNMEASURED (2026-09-09)
+
+**The mechanism ships and has no number.** Say that first: the `revision` split
+did not produce three scored rows, so nothing here is proven.
+
+### What was built
+
+Two rules, no judgement anywhere, so `act` stays the only node that calls a model
+and `finish` stays offline-testable:
+
+1. `finish` marks a skill SUSPECT when it was injected AND the run ended
+   `stuck`/`budget` or hit three consecutive failures.
+2. `extract` REPLACES a suspect skill on a run that ended `done`, writing the
+   document that run used under the suspect skill's name, then clearing the mark.
+
+The reference implementation forks an agent after every turn to make this
+judgement (`agent/background_review.py`, 1,546 lines). The SHAPE transfers -
+deterministic invocation rather than a tool the agent elects to call. The
+mechanism does not: a reviewer that calls a model would be a fourth model-driven
+node, and `finish`'s own docstring already records that decision being made once.
+
+**The gap was never a missing permission.** `learn()` has always allowed a
+rewrite - the message at `skills.py:445` fires on the CAP, not on a duplicate.
+The gap is NAMING: `extract` names a skill after the DOCUMENT it read, so a
+better document writes a sibling and the bad skill survives, still matching
+goals and still being injected. This was the first draft's premise and it was
+wrong; reading the code corrected it.
+
+1,074 -> 1,090 tests. Six mutations, each failing a named test.
+
+### The case could not measure itself, twice, and one scored row found both
+
+`skill-correction-0` on `20260909T130722Z` PASSED while nothing under test had
+fired. The trace said what the score could not:
+
+- The agent ran `echo -n slate | sha256sum` against the digest in the checker. A
+  DICTIONARY word is the fixture containing its own answer, obfuscated - one
+  wordlist from the suffix without ever opening the runbook. Now a high-entropy
+  token, and the verification gained the direction that had been missing:
+  brute-forcing the checker recovers nothing.
+- `extract` writes a skill from every document READ and not edited, so the
+  tooling script became a skill too - and `_when` builds its description from the
+  first docstring line AND THE PATH. `release.py` put "release" into that
+  description, which made the word furniture across two skills, and `best_match`
+  then returned None. Renamed `ship.py`, docstring neutralised.
+
+Both arms were then simulated offline against the real matcher: corrected in
+place it matches `conventions` and teaches the working suffix; with the sibling
+written instead the control matches nothing.
+
+### The measurement: 1 usable row of 3, and the mechanism did not fire
+
+`20260909T132606Z`. Two runs blocked on 429s after roughly 60 scored runs in a
+day; the tier stops answering long before it says so.
+
+The one row that ran is still worth recording:
+
+| | |
+|---|---|
+| verdict | `stuck`, pass=False |
+| skill injected | `conventions` - **R0 works**, the trace names it |
+| skills written | `conventions` once, then `ship` x4 and `version` |
+| correction | **did not fire** - `conventions` was never rewritten |
+
+`RUNBOOK.md` was never read. Session 3 said only "Cut release 2.2." while
+session 1 said "Read CONVENTIONS.md" - so the agent had no reason to look for a
+document it had never been told about, and a stale skill telling it the wrong
+suffix. The plan had that pointer and the case as written dropped it. Fixed;
+unmeasured.
+
+### Standing lesson this paid for
+
+**A fixture that hides its answer behind a hash still contains it.** Three-way
+verification asks whether the untouched, the plausible and the correct answers
+score correctly. It does not ask whether the agent can DERIVE the answer from the
+checker, and here it could, in one shell call. Add the fourth direction: try to
+recover the answer from the fixture the way the agent would.
+
+---
+
 ## Four things reported from the TUI, three of them one defect each (2026-09-09)
 
 Found by using the interface, not by the rig. None of these had a failing test;
