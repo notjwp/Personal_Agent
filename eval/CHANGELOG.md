@@ -75,6 +75,20 @@ Two decisions worth keeping:
 A one-cell gap is grabbable from either side, and where nesting overlaps two
 targets the nearer centre wins, so an inner divider is not shadowed.
 
+### 6. The focus fix was incomplete, and my own check missed it
+
+Focusing the pane ON MOVE was right and moved nothing: `/threads` splits the
+pane in at mount and left `chat` active, so the composer still held the keys.
+Every thread listed, the row cursor could not move, Enter submitted the
+composer. The reported bug survived its own fix.
+
+It was missed because the verification split into whatever pane was spare -
+`plan` - and never touched a table, so it passed while the real path stayed
+broken. **Check the path the user takes, not a path that exercises the same
+line.** `on_mount` now makes an opened pane active, and the regression test
+drives `/threads` -> `down` -> `enter` end to end rather than asserting on
+`focus_id`.
+
 ### dev 14/15 (-1), and it is a guard rather than a measurement
 
 `20260909T100432Z`. `off-by-one` 3/3 -> 2/3; everything else 3/3, zero tamper.

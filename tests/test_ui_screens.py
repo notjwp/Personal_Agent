@@ -951,3 +951,41 @@ def test_dragging_resizes_without_remounting_the_tree():
         assert screen.rebuilds == rebuilds, "a drag must not re-mount"
 
     drive(app, script)
+
+
+def test_opening_threads_by_name_hands_it_the_keys(monkeypatch):
+    """The reported case, on the path actually used to reach it. `/threads`
+    split the pane in and left `chat` active, so the composer kept the keys:
+    every thread listed, the row cursor could not move, and Enter submitted the
+    composer instead of resuming. Focusing the pane on move was not enough -
+    nothing moved."""
+    from textual.widgets import DataTable
+
+    from agent import cli
+    rows = [{"id": "aaaa1111", "verdict": "done", "turns": 0, "goal": "one"},
+            {"id": "bbbb2222", "verdict": "done", "turns": 2, "goal": "two"}]
+    monkeypatch.setattr(cli, "_thread_rows", lambda graph: rows)
+
+    app = screens.NoesisApp(FakeGraph())
+
+    async def script(pilot):
+        app.screen.query_one(Input).value = "/threads"
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.pause()
+        screen = app.screen
+        assert screen.focus_id == "threads"
+        assert isinstance(screen.focused, DataTable)
+
+        table = screen.query_one("#threads-table", DataTable)
+        await pilot.press("down")
+        await pilot.pause()
+        assert table.cursor_row == 1, "the arrow key must move the row cursor"
+
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        assert app.screen.thread == "bbbb2222", "Enter must resume that row"
+
+    drive(app, script)

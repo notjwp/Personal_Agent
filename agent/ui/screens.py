@@ -419,6 +419,10 @@ class WorkspaceScreen(Screen):
         if self._opening:
             self.tiles = tiling.split(self.tiles, "chat", self._opening,
                                      *self.area())
+            # Asking for /threads is asking to USE it. Leaving `chat` active
+            # put the keys on the composer, so the table listed every thread
+            # and its row cursor could not move.
+            self.focus_id = self._opening
         self.rebuild()
         prior = self.reread()
         for renderable in replay(prior.get("messages") or []):
@@ -432,7 +436,10 @@ class WorkspaceScreen(Screen):
             self.begin(self._goal)
         elif prior and prior.get("verdict") is None and prior.get("messages"):
             self.start(None)
-        self.query_one(Input).focus()
+        # `rebuild` marks focus after a refresh, so this must not race it back
+        # onto the composer when a pane was opened by name.
+        if not self._opening:
+            self.query_one(Input).focus()
 
     def on_key(self, event) -> None:
         """Typing always reaches the agent, even while a table holds the keys.
