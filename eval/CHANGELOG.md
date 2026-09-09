@@ -5,6 +5,116 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## The control arm, dev re-checked, and a tool the gate had made unreachable (2026-09-09)
+
+Three measurements the previous entry left open, and one defect they exposed.
+
+### `dev` holds at 15/15 under the prompt that names all the tools
+
+`20260909T064758Z`, `done` x15, zero tamper. The prompt change kept on
+2026-09-08 cost no pass rate on the split that guards it.
+
+It cost tokens. Median 49,485 (`20260905T060755Z`) -> **56,646, +14.5%**, on five
+cases that never call a new tool. Six schemas are rent charged every turn and
+this provider caches nothing. NFR-402's ceiling is 60,000, so the headroom left
+is 6% - the next tool is not free, and the budget says so before the cap does.
+
+**A first attempt measured 13/15 and it was my error, not a regression.**
+`add-endpoint` carries `"max_turns": 12` in its own case row, and the harness
+overrides it only from `AGENT_MAX_TURNS`. Run without the export, all three runs
+died at the case cap (12 + the summary turn = the 13 turns every row showed) and
+scored 1/3, `stuck` x3. Re-run with `AGENT_MAX_TURNS=30`: 3/3, 14/14/12 turns.
+The documented baseline depends on an environment variable that lives nowhere in
+the repository, which is the same shape as the `AGENT_EGRESS` default this
+project already paid for.
+
+### The control arm: one of the three tools is earned
+
+`AGENT_TOOLS_OFF="ask_user,read_document,todo"`, 9 runs, against the real arm on
+`20260908T131333Z`. Arms verified to differ before spending anything: 12 tools
+against 9 inside the container.
+
+| case | tool | real | control | delta |
+|---|---|---|---|---|
+| `ask-environment` | `ask_user` | 2/3 | **0/3** | **+2** |
+| `doc-headcount` | `read_document` | 3/3 | 3/3 | +0 |
+| `todo-outstanding` | `todo` | 2/2, 1 blocked | 3/3 | +0 |
+
+`ask_user` is the only one the number can see. Removing it takes its case to
+zero: the answer is not in the workspace, so there is nothing to route around.
+
+The other two were routed around identically to `move_files` before them.
+`run_python` opens the .docx as a zip and walks its XML - which is what
+`read_document` does internally - and `write_file` persists a list across the
+three sessions because the workspace outlives them. **This is the fourth
+confirmation that `run_shell`/`run_python` are a superset**, and the second time
+a case has been closed against the shell and still lost to it.
+
+Not reverted, and the reason is narrower than the last one. `move_files` failed
+to fire when it was available. These two fire 3/3 when present and the agent
+prefers them; what the control proves is that these CASES cannot separate them,
+which is a statement about the fixtures.
+
+### The defect: `start_terminal` was unreachable everywhere it mattered
+
+Six earlier attempts at the terminal pair were blocked by the provider and hid
+this. The first runs that completed showed the tool being called and DENIED,
+every time:
+
+    verdict=deny  "start_terminal is destructive; denied in autonomous mode"
+
+`start_terminal` was the only tool declared `destructive`. That is `confirm`,
+which autonomous turns into `deny` - so the tool could not run in the harness,
+`--worker`, cron or the email channel, while `run_shell` executed the same
+command string unattended as `write`. It worked only in an interactive session.
+
+The passes it collected were real and measured nothing about it: the agent wrote
+its own driver script and called `run_shell`. **A pass rate is not evidence for
+a mechanism that did not fire** - and the check that would have caught it is the
+gate VERDICT, not the presence of a tool-call event. I read the event and
+reported "fired 3 of 3" before checking the verdict, which was wrong.
+
+**One change: `start_terminal` is classified exactly as `run_shell`.** Both
+halves, because the first alone is a hole:
+
+- `agent/tools.py` - `risk="destructive"` -> `risk="write"`
+- `agent/policy.py` - the `DANGER` escalation covers both names, not just
+  `run_shell`. Both tools take `command`, so the check transfers unchanged.
+
+Mutation-checked in both directions. Reverting the risk fails
+`test_start_terminal_is_reachable_unattended`; narrowing `DANGER` back fails
+`test_a_dangerous_command_still_escalates_through_start_terminal`, where
+`rm -rf /` goes `deny` -> **`auto`**. 1,060 -> 1,062 tests.
+
+### STILL UNMEASURED: the terminal pair, for the seventh time
+
+The pair was re-run against the patched policy and abandoned at 1 of 6 rows.
+`serve-token-0` passed in 79 seconds; the two runs after it each sat **20+
+minutes at 0.01% CPU** on a model call that never returned. `MAX_SECONDS` is
+checked between turns, so a hung call is never checked - the documented failure,
+seen again after ~46 scored runs in a day, which is what saturation looks like on
+this tier when it stops refusing and starts not answering.
+
+The one row is worth recording and is not a measurement:
+
+| row | pass | `start_terminal` |
+|---|---|---|
+| `serve-token-0` (`20260909T071712Z`) | yes | **never called** |
+
+Before the patch the tool was called and denied. After it, on this single row,
+it was not called at all - the run passed on `run_shell` + `run_python`. n=1
+against a case whose whole purpose is to need the tool. **Unknown, not zero**,
+and it stays written that way until six rows exist.
+
+### Standing lesson this paid for
+
+**Check the gate's VERDICT, not that the tool appears in the trace.** A denied
+call is recorded exactly like a made one, and a run that routes around a denied
+tool still passes its case. Six blocked attempts looked like an endpoint problem
+and were hiding a policy defect the whole time.
+
+---
+
 ## Six tools measured for the first time, and the prompt was hiding them (2026-09-08)
 
 **One change: `prompts/SOUL.md` now names all thirteen builtins.** It named

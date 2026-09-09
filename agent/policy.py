@@ -195,7 +195,11 @@ def classify(name: str, args: dict, autonomous: bool,
                         f"refused until the plan is accepted. Read and search now; "
                         f"do this once the plan is agreed.")
 
-    if name == "run_shell" and DANGER.search(str(args.get("command", ""))):
+    # Both tools take `command` and run it. Classifying one `write` and the
+    # other `destructive` gated start_terminal out of every unattended
+    # context - worker, cron, harness - while run_shell ran the same string.
+    if name in ("run_shell", "start_terminal") and DANGER.search(
+            str(args.get("command", ""))):
         risk = "destructive"
 
     verdict = VERDICT_BY_RISK[risk]

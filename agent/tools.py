@@ -625,7 +625,7 @@ def stop_terminals() -> None:
 atexit.register(stop_terminals)
 
 
-@tool(risk="destructive")
+@tool(risk="write")
 def start_terminal(command: str) -> str:
     """Start a long-running command and leave it running - a dev server, a
     watcher, a build. Returns a session name; read its output with

@@ -3877,8 +3877,32 @@ def test_stop_terminals_leaves_nothing_running(tmp_workspace):
 def test_the_terminal_tools_carry_the_right_risk():
     from agent import policy
 
-    assert policy.risk_of("start_terminal") == "destructive"
+    # `write`, matching run_shell. `destructive` became `confirm`, which
+    # autonomous turns into `deny`, so the tool was unreachable from the worker,
+    # cron and the harness while run_shell ran the same command unattended.
+    assert policy.risk_of("start_terminal") == "write"
+    assert policy.risk_of("run_shell") == "write"
     assert policy.risk_of("read_terminal") == "read"
+
+
+def test_start_terminal_is_reachable_unattended():
+    from agent import policy
+
+    verdict, _ = policy.classify("start_terminal", {"command": "python3 -m http.server"},
+                                 autonomous=True)
+    assert verdict == "auto"
+
+
+def test_a_dangerous_command_still_escalates_through_start_terminal():
+    """The half that keeps `write` from being a hole: run_shell's DANGER check
+    reads args["command"], and start_terminal's argument has the same name."""
+    from agent import policy
+
+    for command in ("rm -rf /", "dd if=/dev/zero of=/dev/sda", "mkfs.ext4 /dev/sda1"):
+        shell, _ = policy.classify("run_shell", {"command": command}, autonomous=True)
+        terminal, _ = policy.classify("start_terminal", {"command": command},
+                                      autonomous=True)
+        assert terminal == shell == "deny", command
 
 
 # ================================================= AGENT_TOOLS_OFF (ablation)
