@@ -5,6 +5,57 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## "Trust a tool that succeeded" - REVERTED on the condition set beforehand (2026-09-10)
+
+**One change: a sixth rule in SOUL.md**, telling the agent not to spend a call
+confirming a result a tool already reported. From a TUI session where deleting
+one file took four calls - `del`, `dir`, `find . -type f | wc -l`,
+`dir /b /a-d | find /c /v ""` - five prompt resends for one deletion.
+
+The rule cost 62 tokens per call and had to earn them back.
+
+### Measured, 15 runs, AGENT_MAX_TURNS=30
+
+`20260909T100432Z` -> `20260910T162415Z`:
+
+| | before | after | |
+|---|---|---|---|
+| total tool calls | 158 | **185** | **+17%** |
+| **total tokens** | 1,044,376 | **1,204,756** | **+15%** |
+| median tokens | 73,672 | 60,806 | -17% |
+| pass | 14/15 | 15/15 | +1 |
+
+**Reverted.** The condition was written down before the run: revert if calls do
+not fall. They rose. Total tokens - the thing the cycle existed to reduce - rose
+with them.
+
+### Why the two token numbers disagree
+
+Seven rows got cheaper, seven dearer, and one blew the budget: `add-endpoint-0`
+went 11 calls / 76,908 to **26 calls / 204,116**. The median fell because the
+typical run improved; the total rose because the tail got fatter. On a
+rate-limited free tier the total is what binds, so the median is the wrong
+number to keep this on.
+
+### The confound, recorded so the next attempt is cleaner
+
+`off-by-one-0` went 1 call -> 8. At baseline that run made a single
+`search_files` call and gave up - it WAS the 14/15's one failure. So part of the
+baseline's low total is a run that did not do the work, which flatters the
+before column, and part of the +1 pass is that run now finishing.
+
+A comparison of totals across runs with different pass rates is not clean. A
+future attempt should compare cost only over rows that passed in BOTH arms.
+
+### Standing lesson this paid for
+
+**Pre-register the revert condition, then honour it when the result is
+flattering.** Median -17% and pass +1 were there to rationalise a keep. The
+condition said calls, calls rose, and the goal metric rose with them. The rule
+exists for exactly the moment when some number looks good.
+
+---
+
 ## A leaked key shape, found by mining the reference tests rather than running them (2026-09-10)
 
 **`nvapi-` was missing from the secret shape list — the format of the provider
