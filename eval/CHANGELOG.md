@@ -5,6 +5,71 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## The token climb, explained: nobody added up the rent (2026-09-10)
+
+Not a regression, not drift, and not the model. **Two thirds of it is fixed
+prompt growth, charged on every call, and it is fully accounted for.**
+
+### The measurement
+
+`multibug`, the same ten cases, `20260819T070445Z` against `20260910T093103Z`:
+
+| | 2026-08-19 | 2026-09-10 | |
+|---|---|---|---|
+| median tokens | 36,630 | **86,078** | **+135%** |
+| model calls | 14 | 14 | -3% |
+| turns | 14 | 13 | -4% |
+| tool calls | 14 | 13 | -4% |
+| largest tool result | 1,918 | 3,028 | +58% |
+
+**The agent is not working harder.** Same number of model calls, same number of
+tool calls, one fewer turn. It does the same work and pays 2.35x for it.
+
+Per call, on `multi-orders`: **2,091 -> 5,616 tokens, +3,525.**
+
+### Where the +3,525 went
+
+Measured from git, comparing the commit nearest that baseline to HEAD:
+
+| added to EVERY model call | chars | tokens/call |
+|---|---|---|
+| tool schemas (3,518 -> 8,447) | +4,929 | **+1,232** |
+| SOUL.md naming all twelve tools | +1,957 | +489 |
+| CODING.md, the coding posture | +1,350 | +337 |
+| skills index (Phase N) | +1,224 | +306 |
+| **fixed total** | **+9,460** | **+2,364** |
+
+That is **67% of the observed per-call growth**. The remaining third is bigger
+tool results riding in a history every later call resends - which is quadratic in
+conversation length, so a 58% larger result costs far more than 58%.
+
+### Why nobody saw it
+
+Every one of those additions was deliberate, measured, and RIGHT:
+
+- naming all twelve tools fixed a prompt that hid seven of them
+- the skills index earned its place - 0/18 to 17/18
+- the coding posture took `recall` and `skills` from 46%/52% to 85.7%/94.4%
+- the five new tools each closed a real gap
+
+Each cycle was measured on PASS RATE and kept on that basis. Each one silently
+raised the per-call cost on a provider where `cache_read_tokens` is 0 across
+every recorded row. Twelve correct decisions summed to a 135% bill.
+
+### Standing lesson this paid for
+
+**A cycle that keeps a change on pass rate alone is not measuring its cost.**
+NFR-402's ceiling is checked per run and reported at the end - by which point the
+change is committed and the next cycle starts from the new floor. The ratchet
+only turns one way, because nothing in the loop ever asks a kept change what it
+costs on every future call.
+
+Every split except `real` is now at its ceiling - dev 15/15, heldout 30/30,
+multibug 10/10, search 9/9, web 18/18, authoring 11/11. There is no headroom left
+to win pass rate on, and the one number still moving is the bill.
+
+---
+
 ## `search_files` listing: REVERTED - it won its metric and lost everything else (2026-09-10)
 
 **One change, measured, reverted.** An omitted `pattern` listed the files matching
