@@ -385,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="check every precondition; changes nothing")
     parser.add_argument("--update", action="store_true",
                         help="pull the repository and reinstall if needed")
+    parser.add_argument("--serve", action="store_true",
+                        help="read-only viewer on localhost; prints a URL")
     parser.add_argument("--channel-check", action="store_true",
                         help="probe the mailbox and report; sends nothing")
     parser.add_argument("--review", action="store_true",
@@ -524,6 +526,11 @@ def _dispatch(args, app, parser) -> int:
 
     if args.update:
         return update()
+
+    if args.serve:
+        from agent import viewer
+
+        return viewer.run()
 
     if args.doctor:
         from agent import channel

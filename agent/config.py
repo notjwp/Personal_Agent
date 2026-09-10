@@ -267,6 +267,14 @@ TOOLS_OFF = frozenset(
 MEMORY_DB = AGENT_HOME / "memory.db"
 TASKS_DB = AGENT_HOME / "tasks.db"
 PROFILE = AGENT_HOME / "AGENT.md"   # durable user profile (FR-406)
+
+# The read-only viewer (section 11, amended 2026-09-10). LOOPBACK, and not a
+# tunable: a viewer that serves traces, goals and workspace paths must not be
+# reachable off this machine, and an env var is how that becomes 0.0.0.0 by
+# accident. The port moves because a port can collide; the host cannot.
+VIEWER_HOST = "127.0.0.1"
+VIEWER_PORT = int(_env("AGENT_VIEWER_PORT", "8787"))
+VIEWER_SECRET = AGENT_HOME / "viewer.secret"
 # The working scratchpad, beside the durable profile and deliberately unlike it:
 # AGENT.md is appended to and never decays, NOW.md is OVERWRITTEN every session
 # because it describes what is true now. Conflating them is how a finished

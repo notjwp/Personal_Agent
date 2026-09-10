@@ -878,6 +878,13 @@ re-argue a decision that has already been measured.
       context.py       shrink(), and redact() inside it (NFR-203)
       graph.py         AgentState, node functions, graph wiring
       cli.py           entrypoint: python -m agent "goal"
+      viewer.py        A STATED DEVIATION, created 2026-09-10. The read-only
+                       viewer section 11 was amended to permit. One file because
+                       it is one screen and five JSON routes over stores that
+                       already exist - no template engine, no build step, no
+                       framework: stdlib http.server, so it adds no dependency.
+                       Its three conditions are tests, not prose: loopback,
+                       a secret per request, and do_GET as the only method.
       tui.py           Textual front end. FR-701 reads "CLI/TUI chat" and §11
                        says "CLI/TUI only", so this is scope arriving late, not
                        new scope. Earned under CE-01 as the SECOND
