@@ -62,6 +62,11 @@ COMMANDS = {
     "/threads": "resume past work",
     "/tasks": "the queue",
     "/schedules": "cron schedules, soonest first",
+    "/plan": "the current plan and where it is",
+    "/trace": "every tool call this session",
+    "/artifact": "the last spilled output, in full",
+    "/review": "queue a review of what needs attention",
+    "/serve": "a read-only viewer in the browser",
     "/doctor": "every precondition, ok or FAIL",
     "/setup": "change model or API key",
     "/help": "this list",
@@ -70,7 +75,8 @@ COMMANDS = {
 
 # Which pane a command opens beside chat. /chat is an empty workspace.
 OPENS = {"/threads": "threads", "/tasks": "tasks", "/schedules": "schedules",
-         "/doctor": "doctor"}
+         "/doctor": "doctor", "/plan": "plan", "/trace": "trace",
+         "/artifact": "artifact"}
 
 
 def weigh(first, second, ratio: float, side_by_side: bool) -> None:
@@ -312,7 +318,11 @@ class LandingScreen(Screen):
         if word == "/setup":
             self.app.action_setup()
             return
-        self.app.open_workspace(pane=OPENS.get(word))
+        # An ACTION has no pane, and the fallback would open a session and
+        # silently do nothing - the shape the /exit defect had. Carried through
+        # and run on mount, so its output lands in the transcript.
+        pane = OPENS.get(word)
+        self.app.open_workspace(pane=pane, run=None if pane else word)
 
 
 def logotype(width: int) -> Text:
@@ -377,11 +387,12 @@ class WorkspaceScreen(Screen):
     ]
 
     def __init__(self, thread: str, goal: str | None = None,
-                 pane: str | None = None) -> None:
+                 pane: str | None = None, run: str | None = None) -> None:
         super().__init__()
         self.thread = thread
         self._goal = goal
         self._opening = pane
+        self._pending = run
         self.tiles = tiling.Leaf("chat")
         self.zoomed: str | None = None
         self.focus_id = "chat"
@@ -443,6 +454,9 @@ class WorkspaceScreen(Screen):
             self.begin(self._goal)
         elif prior and prior.get("verdict") is None and prior.get("messages"):
             self.start(None)
+        if self._pending:
+            pending, self._pending = self._pending, None
+            self.command(pending)
         # `rebuild` marks focus after a refresh, so this must not race it back
         # onto the composer when a pane was opened by name.
         if not self._opening:
@@ -816,6 +830,10 @@ class WorkspaceScreen(Screen):
             # A checkpoint is written after every node, so leaving mid-run costs
             # at most one node and the thread resumes by id.
             self.app.exit()
+        elif word == "/review":
+            self.review()
+        elif word == "/serve":
+            self.serve()
         elif word == "/setup":
             self.app.action_setup()
         elif word == "/chat":
@@ -824,6 +842,35 @@ class WorkspaceScreen(Screen):
         else:
             self.open(OPENS[word])
         return True
+
+    def review(self) -> None:
+        """Queue a review of what is outstanding, or say there is nothing.
+
+        worker.review() is SILENT when nothing needs attention, which is right
+        for a cron tick and wrong here: this is a question someone just asked.
+        """
+        from agent import worker
+
+        queued = worker.review()
+        if queued is None:
+            self.note("nothing needs attention", "row--muted")
+        else:
+            self.note(f"queued a review: {queued}", "row--selected")
+        self.refresh_pane("tasks")
+
+    def serve(self) -> None:
+        """Start the read-only viewer and print its URL, with the token, once."""
+        from agent import config, viewer
+
+        try:
+            port = viewer.serve_in_background()
+        except Exception as exc:                   # noqa: BLE001
+            self.note(f"could not start the viewer: {exc}", "row--denied")
+            return
+        self.note(f"http://{config.VIEWER_HOST}:{port}/?token={viewer._secret()}",
+                  "row--selected")
+        self.note("read-only, loopback only; it stops when NOESIS does",
+                  "row--muted")
 
     def open(self, pane_id: str) -> None:
         """Split a pane in, or focus it if it is already up."""
@@ -940,14 +987,14 @@ class NoesisApp(App):
         screen.add_class(f"-{self.mode}")
 
     def open_workspace(self, goal: str | None = None, thread: str | None = None,
-                       pane: str | None = None) -> None:
+                       pane: str | None = None, run: str | None = None) -> None:
         """SWITCH when a workspace is already open, push when one is not.
 
         Pushing every time stacked one screen per thread opened - each with its
         own transcript, panes and worker - and nothing ever popped one.
         """
         screen = WorkspaceScreen(thread or uuid.uuid4().hex[:8],
-                                 goal=goal, pane=pane)
+                                 goal=goal, pane=pane, run=run)
         if self.screen_stack and isinstance(self.screen, WorkspaceScreen):
             self.switch_screen(screen)
         else:

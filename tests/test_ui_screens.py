@@ -1055,3 +1055,109 @@ def test_exit_is_not_treated_as_a_goal():
         assert started == [], "/exit was sent to the model"
 
     drive(app, script)
+
+
+# ===================================== the rest of the commands (2026-09-10)
+
+def test_every_pane_that_exists_can_be_opened_by_typing():
+    """Three panes - plan, trace, artifact - were reachable only by splitting
+    into whatever alt+enter happened to pick. A pane with no command is a pane
+    most people never find."""
+    openable = set(screens.OPENS.values())
+    missing = set(panes.PANES) - openable - {"chat"}
+
+    assert not missing, f"panes with no command: {sorted(missing)}"
+
+
+def test_the_command_list_and_the_pane_map_agree():
+    """COMMANDS is the only list - the suggester, the dispatcher and /help all
+    read it. An OPENS entry with no COMMANDS entry is a pane nothing can reach."""
+    assert set(screens.OPENS) <= set(screens.COMMANDS)
+
+
+def test_review_queues_when_something_needs_attention(monkeypatch):
+    app = workspace()
+
+    async def script(pilot):
+        from agent import worker
+
+        monkeypatch.setattr(worker, "review", lambda: "task-123")
+        app.screen.command("/review")
+        await pilot.pause()
+
+        said = " ".join(str(r) for r in app.screen.transcript)
+        assert "task-123" in said
+
+    drive(app, script)
+
+
+def test_review_says_so_when_nothing_needs_attention(monkeypatch):
+    """Silence when there is nothing to say is what makes it usable - but the
+    TUI is a question someone just asked, so it answers rather than ignoring."""
+    app = workspace()
+
+    async def script(pilot):
+        from agent import worker
+
+        monkeypatch.setattr(worker, "review", lambda: None)
+        app.screen.command("/review")
+        await pilot.pause()
+
+        said = " ".join(str(r) for r in app.screen.transcript).lower()
+        assert "nothing" in said
+
+    drive(app, script)
+
+
+def test_serve_prints_a_url_and_does_not_block(monkeypatch):
+    """serve_forever() would freeze the interface. It goes on a thread, and what
+    reaches the transcript is the URL - with the token, once."""
+    app = workspace()
+
+    async def script(pilot):
+        from agent import viewer
+
+        started = []
+        monkeypatch.setattr(viewer, "_secret", lambda: "tok" * 8)
+        monkeypatch.setattr(viewer, "serve_in_background",
+                            lambda: started.append(True) or 9999)
+        app.screen.command("/serve")
+        await pilot.pause()
+
+        said = " ".join(str(r) for r in app.screen.transcript)
+        assert started, "the viewer was not started"
+        assert "9999" in said and "tok" in said
+
+
+    drive(app, script)
+
+
+def test_the_long_running_commands_are_NOT_offered(monkeypatch):
+    """--worker and --channel block until interrupted, and --update replaces the
+    files this process is running from. Each is correct at a shell prompt and
+    wrong inside a session; leaving them out is the decision, not an omission."""
+    for absent in ("/worker", "/channel", "/update"):
+        assert absent not in screens.COMMANDS, absent
+
+
+def test_an_action_command_on_the_landing_actually_RUNS(monkeypatch):
+    """The landing's fallback opens a workspace with OPENS.get(word), which is
+    None for an action - so /review would have started a session and silently
+    not reviewed anything. Same shape as the /exit defect."""
+    app = screens.NoesisApp(FakeGraph())
+
+    async def script(pilot):
+        from agent import worker
+
+        monkeypatch.setattr(worker, "review", lambda: "task-77")
+        app.screen.query_one(Input).value = "/review"
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert isinstance(app.screen, screens.WorkspaceScreen)
+        said = " ".join(str(r) for r in app.screen.transcript)
+        assert "task-77" in said, "it opened a session and reviewed nothing"
+
+    drive(app, script)

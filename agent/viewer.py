@@ -207,6 +207,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Silent. The access log would print the token in every line."""
 
 
+def serve_in_background() -> int:
+    """Start the viewer on a daemon thread and return the port it took.
+
+    `run()` blocks, which is right at a shell prompt and wrong inside the TUI -
+    a session cannot wait on serve_forever(). Port 0 lets the OS pick when the
+    configured one is taken, so a second NOESIS does not fail to show a viewer.
+    """
+    import threading
+
+    try:
+        server = http.server.ThreadingHTTPServer(
+            (config.VIEWER_HOST, config.VIEWER_PORT), Handler)
+    except OSError:
+        server = http.server.ThreadingHTTPServer((config.VIEWER_HOST, 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return int(server.server_address[1])
+
+
 def run() -> int:
     """Serve until interrupted. Prints the URL with the token once."""
     token = _secret()
