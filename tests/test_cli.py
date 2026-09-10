@@ -391,3 +391,57 @@ def test_the_guard_never_blocks_the_command_that_REPORTS_it(tmp_path, capsys):
 
     _require_workspace(tmp_path / "nope", ["--doctor"])   # must not raise
     assert capsys.readouterr().err == ""
+
+
+# ============================== the `noesis` command (2026-09-10)
+
+def test_the_noesis_command_points_at_the_entry_that_loads_env():
+    """`noesis` must land where `python -m agent` lands. Pointed at
+    agent.cli:main instead it would skip _load_env and the setup wizard, and
+    start with no API key - the defect recorded from when .env reached only
+    containers."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    declared = (root / "pyproject.toml").read_text(encoding="utf-8")
+    target = re.search(r'^noesis\s*=\s*"([^"]+)"', declared, re.M)
+
+    assert target, "pyproject declares no `noesis` script"
+    assert target.group(1) == "agent.__main__:main"
+
+
+def test_bare_noesis_opens_the_tui(tmp_path, monkeypatch):
+    """The whole request: type one word, the agent starts."""
+    from agent import __main__ as entry
+
+    monkeypatch.setattr(entry, "_load_env", lambda path: 0)
+    monkeypatch.setattr(entry, "_require_workspace", lambda root, argv: None)
+    seen = {}
+    monkeypatch.setitem(__import__("sys").modules, "_probe", None)
+
+    import agent.cli
+    monkeypatch.setattr(agent.cli, "main",
+                        lambda: seen.setdefault("argv", list(__import__("sys").argv[1:])) or 0)
+
+    entry.main([])
+
+    assert seen["argv"] == ["--tui"]
+
+
+def test_noesis_with_arguments_is_python_m_agent(tmp_path, monkeypatch):
+    """One entry point, not a second one to keep in step: `noesis --doctor` is
+    the command it always was."""
+    from agent import __main__ as entry
+
+    monkeypatch.setattr(entry, "_load_env", lambda path: 0)
+    monkeypatch.setattr(entry, "_require_workspace", lambda root, argv: None)
+    seen = {}
+
+    import agent.cli
+    monkeypatch.setattr(agent.cli, "main",
+                        lambda: seen.setdefault("argv", list(__import__("sys").argv[1:])) or 0)
+
+    entry.main(["--doctor"])
+
+    assert seen["argv"] == ["--doctor"], "arguments must pass through untouched"

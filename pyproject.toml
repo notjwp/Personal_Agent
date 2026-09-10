@@ -23,8 +23,22 @@ dependencies = [
   "ddgs==9.16.0",
 ]
 
+# One word, from any directory. Pointed at __main__ and NOT agent.cli:main,
+# because __main__ is what loads .env and runs the setup wizard - a script that
+# skipped it would start with no API key, which is the defect eval/CHANGELOG.md
+# records from when .env reached only containers.
+[project.scripts]
+noesis = "agent.__main__:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=9,<10"]
+
+# The repository is a flat layout with four top-level directories, so setuptools
+# refuses to guess which is the package. Only `agent` ships: `eval` and
+# `prompts` are read from the source tree by path, and the reference checkout is
+# not ours to distribute.
+[tool.setuptools.packages.find]
+include = ["agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -62,10 +62,14 @@ def _require_workspace(root: Path, argv: list[str]) -> None:
     raise SystemExit(2)
 
 
-# Guarded so a test can import _load_env without running the CLI, and so the
-# load happens BEFORE agent.cli pulls in config, which reads every tunable at
-# import time.
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
+    """Process setup, then the CLI. The `noesis` command and `python -m agent`
+    both land here, so neither can drift into starting without a key.
+
+    `.env` is found relative to THIS FILE, not the working directory, which is
+    what lets `noesis` be typed from anywhere.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
     _load_env(Path(__file__).resolve().parent.parent / ".env")
 
     # The wizard runs in the same window .env is loaded in, and for the same
@@ -82,8 +86,20 @@ if __name__ == "__main__":
 
     from agent import config
 
-    _require_workspace(config.WORKSPACE, sys.argv[1:])
+    _require_workspace(config.WORKSPACE, argv)
 
-    from agent.cli import main
+    # Bare `noesis` opens NOESIS. With arguments it is `python -m agent`, so
+    # `noesis --doctor` and `noesis --worker` are the same commands they were -
+    # one entry point, not a second one to keep in step.
+    if not argv:
+        argv = ["--tui"]
+    sys.argv = [sys.argv[0], *argv]
 
+    from agent.cli import main as cli_main
+
+    return cli_main()
+
+
+# Guarded so a test can import _load_env and main without running the CLI.
+if __name__ == "__main__":
     raise SystemExit(main())
