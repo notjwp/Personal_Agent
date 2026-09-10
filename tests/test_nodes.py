@@ -1937,51 +1937,44 @@ HAND_WRITTEN_SCHEMAS = {'read_file': {'name': 'read_file',
                                                                         'Default '
                                                                         '500.'}},
                                 'required': ['path']}},
-'search_files': {'description': 'List what is in the workspace, or find where '
-                                 'something appears in it. **Use this instead of '
-                                 'run_shell with ls, dir, find or grep** - it is '
-                                 'bounded, so it cannot flood your context the way '
-                                 'those can on a large tree. With no pattern it '
-                                 'LISTS the files matching glob - this is how you '
-                                 'see what is there. With a pattern it searches '
-                                 'their contents and returns path:line: matches, '
-                                 'never whole files; use read_file once it has told '
-                                 'you which file and which line to look at.',
-                  'input_schema': {'properties': {'glob': {'description': 'Which '
-                                                                          'files to '
-                                                                          'look at, '
+ 'search_files': {'name': 'search_files',
+                  'description': 'Find where something appears in the workspace. '
+                                 'Returns path:line: matches, never whole files. **Use '
+                                 'this instead of run_shell with grep** - '
+                                 'it is bounded, so it cannot flood your context the '
+                                 'way a raw grep across a large repository will. Use '
+                                 'read_file once this has told you which file and '
+                                 'which line to look at.',
+                  'input_schema': {'type': 'object',
+                                   'properties': {'pattern': {'type': 'string',
+                                                              'description': 'Regular '
+                                                                             'expression '
+                                                                             'to '
+                                                                             'search '
+                                                                             'for.'},
+                                                  'glob': {'type': 'string',
+                                                           'description': 'Which files '
+                                                                          'to search, '
                                                                           'e.g. '
                                                                           "'**/*.py'. "
-                                                                          'Default '
-                                                                          'all '
-                                                                          'files.',
-                                                           'type': 'string'},
-                                                  'paths_only': {'description': 'Return '
+                                                                          'Default all '
+                                                                          'files.'},
+                                                  'paths_only': {'type': 'boolean',
+                                                                 'description': 'Return '
                                                                                 'only '
                                                                                 'the '
                                                                                 'file '
                                                                                 'paths, '
+                                                                                'one '
+                                                                                'per '
+                                                                                'file, '
                                                                                 'without '
                                                                                 'the '
                                                                                 'matching '
                                                                                 'lines. '
                                                                                 'Default '
-                                                                                'false.',
-                                                                 'type': 'boolean'},
-                                                  'pattern': {'description': 'Regular '
-                                                                             'expression '
-                                                                             'to '
-                                                                             'search '
-                                                                             'for. '
-                                                                             'Omit '
-                                                                             'it to '
-                                                                             'list '
-                                                                             'files '
-                                                                             'instead.',
-                                                              'type': 'string'}},
-                                   'required': [],
-                                   'type': 'object'},
-                  'name': 'search_files'},
+                                                                                'false.'}},
+                                   'required': ['pattern']}},
  'write_file': {'name': 'write_file',
                 'description': 'Write a file in the workspace, replacing its entire '
                                'contents. Read the file first; this does not patch, it '
@@ -4333,125 +4326,6 @@ def test_the_python_driver_sets_the_childs_own_encoding():
 
     assert 'sys.stdin.buffer.read().decode("utf-8"' in _PYTHON_DRIVER
     assert 'sys.stdout.reconfigure(encoding="utf-8"' in _PYTHON_DRIVER
-# ================================ search_files as a listing (2026-09-09)
-
-def _workspace_with(tmp_path, monkeypatch, files):
-    from agent import config
-
-    for name, text in files.items():
-        target = tmp_path / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-    monkeypatch.setattr(config, "WORKSPACE", tmp_path)
-    return tmp_path
-
-
-def test_no_pattern_lists_the_files_instead_of_searching_them(tmp_path, monkeypatch):
-    """The gap this closes. SOUL.md told the agent to use search_files "instead
-    of run_shell with grep, find or ls" - and the tool could not list, because it
-    required a regex and searched CONTENTS. Measured on 15 dev runs: 21 of 59
-    run_shell calls were ls/find/cat, each one a whole extra model call."""
-    from agent.tools import search_files
-
-    _workspace_with(tmp_path, monkeypatch,
-                    {"app.py": "print(1)\n", "notes.md": "hello\n"})
-
-    out = search_files(glob="**/*")
-
-    assert "app.py" in out
-    assert "notes.md" in out
-    assert ":1:" not in out, "a listing must not carry line numbers"
-
-
-def test_a_listing_includes_a_file_with_no_content(tmp_path, monkeypatch):
-    """The case the `search_files(".", paths_only=True)` workaround misses: an
-    empty file has no line to match, so a content search cannot see it."""
-    from agent.tools import search_files
-
-    _workspace_with(tmp_path, monkeypatch, {"empty.txt": "", "full.txt": "x\n"})
-
-    out = search_files(glob="**/*")
-
-    assert "empty.txt" in out
-    assert "full.txt" in out
-
-
-def test_a_listing_narrows_by_glob(tmp_path, monkeypatch):
-    from agent.tools import search_files
-
-    _workspace_with(tmp_path, monkeypatch,
-                    {"a.py": "x\n", "b.md": "y\n"})
-
-    out = search_files(glob="**/*.py")
-
-    assert "a.py" in out
-    assert "b.md" not in out
-
-
-def test_a_listing_skips_the_directories_a_search_skips(tmp_path, monkeypatch):
-    """SKIP_DIRS exists because .git alone is thousands of files. A listing that
-    ignored it would flood context - the exact thing this tool exists to stop."""
-    from agent.tools import search_files
-
-    _workspace_with(tmp_path, monkeypatch,
-                    {"keep.py": "x\n", ".git/config": "noise\n",
-                     "__pycache__/c.pyc": "noise\n"})
-
-    out = search_files(glob="**/*")
-
-    assert "keep.py" in out
-    assert ".git" not in out
-    assert "__pycache__" not in out
-
-
-def test_a_listing_is_capped_like_a_search(tmp_path, monkeypatch):
-    from agent import tools
-
-    _workspace_with(tmp_path, monkeypatch,
-                    {f"f{n}.txt": "x\n" for n in range(tools.MATCH_CAP + 20)})
-
-    out = tools.search_files(glob="**/*")
-
-    assert len(out.splitlines()) <= tools.MATCH_CAP + 2, "a listing must be bounded"
-    assert "of" in out.splitlines()[-1], "it must say it was truncated"
-
-
-def test_a_listing_still_refuses_a_glob_pointing_outside(tmp_path, monkeypatch):
-    """The escape guard runs before the branch, not inside the search half."""
-    import pytest
-
-    from agent.tools import search_files
-
-    _workspace_with(tmp_path, monkeypatch, {"a.py": "x\n"})
-
-    with pytest.raises(ValueError):
-        search_files(glob="../**/*")
-    with pytest.raises(ValueError):
-        search_files(glob="/etc/**")
-
-
-def test_searching_with_a_pattern_is_unchanged(tmp_path, monkeypatch):
-    """The listing is additive. A pattern still searches contents and still
-    reports path:line: - this is the behaviour 26 dev calls already rely on."""
-    from agent.tools import search_files
-
-    _workspace_with(tmp_path, monkeypatch,
-                    {"a.py": "alpha\nbeta\n", "b.py": "gamma\n"})
-
-    out = search_files("beta", glob="**/*.py")
-
-    assert "a.py:2: beta" in out
-    assert "b.py" not in out
-
-
-def test_the_schema_says_it_lists(tmp_path):
-    """The docstring IS the schema the model reads (FR-207). A capability the
-    description does not mention is a capability the model cannot know it has -
-    which is how the tool came to be unusable for listing in the first place."""
-    from agent.tools import TOOLS
-
-    described = TOOLS["search_files"]["schema"]["description"].lower()
-    assert "list" in described
 # ================================ the current date (2026-09-09)
 
 def test_the_system_prompt_states_todays_date(tmp_workspace, monkeypatch):

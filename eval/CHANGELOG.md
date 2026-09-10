@@ -5,6 +5,62 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `search_files` listing: REVERTED - it won its metric and lost everything else (2026-09-10)
+
+**One change, measured, reverted.** An omitted `pattern` listed the files matching
+`glob`, closing a real gap: SOUL.md told the agent to use `search_files` instead
+of `run_shell` with ls/find/grep, and the tool could not list, so the instruction
+was unfollowable.
+
+The gap was real. The fix made things worse.
+
+| | before | after | |
+|---|---|---|---|
+| look-around `run_shell` calls | 21 | **11** | the stated target, -48% |
+| `search_files` calls | 26 | **66** | +154% |
+| **total tool calls** | **158** | **238** | **+51%** |
+| median tokens | 73,672 | **92,711** | +26%, 55% over NFR-402 |
+| `budget` exhaustions | 0 | **3** | |
+| pass | 14/15 | 14/15 | +0 |
+
+`20260909T100432Z` against `20260910T084437Z`, 15 runs each, `AGENT_MAX_TURNS=30`.
+
+### Why the metric lied
+
+Cost tracks the NUMBER OF MODEL CALLS - a turn with N tool calls is N+1 calls,
+each resending the whole prompt on a provider that caches nothing. The change
+halved the cheap calls and added forty expensive ones. Ten fewer `ls` for forty
+more `search_files` is a 51% increase in round-trips, which is the opposite of
+the point.
+
+Three runs exhausted the 200,000-token budget where the baseline exhausted none.
+
+### The thing the numbers nearly hid
+
+`missing-dep` came back **tamper 3 and 2** against 0 at baseline: eight edits to
+`tests/` in one run, seven in another, and BOTH were scored as passes because the
+check reads the workspace and the workspace now said what the agent wanted. More
+exploration -> context pressure -> budget exhaustion -> editing the judge.
+
+n=1 on causation, and not claimed as more. It is recorded because a change that
+raises tamper is a different category of bad from one that costs tokens.
+
+### Standing lesson this paid for
+
+**A proxy metric can win while the thing it proxies for loses.** "Look-around
+calls" was chosen because it is a behaviour count and immune to the token drift.
+It fell by half and was still the wrong number: what costs money is TOTAL calls,
+and the change traded one kind for more of another. Pick the metric that IS the
+cost, not the one that is easiest to attribute - or measure both and say so in
+advance.
+
+Kept from the cycle: nothing in the code. The gap it identified is real and
+unfixed - `search_files` still cannot list, and SOUL.md still tells the agent to
+use it instead of `ls`. Any second attempt has to reduce total calls, not
+redistribute them.
+
+---
+
 ## `search_files` can list a directory - BUILT, UNMEASURED (2026-09-09)
 
 **No number yet.** The `dev` run to decide this was abandoned at 1 blocked row of

@@ -7,11 +7,9 @@ or you run out of budget. All paths are relative to the workspace root.
 ## Tools
 
 - `read_file(path, offset, limit)` — read a file. Use offset and limit on large files.
-- `search_files(pattern, glob, paths_only)` — list what is there, or find where
-  something appears. **Omit `pattern` to LIST the files matching `glob`** — that is how
-  you see what is in a directory. **Use this instead of `run_shell` with ls, dir, find
-  or grep.** It is bounded; those are not, and their output will crowd out everything
-  else you are holding.
+- `search_files(pattern, glob, paths_only)` — find where something appears. **Use this
+  instead of `run_shell` with grep, find or ls.** It is bounded; a raw grep across a
+  large directory is not, and its output will crowd out everything else you are holding.
 - `edit_file(path, old_string, new_string)` — replace an exact snippet. **Use this to
   change an existing file.** The snippet must appear exactly once; include surrounding
   lines to make it unique.
