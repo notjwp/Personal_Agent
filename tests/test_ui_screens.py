@@ -1200,3 +1200,54 @@ def test_an_ordinary_ending_stays_one_line():
         assert "/chat" not in said
 
     drive(app, script)
+
+
+# ============================ seeing the budget before it ends (2026-09-10)
+
+def test_the_status_line_shows_spend_against_the_budget():
+    """Turns already read `2/30`. Spend read `204,972` - a number with nothing
+    to compare it to, in a thread that was two messages from being finished."""
+    app = workspace()
+
+    async def script(pilot):
+        app.screen._state = {"turns": 2, "max_turns": 30,
+                             "spent_tokens": 150_000, "budget_tokens": 200_000}
+        app.screen.paint_status()
+        await pilot.pause()
+
+        assert "150,000/200,000" in rendered(app)
+
+    drive(app, script)
+
+
+def test_a_thread_says_it_is_running_low_ONCE(monkeypatch):
+    """spent_tokens only grows and reflect checks it first, so the dead end is
+    reachable but never announced. Warn while /chat is still a choice rather
+    than a recovery - and once, because a warning every turn is noise."""
+    app = workspace()
+
+    async def script(pilot):
+        for _ in range(3):
+            app.screen.on_trace({"kind": "terminal", "verdict": "done",
+                                 "turns": 1, "spent_tokens": 170_000})
+        await pilot.pause()
+
+        said = " ".join(str(r) for r in app.screen.transcript).lower()
+        assert "running low" in said
+        assert said.count("running low") == 1, "it warned more than once"
+
+    drive(app, script)
+
+
+def test_a_thread_well_inside_its_budget_says_nothing():
+    app = workspace()
+
+    async def script(pilot):
+        app.screen.on_trace({"kind": "terminal", "verdict": "done",
+                             "turns": 1, "spent_tokens": 20_000})
+        await pilot.pause()
+
+        said = " ".join(str(r) for r in app.screen.transcript).lower()
+        assert "running low" not in said
+
+    drive(app, script)

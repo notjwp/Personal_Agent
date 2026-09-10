@@ -52,6 +52,10 @@ LOGO = (
 
 LOGO_WIDTH = 46
 
+# Warn here, not at the wall: past this a conversation is close enough that
+# /chat is still a choice. 0.8 leaves room for several more exchanges.
+LOW_BUDGET = 0.8
+
 # One frame per 80ms while the graph is working, and no timer at all otherwise.
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -402,6 +406,7 @@ class WorkspaceScreen(Screen):
         self.cursor = 0
         self.artifact: Path | None = None
         self.rebuilds = 0
+        self._warned_low = False
         # Widgets per split, refilled by every build; and the divider being
         # dragged, or None. Both belong to the mounted tree, not to the model.
         self.boxes: dict[tuple, tuple] = {}
@@ -755,6 +760,19 @@ class WorkspaceScreen(Screen):
                           "further messages will stop here. /chat starts a "
                           "fresh one - what it remembers about you carries "
                           "over.", "row--muted")
+            elif not self._warned_low:
+                # WHILE /chat is still a choice rather than a recovery. Once,
+                # because a warning on every turn is noise and the first thing
+                # anyone does with noise is stop reading it - the same reason
+                # worker.review() stays silent when there is nothing to say.
+                budget = self._state.get("budget_tokens",
+                                         settings.BUDGET_TOKENS) or 1
+                if entry["spent_tokens"] >= budget * LOW_BUDGET:
+                    self._warned_low = True
+                    self.note(f"running low: {entry['spent_tokens']:,} of "
+                              f"{budget:,} tokens. /chat starts a fresh "
+                              f"conversation and costs nothing remembered.",
+                              "row--muted")
         # Only a turn boundary can move turns, tokens or the verdict.
         if kind in ("model", "step", "terminal"):
             self.reread()
@@ -947,7 +965,11 @@ class WorkspaceScreen(Screen):
         bits = [step, model,
                 f"{values.get('turns', 0)}/"
                 f"{values.get('max_turns', settings.MAX_TURNS)}",
-                f"{values.get('spent_tokens', 0):,}",
+                # Against the budget, not alone: a bare 204,972 is a number
+                # with nothing to compare it to, in a thread two messages from
+                # being finished.
+                f"{values.get('spent_tokens', 0):,}/"
+                f"{values.get('budget_tokens', settings.BUDGET_TOKENS):,}",
                 values.get("verdict") or "running"]
         body = (self._stream.strip()[-160:] if self._stream.strip()
                 else "  ·  ".join(bits))
