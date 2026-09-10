@@ -445,3 +445,77 @@ def test_noesis_with_arguments_is_python_m_agent(tmp_path, monkeypatch):
     entry.main(["--doctor"])
 
     assert seen["argv"] == ["--doctor"], "arguments must pass through untouched"
+
+
+# ================================ noesis --update (2026-09-10)
+
+def _git(monkeypatch, results):
+    """Record the commands run, and answer each from `results` in order."""
+    import subprocess
+
+    seen = []
+    answers = list(results)
+
+    def fake_run(cmd, *a, **k):
+        seen.append(list(cmd))
+        out, code = answers.pop(0) if answers else ("", 0)
+        return subprocess.CompletedProcess(cmd, code, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return seen
+
+
+def test_update_refuses_a_dirty_tree(monkeypatch, capsys):
+    """Pulling over uncommitted work loses it, and stashing silently is worse -
+    it hides the loss until someone goes looking for the stash."""
+    from agent import cli
+
+    seen = _git(monkeypatch, [(" M agent/tools.py\n", 0)])
+    code = cli.update()
+
+    assert code != 0
+    assert "uncommitted" in capsys.readouterr().err.lower()
+    assert not any("pull" in " ".join(c) for c in seen), "it pulled anyway"
+
+
+def test_update_pulls_fast_forward_only(monkeypatch, capsys):
+    """--ff-only: a merge commit made by an update nobody watched is a surprise
+    in the history, and a conflict must stop rather than half-apply."""
+    from agent import cli
+
+    seen = _git(monkeypatch, [("", 0), ("abc1234", 0), ("", 0),
+                              ("def5678", 0), ("", 0)])
+    assert cli.update() == 0
+
+    pull = next(c for c in seen if "pull" in c)
+    assert "--ff-only" in pull
+
+
+def test_update_reinstalls_only_when_the_entry_point_moved(monkeypatch):
+    """An editable install tracks the source tree, so a pull is enough. Only a
+    changed pyproject - a new console script, a new dependency - needs pip."""
+    from agent import cli
+
+    # HEAD MOVED - otherwise update() returns early at "already up to date"
+    # and never reaches the reinstall branch, which is how this test first
+    # passed against a mutation that reinstalled unconditionally.
+    unchanged = _git(monkeypatch, [("", 0), ("abc1234", 0), ("", 0),
+                                   ("def5678", 0), ("agent/tools.py\n", 0)])
+    cli.update()
+    assert not any("pip" in " ".join(c) for c in unchanged)
+
+    changed = _git(monkeypatch, [("", 0), ("abc1234", 0), ("", 0),
+                                 ("def5678", 0), ("pyproject.toml\n", 0)])
+    cli.update()
+    assert any("pip" in " ".join(c) for c in changed), "pyproject moved, no reinstall"
+
+
+def test_update_reports_what_changed(monkeypatch, capsys):
+    """An update nobody can audit is an update nobody can undo."""
+    from agent import cli
+
+    _git(monkeypatch, [("", 0), ("abc1234", 0), ("", 0), ("def5678", 0), ("", 0)])
+    cli.update()
+
+    said = capsys.readouterr().out
+    assert "abc1234" in said and "def5678" in said

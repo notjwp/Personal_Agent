@@ -17,6 +17,7 @@ enough that they are not worth the risk.
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 import time
 import uuid
@@ -302,6 +303,69 @@ def _calls_model(args) -> bool:
     return bool(args.worker or args.tui or args.resume or args.goal)
 
 
+# The repository this install points at. Derived from THIS FILE, not the
+# working directory, because `noesis` is typed from anywhere.
+_REPO = pathlib.Path(__file__).resolve().parent.parent
+
+def _run(*cmd: str) -> tuple[str, int]:
+    """A command in the repository, as (stdout, returncode). Never raises."""
+    import subprocess
+
+    done = subprocess.run(list(cmd), cwd=str(_REPO), capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+    return (done.stdout or "").strip(), done.returncode
+
+
+def update() -> int:
+    """Pull the repository, and reinstall only if the entry point moved.
+
+    An editable install points at this source tree, so a pull is normally the
+    whole update - `pip install -e .` is needed only when pyproject changes,
+    which is when a console script or a dependency has.
+
+    Refuses a dirty tree rather than stashing. A silent stash hides the loss
+    until someone goes looking for it, and this runs unattended by design.
+    """
+    dirty, _ = _run("git", "status", "--porcelain")
+    if dirty:
+        print("uncommitted changes in the repository - commit or stash them "
+              "first, then run this again:\n" + dirty, file=sys.stderr)
+        return 2
+
+    before, code = _run("git", "rev-parse", "--short", "HEAD")
+    if code != 0:
+        print("not a git repository, so there is nothing to update from",
+              file=sys.stderr)
+        return 2
+
+    # --ff-only: a merge commit made by an update nobody watched is a surprise
+    # in the history, and a conflict must stop rather than half-apply.
+    out, code = _run("git", "pull", "--ff-only")
+    if code != 0:
+        print(f"pull failed, nothing changed:\n{out}", file=sys.stderr)
+        return 1
+
+    after, _ = _run("git", "rev-parse", "--short", "HEAD")
+    if after == before:
+        print(f"already up to date at {before}")
+        return 0
+
+    changed, _ = _run("git", "diff", "--name-only", f"{before}..{after}")
+    print(f"updated {before} -> {after}")
+
+    if "pyproject.toml" in changed:
+        # The entry point or a dependency moved, so the installed metadata is
+        # stale. Nothing else in the tree needs pip: the install is editable.
+        print("pyproject changed - reinstalling the console script")
+        out, code = _run(sys.executable, "-m", "pip", "install", "-e", ".",
+                         "--no-deps")
+        if code != 0:
+            print(f"reinstall failed - run `pip install -e .` yourself:\n{out}",
+                  file=sys.stderr)
+            return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent")
     parser.add_argument("goal", nargs="?", help="what to do, in plain language")
@@ -319,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="stop a queued or running task")
     parser.add_argument("--doctor", action="store_true",
                         help="check every precondition; changes nothing")
+    parser.add_argument("--update", action="store_true",
+                        help="pull the repository and reinstall if needed")
     parser.add_argument("--channel-check", action="store_true",
                         help="probe the mailbox and report; sends nothing")
     parser.add_argument("--review", action="store_true",
@@ -455,6 +521,9 @@ def _dispatch(args, app, parser) -> int:
         print("run it with:   python -m agent --worker")
         print("watch it with: python -m agent --tasks")
         return 0
+
+    if args.update:
+        return update()
 
     if args.doctor:
         from agent import channel
