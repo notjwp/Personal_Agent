@@ -819,8 +819,22 @@ overruns its estimate by more than double, stop and reduce scope.
 --------------------------------------------------------------------------------
 
   - Multi-user support, auth, tenancy.
+    AMENDED 2026-09-10: a SHARED-SECRET guard on the local viewer below is
+    permitted, and is a prerequisite of it rather than a feature - a page
+    serving traces, keys and workspace paths must not be readable by anything
+    that can reach the port. One secret, no accounts, no sessions, no roles, no
+    recovery flow. Multi-user, tenancy and OAuth remain non-goals; the reference
+    implementation's auth.py is 9,409 lines because it is all three.
   - Multi-agent orchestration, sub-agent spawning, agent-to-agent protocols.
   - A web UI. CLI/TUI only.
+    AMENDED 2026-09-10: a READ-ONLY local viewer is permitted, bound to
+    127.0.0.1, serving only what is ALREADY recorded - eval/runs rows, traces,
+    task and schedule state. It may not start, stop, approve or configure
+    anything: every mutating path stays in the CLI and TUI, so the gate remains
+    the only way a side effect happens. The reference implementation's
+    web_server.py is 19,279 lines because it also does auth, dashboards, model
+    switching and plugin management; those are still non-goals. If the viewer
+    ever needs a write path, this amendment is reopened rather than stretched.
   - Voice (FR-704 is explicitly [W]).
   - A general-purpose plugin marketplace or dynamic tool loading.
     AMENDED 2026-08-21: permitted ONLY through MCP servers meeting all three of
