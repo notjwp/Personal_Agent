@@ -5,6 +5,76 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## A leaked key shape, found by mining the reference tests rather than running them (2026-09-10)
+
+**`nvapi-` was missing from the secret shape list — the format of the provider
+this project actually runs on, while eleven other vendors were listed.**
+
+### The request, and why it could not be done as asked
+
+"Import the reference test files and run them against ours." Measured: **3,218
+test files, 827,125 lines, 32,263 tests.** A 25-file sample collected **8 tests
+and 23 collection errors** - `acp_adapter`, `agent.lsp`, `hermes_state`,
+`hermes_cli`. Those are not missing pieces, they are a different architecture:
+an `AIAgent` class with a plugin system across 4,510 files, against a LangGraph
+`act -> gate -> execute -> reflect` in ~9,100 lines.
+
+Importing all of them yields ~3,000 collection errors and no signal. This is the
+same conclusion CLAUDE.md already records from the other direction.
+
+### What was done instead: compare COVERAGE by behaviour
+
+Their whole suite is 35x ours (32,263 against 909), so raw counts mean nothing.
+Normalised against that:
+
+| area | theirs | ours | ratio | vs 35x parity |
+|---|---|---|---|---|
+| secrets | 992 | 13 | 76x | **THIN 2.1x** |
+| provider | 2,128 | 44 | 48x | thin 1.4x |
+| checkpoint | 1,034 | 23 | 45x | thin 1.3x |
+| approval/gate | 594 | 16 | 37x | par |
+| tool boundary | 923 | 37 | 25x | ok |
+| path escape | 392 | 18 | 22x | ok |
+| context/limits | 1,362 | 66 | 21x | ok |
+| shell | 747 | 37 | 20x | ok |
+
+Secrets was the outlier, so their 979 secret test names were grouped by
+behaviour: redaction in output (256), env/config load (193), errors and traces
+(39), across threads (32), detection patterns (27).
+
+### The defect that fell out
+
+`context.redact()` has two paths. The ENV path replaces values of variables
+whose names end `_KEY`/`_TOKEN`/... - that caught OUR key, because
+`AGENT_API_KEY` ends in `_KEY`. The SHAPE path (`secrets.scrub`) matches issuer
+prefixes without needing the environment, and its list covered OpenAI, Stripe,
+GitHub, GitLab, Slack, AWS, Google, SendGrid, HuggingFace, npm and PyPI.
+
+Not NVIDIA. Measured:
+
+| | |
+|---|---|
+| the configured key, env path | redacted |
+| an OpenAI-shaped key, shape path | redacted |
+| **any OTHER `nvapi-` key** | **reached the model verbatim** |
+
+A workspace `.env`, a key in source, a second account - exactly the scenario
+`secrets.py`'s own docstring names as the reason the shape path exists. The env
+path masked it: our own key was always caught, so the gap was invisible.
+
+One line, plus a guard asserting the CLASS - whichever provider is configured,
+its shape must be in the list that works without the environment.
+Mutation-checked. 1,090 -> 1,092 tests.
+
+### Standing lesson this paid for
+
+**A borrowed test suite is worthless; borrowed test COVERAGE is not.** Running
+3,218 of their files produced 8 collected tests. Counting what their tests are
+ABOUT, normalised against suite size, found a live credential leak in an
+afternoon. Do not port their tests - port the question they answer.
+
+---
+
 ## Dropped `read_document` and `todo`, and audited what the rest costs (2026-09-10)
 
 **229 tokens off every model call, forever.** Builtin schemas 6,369 -> 5,452

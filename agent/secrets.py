@@ -35,6 +35,11 @@ import re
 # so none can match an ordinary identifier.
 _PREFIXES = [
     r"sk-[A-Za-z0-9_-]{10,}",            # OpenAI / OpenRouter / Anthropic
+    # The provider this project actually runs on, and it was missing while
+    # eleven others were listed. The env path hid it: AGENT_API_KEY ends in
+    # _KEY so OUR key was caught, and any OTHER nvapi- key - a workspace
+    # .env, one in source, a second account - reached the model verbatim.
+    r"nvapi-[A-Za-z0-9_-]{10,}",         # NVIDIA NIM
     r"sk_live_[A-Za-z0-9]{10,}",         # Stripe live
     r"sk_test_[A-Za-z0-9]{10,}",         # Stripe test
     r"rk_live_[A-Za-z0-9]{10,}",         # Stripe restricted

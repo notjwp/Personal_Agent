@@ -210,3 +210,28 @@ def test_every_quantifier_in_the_secret_patterns_is_bounded():
     for pattern in (secrets._DSN.pattern,):
         assert "]*" not in pattern, f"unbounded * in {pattern}"
         assert "]+" not in pattern or "[^@" in pattern, f"unbounded + in {pattern}"
+
+
+def test_an_nvidia_key_that_is_not_the_configured_one_is_still_redacted():
+    """The shape list covered eleven vendors and skipped the provider this
+    project actually runs on. The env path caught OUR key because AGENT_API_KEY
+    ends in _KEY; a DIFFERENT nvapi- key - in a workspace .env, in source, from a
+    second account - reached the model verbatim.
+
+    Found by mining the reference test suite for behaviour classes rather than
+    importing it: 979 of its tests concern secrets against 13 of ours."""
+    from agent import secrets
+
+    other = "nvapi-" + "K" * 40
+    assert other not in secrets.scrub(other)
+    assert "[redacted:secret]" in secrets.scrub(other)
+
+
+def test_the_shape_list_covers_the_configured_provider():
+    """A guard on the class of defect, not the instance: whichever provider is
+    configured, its key shape must be in the list that runs without the
+    environment."""
+    from agent import secrets
+
+    for shaped in ("nvapi-" + "K" * 40, "sk-" + "A" * 30):
+        assert shaped not in secrets.scrub(shaped), shaped[:12]
