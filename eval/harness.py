@@ -48,6 +48,13 @@ ENV_FILE = REPO / ".env"
 COMPLETED, BLOCKED, MISCONFIGURED = 0, 3, 4
 BLOCKED_RETRIES = 2
 
+# A container that outlives this is hung, not slow, and the driver must not wait
+# on it. AGENT_MAX_SECONDS is 1500 and is checked BETWEEN turns, so it cannot
+# bound a call that never returns - measured, a run sat 112 minutes at 0.01% CPU
+# and the `tools` split produced no rows in nine attempts. Twice the agent's own
+# cap plus setup and check, so a slow run is never mistaken for a hung one.
+CONTAINER_TIMEOUT = 3600
+
 # Everything the container needs to reach a model. Forwarded by name, never by
 # value, so a key is never written into a command line, a log or a trace.
 # Credentials and endpoint selection. Forwarded by NAME, never by value, so a
@@ -966,8 +973,12 @@ def agent_home(case: dict, run_index: int) -> Path:
 def spawn(case: dict, run_index: int, out: Path) -> int:
     if not await_exclusive_workspace():
         return BLOCKED
+    # Named, because killing the CLIENT leaves the container running and the
+    # orphan then corrupts the shared workspace mid-case. Three runs were lost
+    # that way to `timeout`; a watchdog that repeats it is worse than none.
+    container = f"noesis-run-{out.name}-{case['id']}-{run_index}"[:120]
     cmd = [
-        "docker", "run", "--rm", "--network", NETWORK,
+        "docker", "run", "--rm", "--name", container, "--network", NETWORK,
         # NFR-201, enforced by the kernel rather than asserted in a test. --read-only
         # makes the ROOT FILESYSTEM immutable and leaves bind mounts untouched, which
         # is why the project tree is mounted :ro separately.
@@ -1019,7 +1030,14 @@ def spawn(case: dict, run_index: int, out: Path) -> int:
         "--run-index", str(run_index),
         "--out", f"/app/eval/runs/{out.name}",
     ]
-    return subprocess.run(cmd, check=False).returncode
+    try:
+        return subprocess.run(cmd, check=False,
+                              timeout=CONTAINER_TIMEOUT).returncode
+    except subprocess.TimeoutExpired:
+        print(f"  {case['id']}[{run_index}] hung for {CONTAINER_TIMEOUT}s - "
+              f"killing {container}", file=sys.stderr, flush=True)
+        _docker("kill", container)
+        return BLOCKED
 
 
 # Consecutive case-runs that may block before the whole run is abandoned.

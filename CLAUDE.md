@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **1,060 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **1,126 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -20,8 +20,9 @@ read-only root filesystem, and without the `mcp` package installed.
 | real repositories | **10/18**, all six cases x 3 runs. A 4.6x larger model (`nemotron-3-ultra-550b-a55b`) scored **10/18 too** - four cases moved, the total did not, and it spent 9% FEWER tokens. `real-humanize` 0/3 -> **2/3** on ultra, the first movement in 13 runs, and worth repeating |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
+| tools split | **7/9**, twice, two independent concurrent passes on 2026-09-10 (different cases moved; the total did not). The nine earlier attempts produced no rows because `read_terminal` BLOCKED - `readline()` on a live process never returns. `start_terminal`/`read_terminal` were allowed and used in 8 runs across two independent passes and 7 passed. `ask-environment` is 4/6 and the two failures are the same seed both times: **every passing run called `ask_user` then `edit_file`; neither failing run called either**, 6 for 6 |
 | personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **11/11** - every case 3/3 - on the committed defaults, from 3.3% (n=60). Extraction on, caps unchanged, `author-release` winnable. Earlier 46%/52%/16% averaged the ABLATION arm in |
-| NFR-101 first token | streams; p50 **unmeasured**, needs a live run |
+| NFR-101 first token | streams; p50 **2.7-11.0s** across 9 runs (median 4.7s), measured 2026-09-10 on the tools split |
 | memory recall | `eval/measure_recall.py`, 170 episodes / 40 paraphrase pairs: keyword **0/40**, gte-base dense-first **37/40 (92%)**. The `recall` SPLIT shows no difference - both arms 18/18 - because its homes hold three episodes |
 
 ## Standing lessons, each paid for once
@@ -192,6 +193,11 @@ Ordered by how often they have caught something.
 - **A 30-run scored pass costs ~1.1M tokens and saturates the free tier for the day.** Budget one
   scored run per day; after that the tier rejects ~2 of 3 requests.
 
+- **A capability with no measurement may be BROKEN, not merely unproven.**
+  `start_terminal`/`read_terminal` shipped with seven passing tests and were described for
+  two weeks as "unmeasured, endpoint trouble". They were unusable: `read_terminal` blocked
+  forever on a live process, and every attempt to measure them was the bug reporting itself.
+  Nine lost attempts. When a split will not produce rows, suspect the code before the tier.
 - **A capability you do not have leaves no trace, so traces cannot tell you it is
   missing.** Seven reference-implementation modules ranked by keyword and tested against recorded
   runs found 0 useful; reading our own code for gaps found nine real tool defects
@@ -244,6 +250,11 @@ Ordered by how often they have caught something.
   why the project tree is mounted `:ro` separately.
 - **A config file mounted into a container is read when the process starts, not when it changes.**
   Recreate the container; verify the effect, never the mechanism.
+- **A test fixture that stubs a builtin stubs it for EVERYTHING.**
+  `monkeypatch.setattr(tools.time, "sleep", ...)` reaches the `time` module itself, not a
+  copy - so an autouse fixture written to keep seven `web_search` tests fast silently made
+  every `time.sleep` in 1,126 tests a no-op. Three terminal tests then passed only because a
+  blocking `readline()` happened to synchronise them. Wait on the CONDITION, not the clock.
 - **Text files crossing an OS boundary need their line endings pinned** — use `newline=""`.
 - **When a fixture-era design decision meets real code, re-check its stated premise.** Whole-file
   writes, `shrink()`'s character caps and the untimed check were all sound for 10-file practice
@@ -338,7 +349,7 @@ python eval/harness.py --case fix-import --runs 3                  # one case, r
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
 powershell -File scripts/install-tasks.ps1        # run --channel and --worker at logon
 powershell -File scripts/install-tasks.ps1 -Remove
-pytest                            # 1,060 tests, no API key, no network
+pytest                            # 1,126 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

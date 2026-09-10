@@ -5,6 +5,151 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `read_terminal` blocked forever, and that is why the `tools` split has no rows (2026-09-10)
+
+**Not a tuning cycle. A defect, found by asking why nine measurement attempts
+produced nothing.** The split was recorded as "unmeasured, endpoint trouble" for
+two weeks. It was not the endpoint.
+
+### The defect
+
+`_drain` read the pipe on the CALLER's thread:
+
+    line = process.stdout.readline()
+    if not line:
+        break
+
+`readline()` returns `""` only at EOF. On a process that is still RUNNING it
+blocks until the next line arrives, and on one that has gone quiet - a server
+that printed its banner and is now waiting for a request - it blocks forever.
+
+That is the whole failure. `serve-token` and `watch-build` both start a
+long-running process and then read it, so both hang on the first
+`read_terminal`. `MAX_SECONDS` is checked BETWEEN turns, so a turn that never
+returns is never checked, and the driver had no timeout of its own. The run that
+sat 112 minutes at 0.01% CPU was blocked on a read syscall.
+
+### The fix, ported not lifted
+
+A daemon reader thread per session pumping lines into a lock-guarded buffer;
+`_drain` swaps the buffer out and never touches `readline()`. This is the
+reference implementation's shape - `agent/transports/codex_app_server.py:153`
+starts one reader thread per stream for the same reason, and `agent/lsp/client.py:334`
+does it with an asyncio task. Portable, unlike `os.set_blocking` or `select`,
+both of which are POSIX-only and the TUI runs on Windows.
+
+`read_terminal` joins the reader for at most 1s once the process has exited,
+because `poll()` can return while the last lines are still in flight - and the
+last line is the one `watch-build` asks for.
+
+### Three of the four terminal tests were passing for the wrong reason
+
+`conftest`'s autouse `_no_real_pacing` patches `tools.time.sleep`, and
+`tools.time` IS the `time` module - so every `time.sleep` in the suite is a
+no-op. The terminal tests "slept" 0.4-0.8s between reads and slept nothing; what
+actually synchronised them was the blocking `readline()` waiting for the child
+to exit. Remove the block and they fail. They now wait on the CONDITION using
+`threading.Event.wait`, which the stub does not touch.
+
+This is worth stating plainly: a fixture meant to keep seven web_search tests
+fast silently disabled every wall-clock wait in 1,126 tests.
+
+### Also: the driver now has a watchdog
+
+`spawn()` called `subprocess.run` with no timeout, so any future hang - a wedged
+HTTP call, an orphaned tool - still blocks the whole run indefinitely. It now
+passes `timeout=CONTAINER_TIMEOUT` (3600s, twice the agent's own cap) and kills
+the container BY NAME, because killing the client leaves the container running
+and the orphan corrupts the shared workspace mid-case. Three runs were lost to
+exactly that in August.
+
+1,122 -> 1,126 tests. Five mutations, each failing a named test, each verified to
+have actually applied:
+
+| mutation | test that caught it |
+|---|---|
+| blocking `readline()` back in `_drain` | `test_reading_a_LIVE_session_returns_instead_of_blocking` |
+| reader thread never started | `test_a_session_keeps_running_between_reads` |
+| bounded join removed | `test_a_finished_session_does_not_lose_the_readers_last_lines` |
+| `timeout=` dropped from `spawn` | `test_a_hung_container_is_killed_BY_NAME_and_scored_blocked` |
+| `--name` dropped from `docker run` | `test_the_container_is_named_so_it_can_be_killed` |
+
+The bounded join initially had NO test - the first mutation run passed clean and
+that is the only reason it was noticed. An unmutated line is an unearned line.
+
+### The measurement it unblocked: 7/9, and what the traces say
+
+`20260910T173411Z`, 3 cases x 3 runs. A second driver ran concurrently by
+accident (`20260910T173307Z`, 9 rows) - `await_exclusive_workspace` serialised
+them container by container, so each case-run still had the workspace to itself
+and both sets of rows stand. It is an unintended independent replication, and it
+is reported as two runs rather than pooled into one percentage.
+
+| case | 173411Z | 173307Z | verdicts |
+|---|---|---|---|
+| ask-environment | 2/3 | 2/3 | `stuck` once in each, both at run_index 1, both at exactly 12 turns |
+| serve-token | 2/3 | 3/3 | `budget` x2 in the first, `done` x3 in the second |
+| watch-build | 3/3 | 2/3 | the one failure returned `done` with the check failing - a terminated run that did not do the job |
+
+**The pair works.** `start_terminal` was ALLOWED - gate verdict `auto`, not
+merely present in the trace - in 8 runs across the two passes, with
+`read_terminal` x2-x4 alongside it, and 7 of those 8 passed. That is the first
+evidence this capability functions at all.
+
+Both terminal cases can also be solved WITHOUT it, and the two runs that
+scored 7/9 disagree about which way is better: `watch-build-2` avoided the pair
+in both passes and passed once, failed once, while every run that DID use the
+pair on that case passed. The split therefore measures "can it use a terminal
+when it chooses to", not "does it need one" - which is a weaker question than
+the split was built to ask, and worth tightening before the next pass.
+
+**`ask-environment` separates 6 for 6 on one signal.** Every passing run called
+`ask_user` once and then `edit_file` once. Neither failing run called EITHER -
+both searched until the 12-turn cap and wrote nothing. Same seed both times. The
+goal says "for my environment" and there are four; the runs that asked finished,
+the runs that guessed never committed to one. Not acted on here - one signal
+separating 6 of 6 deserves its own cycle and its own measurement.
+
+NFR-101 first-token p50, previously unmeasured: **2.7-11.0s across 9 runs,
+median 4.7s**.
+
+### The policy gate is denying the task, and `run_python` walks around it
+
+Read off the VERDICTS, not the presence of a call. All six `serve-token` runs
+had at least one `deny`, and the denied command was usually the actual work:
+
+    python3 -c "import urllib.request; urlopen('http://127.0.0.1:8731/request-...')"
+    -> "run_shell is destructive; denied in autonomous mode"
+
+`_INLINE_SOURCE` matches `python[\d.]*\s+-c`, so ANY inline Python is
+destructive. `find env/ -name "*.env" ...` is denied too, because
+`_SENSITIVE_FILE` matches `\.env\b` and a glob that merely NAMES the pattern
+counts. Both predate widening the escalation to `start_terminal`; that widening
+extended the same false positives to it, which is why `start_terminal` was
+denied twice.
+
+The part that matters more: **`run_shell("python3 -c X")` is denied while
+`run_python(X)` is `auto`.** `run_python` declares `write` and takes `code`, so
+`DANGER.search(args["command"])` never sees it. Same capability, two answers -
+and the agent found the open door by itself, the passing runs simply switching
+to `run_python`. The escalation is costing turns without closing anything.
+
+Recorded, not fixed. It is its own cycle and its own measurement.
+
+### Standing lessons this paid for
+
+**A capability with no measurement may be broken, not merely unproven.**
+`start_terminal`/`read_terminal` shipped with seven passing tests and were
+described for two weeks as "unmeasured". They were not unmeasured; they were
+unusable, and every attempt to measure them was the bug reporting itself.
+
+**A test-suite fixture that stubs a builtin stubs it for everything.**
+`monkeypatch.setattr(tools.time, "sleep", ...)` reaches the `time` module, not a
+copy of it. Any test whose correctness depends on real elapsed time is silently
+not testing that.
+
+---
+
 ## "Trust a tool that succeeded" - REVERTED on the condition set beforehand (2026-09-10)
 
 **One change: a sixth rule in SOUL.md**, telling the agent not to spend a call

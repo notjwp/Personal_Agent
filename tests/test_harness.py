@@ -854,6 +854,58 @@ def test_spawn_PINS_the_container_paths(monkeypatch, tmp_path):
     assert 'AGENT_HOME=/state' in joined
 
 
+def test_a_hung_container_is_killed_BY_NAME_and_scored_blocked(monkeypatch,
+                                                               tmp_path):
+    """AGENT_MAX_SECONDS is checked BETWEEN turns, so it cannot bound a call
+    that never returns: a run sat 112 minutes at 0.01% CPU and the `tools` split
+    produced no rows in nine attempts.
+
+    By NAME, because killing the client leaves the container running and the
+    orphan corrupts the shared workspace mid-case - three runs were lost to
+    exactly that. A watchdog that repeats it is worse than none.
+    """
+    import eval.harness as h
+
+    killed = []
+
+    def hangs(cmd, **kw):
+        assert kw.get("timeout"), "spawn() waits forever without a timeout"
+        raise h.subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    monkeypatch.setattr(h.subprocess, "run", hangs)
+    monkeypatch.setattr(h, "_docker", lambda *a, **k: killed.append(a))
+    monkeypatch.setattr(h, "await_exclusive_workspace", lambda: True)
+    monkeypatch.setattr(h, "agent_home", lambda case, i: tmp_path)
+    monkeypatch.setattr(h, "NETWORK", "bridge")
+
+    code = h.spawn({"id": "hangs", "goal": "g"}, 0, tmp_path)
+
+    assert code == h.BLOCKED, "a hung run must be excluded, not scored a failure"
+    assert killed and killed[0][0] == "kill", f"nothing was killed: {killed}"
+    assert "hangs" in killed[0][1], "killed something other than this container"
+
+
+def test_the_container_is_named_so_it_can_be_killed(monkeypatch, tmp_path):
+    """The watchdog above can only work if `docker run` was given --name."""
+    import eval.harness as h
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(h.subprocess, "run", fake_run)
+    monkeypatch.setattr(h, "await_exclusive_workspace", lambda: True)
+    monkeypatch.setattr(h, "agent_home", lambda case, i: tmp_path)
+    monkeypatch.setattr(h, "NETWORK", "bridge")
+    h.spawn({"id": "x", "goal": "g"}, 0, tmp_path)
+
+    assert "--name" in captured["cmd"]
+
+
 # ============================================= the harness runs on the HOST
 
 def _main_with(monkeypatch, tmp_path, contents, exported=None):

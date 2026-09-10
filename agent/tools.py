@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import sys
 from pathlib import Path
@@ -607,7 +608,29 @@ def url_is_safe(url: str) -> tuple[bool, str]:
     return True, ""
 
 MAX_TERMINALS = 4
+MAX_BUFFERED_LINES = 500
 _TERMINALS: dict = {}
+
+
+def _pump(entry) -> None:
+    """Read the pipe on a thread of its own, because readline() BLOCKS.
+
+    It returns "" only at EOF, so draining a process that is still RUNNING never
+    ends: a scored run sat 112 minutes at 0.01% CPU and the `tools` split
+    produced no rows in nine attempts. MAX_SECONDS is checked BETWEEN turns, so
+    a turn that never returns is never checked.
+    """
+    stream = entry["process"].stdout
+    if stream is None:
+        return
+    try:
+        for line in iter(stream.readline, ""):
+            with entry["lock"]:
+                entry["buffer"].append(line)
+                if len(entry["buffer"]) > MAX_BUFFERED_LINES:
+                    del entry["buffer"][:-MAX_BUFFERED_LINES]
+    except (ValueError, OSError):
+        return                      # the pipe closed under us, which is EOF
 
 
 def _drain(session) -> str:
@@ -616,15 +639,8 @@ def _drain(session) -> str:
     Re-sending the whole buffer each time is how a long-running log floods the
     context - the flood shrink() exists to stop, arriving through another door.
     """
-    process, buffer = session["process"], session["buffer"]
-    while True:
-        line = process.stdout.readline() if process.stdout else ""
-        if not line:
-            break
-        buffer.append(line)
-        if len(buffer) > 500:
-            del buffer[:-500]
-    fresh, session["buffer"] = list(buffer), []
+    with session["lock"]:
+        fresh, session["buffer"] = session["buffer"], []
     return "".join(fresh)
 
 
@@ -661,7 +677,11 @@ def start_terminal(command: str) -> str:
             start_new_session=True, bufsize=1)
     except OSError as exc:
         return f"could not start it: {exc}"
-    _TERMINALS[name] = {"process": process, "buffer": [], "command": command}
+    entry = {"process": process, "buffer": [], "command": command,
+             "lock": threading.Lock()}
+    entry["reader"] = threading.Thread(target=_pump, args=(entry,), daemon=True)
+    entry["reader"].start()
+    _TERMINALS[name] = entry
     return f"started {name}"
 
 
@@ -676,8 +696,12 @@ def read_terminal(session: str) -> str:
         return (f"no session {name!r}. Open sessions: "
                 f"{', '.join(_TERMINALS) or 'none'}.")
     entry = _TERMINALS[name]
-    output = _drain(entry)
     code = entry["process"].poll()
+    if code is not None:
+        # The reader may still hold the last lines - `watch-build` reports its
+        # artifact id there. Bounded, so it cannot become the hang it replaced.
+        entry["reader"].join(timeout=1.0)
+    output = _drain(entry)
     if code is None:
         return output or f"{name} is running, nothing new."
     _TERMINALS.pop(name, None)

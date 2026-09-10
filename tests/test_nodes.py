@@ -3601,6 +3601,25 @@ def test_ask_user_is_read_risk():
 
 # ============================================ start/read_terminal (5-6 of 7)
 
+def _wait_for(predicate, seconds: float = 10.0) -> bool:
+    """Wait on the CONDITION, on the real clock.
+
+    conftest's autouse `_no_real_pacing` stubs `tools.time.sleep`, and that is
+    the `time` module itself - so every sleep in this suite is a no-op. These
+    tests need the child to actually run. Event.wait is untouched by the stub,
+    and waiting on the condition beats sleeping a guessed interval anyway.
+    """
+    import threading
+    import time
+
+    gate, deadline = threading.Event(), time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        gate.wait(0.05)
+    return bool(predicate())
+
+
 def test_a_session_keeps_running_between_reads(tmp_workspace):
     """The gap: run_shell is one-shot with a timeout, so it cannot hold a dev
     server, tail a log, or keep a REPL. This is the same process, twice."""
@@ -3613,9 +3632,10 @@ def test_a_session_keeps_running_between_reads(tmp_workspace):
     out = tools.TOOLS["start_terminal"]["fn"](f'{sys.executable} -c "{code}"')
     assert "started" in out.lower()
     name = out.split()[-1]
-    time.sleep(0.5)
+    entry = tools._TERMINALS[name]
+    assert _wait_for(lambda: entry["buffer"]), "the session printed nothing"
     first = tools.TOOLS["read_terminal"]["fn"](name)
-    time.sleep(0.4)
+    assert _wait_for(lambda: entry["buffer"]), "the session stopped printing"
     second = tools.TOOLS["read_terminal"]["fn"](name)
     tools.stop_terminals()
     assert first.strip(), "nothing came back from the first read"
@@ -3641,13 +3661,49 @@ def test_a_read_returns_only_what_is_new(tmp_workspace):
     code = "import sys,time\nfor i in range(20):\n print('line',i,flush=True);time.sleep(0.05)"
     name = tools.TOOLS["start_terminal"]["fn"](
         f'{sys.executable} -c "{code}"').split()[-1]
-    time.sleep(0.4)
+    entry = tools._TERMINALS[name]
+    assert _wait_for(lambda: entry["buffer"]), "the session printed nothing"
     first = tools.TOOLS["read_terminal"]["fn"](name)
-    time.sleep(0.4)
+    assert _wait_for(lambda: entry["buffer"]), "the session stopped printing"
     second = tools.TOOLS["read_terminal"]["fn"](name)
     tools.stop_terminals()
+    assert first.strip() and second.strip(), "a read came back empty"
     overlap = set(first.split()) & set(second.split()) - {"line"}
     assert not overlap, f"the same output came back twice: {overlap}"
+
+
+def test_reading_a_LIVE_session_returns_instead_of_blocking(tmp_workspace):
+    """readline() returns "" only at EOF, so draining a process that is STILL
+    RUNNING never ends. Measured: a scored run sat 112 minutes at 0.01% CPU and
+    the `tools` split produced 0 rows in 9 attempts. MAX_SECONDS is checked
+    BETWEEN turns, so a turn that never returns is never checked.
+
+    Read on a thread so the failure is a 10-second red, not a hung suite.
+    """
+    import sys
+    import threading
+    import time
+
+    from agent import tools
+
+    tools.stop_terminals()
+    code = "import time; print('ready', flush=True); time.sleep(60)"
+    name = tools.TOOLS["start_terminal"]["fn"](
+        f'{sys.executable} -c "{code}"').split()[-1]
+    entry = tools._TERMINALS[name]
+    assert _wait_for(lambda: entry["buffer"]), "the session printed nothing"
+
+    got: list = []
+    reader = threading.Thread(
+        target=lambda: got.append(tools.TOOLS["read_terminal"]["fn"](name)),
+        daemon=True)
+    reader.start()
+    reader.join(timeout=10)
+    alive = reader.is_alive()
+    tools.stop_terminals()
+
+    assert not alive, "read_terminal blocked on a session that is still running"
+    assert "ready" in got[0]
 
 
 def test_a_finished_session_says_it_finished(tmp_workspace):
@@ -3658,11 +3714,53 @@ def test_a_finished_session_says_it_finished(tmp_workspace):
 
     name = tools.TOOLS["start_terminal"]["fn"](
         f'{sys.executable} -c "print(42)"').split()[-1]
-    time.sleep(0.6)
+    tools._TERMINALS[name]["process"].wait(timeout=10)
     out = tools.TOOLS["read_terminal"]["fn"](name)
     tools.stop_terminals()
     assert "42" in out
     assert "exit" in out.lower() or "finished" in out.lower()
+
+
+class _Exited:
+    """A process that has already finished. Its reader has not."""
+
+    pid = -1
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def test_a_finished_session_does_not_lose_the_readers_last_lines(tmp_workspace):
+    """poll() can return before the reader has drained the pipe, and the last
+    line is the one that matters - `watch-build` reports its artifact id there.
+
+    Built by hand: the real race is microseconds wide, so a test driving a real
+    child would pass with or without the join and prove nothing.
+    """
+    import threading
+
+    from agent import tools
+
+    tools.stop_terminals()
+    entry = {"process": _Exited(), "buffer": ["building" + chr(10)],
+             "command": "x", "lock": threading.Lock()}
+
+    def still_reading():
+        threading.Event().wait(0.2)
+        with entry["lock"]:
+            entry["buffer"].append("artifact zr7k2q" + chr(10))
+
+    entry["reader"] = threading.Thread(target=still_reading, daemon=True)
+    entry["reader"].start()
+    tools._TERMINALS["t1"] = entry
+
+    out = tools.TOOLS["read_terminal"]["fn"]("t1")
+    tools.stop_terminals()
+
+    assert "artifact zr7k2q" in out, "the reader's last lines were dropped"
 
 
 def test_sessions_are_bounded(tmp_workspace):
