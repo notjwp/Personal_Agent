@@ -66,12 +66,38 @@ One line, plus a guard asserting the CLASS - whichever provider is configured,
 its shape must be in the list that works without the environment.
 Mutation-checked. 1,090 -> 1,092 tests.
 
-### Standing lesson this paid for
+### The other two candidates were FALSE POSITIVES
+
+`provider` (1.4x thin) and `checkpoint` (1.3x thin) were chased the same way and
+neither was a gap.
+
+`provider` broke down as **rate limit / 429: theirs 84, ours 0** - which looked
+alarming, because 429s have blocked this project eight times. It is covered.
+`test_infrastructure_failures_are_retryable` is parametrised with
+`"RateLimitError"`, and executing the path confirms it: RateLimitError ->
+ProviderUnavailable -> retried, AuthenticationError -> ProviderMisconfigured,
+BadRequestError -> a real result. The scan missed it because the two projects
+NAME tests differently - theirs embed the condition
+(`test_429_normal_rate_limit_still_rotates`), ours embed the behaviour.
+
+`checkpoint` broke down to corruption, where they have 3 tests. Not a gap.
+
+**One of three candidates was real.** The difference is that the secrets one was
+confirmed by RUNNING the code; the other two survived the name count and died the
+moment they were executed.
+
+### Standing lessons this paid for
 
 **A borrowed test suite is worthless; borrowed test COVERAGE is not.** Running
 3,218 of their files produced 8 collected tests. Counting what their tests are
 ABOUT, normalised against suite size, found a live credential leak in an
 afternoon. Do not port their tests - port the question they answer.
+
+**A coverage comparison by test NAME finds candidates, never findings.** Two of
+three died on execution, because naming conventions differ between projects and
+a keyword cannot see through that. Every candidate gets run before it is
+believed - which is the same rule this project already applies to a pass rate
+that credits a mechanism without checking the trace.
 
 ---
 
