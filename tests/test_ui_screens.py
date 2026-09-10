@@ -1161,3 +1161,42 @@ def test_an_action_command_on_the_landing_actually_RUNS(monkeypatch):
         assert "task-77" in said, "it opened a session and reviewed nothing"
 
     drive(app, script)
+
+
+def test_a_spent_thread_says_what_happened_and_what_to_do():
+    """spent_tokens is cumulative across a conversation ON PURPOSE - it is what
+    keeps the budget binding over a long thread. But reflect checks it FIRST, so
+    once crossed every later message returns `budget` before the model is called
+    even once, and the thread is finished. Saying only a number leaves someone
+    staring at a dead conversation with no idea it is dead.
+
+    continue_state makes this exact argument for turns, which DO reset. Tokens
+    do not, and the consequence needed saying out loud."""
+    app = workspace()
+
+    async def script(pilot):
+        app.screen.on_trace({"kind": "terminal", "verdict": "budget",
+                             "turns": 2, "spent_tokens": 204_972})
+        await pilot.pause()
+
+        said = " ".join(str(r) for r in app.screen.transcript).lower()
+        assert "/chat" in said, "it never says how to carry on"
+        assert "conversation" in said or "thread" in said
+
+    drive(app, script)
+
+
+def test_an_ordinary_ending_stays_one_line():
+    """The explanation is for the dead end only. Adding it to every `done` would
+    be four lines of advice after every answer."""
+    app = workspace()
+
+    async def script(pilot):
+        app.screen.on_trace({"kind": "terminal", "verdict": "done",
+                             "turns": 2, "spent_tokens": 4_000})
+        await pilot.pause()
+
+        said = " ".join(str(r) for r in app.screen.transcript).lower()
+        assert "/chat" not in said
+
+    drive(app, script)

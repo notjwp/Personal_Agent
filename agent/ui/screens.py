@@ -744,6 +744,17 @@ class WorkspaceScreen(Screen):
                      "stuck": "row--muted"}.get(entry["verdict"], "row--denied")
             self.note(f"\n{entry['verdict']} - {entry['turns']} turns, "
                       f"{entry['spent_tokens']:,} tokens", style)
+            if entry["verdict"] == "budget":
+                # spent_tokens is cumulative across a conversation on purpose,
+                # and reflect checks it FIRST - so from here every message ends
+                # the same way, before the model is called even once. A number
+                # alone leaves someone staring at a thread that is finished
+                # without saying it is finished. Memory outlives the thread, so
+                # /chat loses nothing that was learned.
+                self.note("this conversation has spent its whole budget, so "
+                          "further messages will stop here. /chat starts a "
+                          "fresh one - what it remembers about you carries "
+                          "over.", "row--muted")
         # Only a turn boundary can move turns, tokens or the verdict.
         if kind in ("model", "step", "terminal"):
             self.reread()
