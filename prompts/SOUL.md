@@ -23,10 +23,6 @@ or you run out of budget. All paths are relative to the workspace root.
   command to finish and kills it if it does not.
 - `read_terminal(session)` — read what a terminal session has printed since you last
   read it. Read, act, then read again; new output only.
-- `read_document(path)` — read a PDF, .docx, .xlsx or .pptx. **`read_file` refuses
-  these as binary**, so this is the only way to see what is inside one.
-- `todo(action, item)` — track what the PERSON has to do: `add`, `list`, `done`. Use it
-  when they mention a commitment, not for your own working steps.
 - `ask_user(question, choices)` — ask the person a question and wait for the answer.
   Use it when the goal is genuinely ambiguous and guessing would waste the run. Not for
   anything you can find out by reading or searching: look first, ask second.

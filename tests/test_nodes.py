@@ -3599,213 +3599,6 @@ def test_ask_user_is_read_risk():
     assert policy.risk_of("ask_user") == "read"
 
 
-# ================================================ read_document (tool 2 of 7)
-
-def _docx(path, paragraphs):
-    """A minimal but REAL .docx: the format is a zip of XML, which is why this
-    needs no third-party library to read."""
-    import zipfile
-
-    body = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paragraphs)
-    with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("word/document.xml",
-                    '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
-                    f"{body}</w:body></w:document>")
-    return path
-
-
-def _xlsx(path, cells):
-    import zipfile
-
-    shared = "".join(f"<si><t>{c}</t></si>" for c in cells)
-    rows = "".join(f'<row><c t="s"><v>{i}</v></c></row>'
-                   for i in range(len(cells)))
-    with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("xl/sharedStrings.xml",
-                    f'<?xml version="1.0"?><sst xmlns="x">{shared}</sst>')
-        zf.writestr("xl/worksheets/sheet1.xml",
-                    f'<?xml version="1.0"?><worksheet xmlns="x"><sheetData>'
-                    f"{rows}</sheetData></worksheet>")
-    return path
-
-
-def test_read_file_still_refuses_a_docx(tmp_workspace):
-    """The gap this tool exists for: read_file turns binaries away by extension,
-    so every PDF, docx and xlsx you own is invisible to the agent."""
-    from agent import tools
-
-    _docx(tmp_workspace / "notes.docx", ["hello"])
-    out = tools.TOOLS["read_file"]["fn"]("notes.docx")
-    assert "binary" in out.lower()
-
-
-def test_read_document_reads_a_docx(tmp_workspace):
-    from agent import tools
-
-    _docx(tmp_workspace / "notes.docx",
-          ["The quarterly figure is 41.", "Signed, the desk."])
-    out = tools.TOOLS["read_document"]["fn"]("notes.docx")
-    assert "quarterly figure is 41" in out
-    assert "Signed, the desk" in out
-
-
-def test_paragraphs_do_not_run_together(tmp_workspace):
-    """A docx is one XML blob. Stripping tags without honouring <w:p> turns a
-    document into a single unreadable line."""
-    from agent import tools
-
-    _docx(tmp_workspace / "n.docx", ["first", "second"])
-    out = tools.TOOLS["read_document"]["fn"]("n.docx")
-    assert "firstsecond" not in out
-
-
-def test_read_document_reads_an_xlsx(tmp_workspace):
-    from agent import tools
-
-    _xlsx(tmp_workspace / "book.xlsx", ["alpha", "beta", "gamma"])
-    out = tools.TOOLS["read_document"]["fn"]("book.xlsx")
-    assert "alpha" in out and "gamma" in out
-
-
-def test_a_document_with_no_text_says_so(tmp_workspace):
-    """the reference implementation's lesson, and it is the one that matters: a scanned PDF or an
-    image-only docx extracts to nothing and looks IDENTICAL to an empty file.
-    Silent data loss the model cannot detect."""
-    import zipfile
-
-    from agent import tools
-
-    path = tmp_workspace / "scan.docx"
-    with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("word/document.xml",
-                    '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
-                    "</w:body></w:document>")
-    out = tools.TOOLS["read_document"]["fn"]("scan.docx")
-    assert "no extractable text" in out.lower()
-
-
-def test_an_unsupported_type_names_what_it_can_read(tmp_workspace):
-    from agent import tools
-
-    (tmp_workspace / "photo.png").write_bytes(b"\x89PNG\r\n")
-    out = tools.TOOLS["read_document"]["fn"]("photo.png")
-    assert "docx" in out and "xlsx" in out
-
-
-def test_a_missing_document_does_not_raise_a_zip_error(tmp_workspace):
-    from agent import tools
-
-    out = tools.TOOLS["read_document"]["fn"]("nope.docx")
-    assert "does not exist" in out.lower() or "not found" in out.lower()
-
-
-def test_a_corrupt_document_is_reported_not_raised(tmp_workspace):
-    """FR-208: a tool never propagates. A truncated download is a normal thing
-    to find on a real machine."""
-    from agent import tools
-
-    (tmp_workspace / "bad.docx").write_bytes(b"not a zip at all")
-    out = tools.TOOLS["read_document"]["fn"]("bad.docx")
-    assert "could not" in out.lower() or "not a" in out.lower()
-
-
-def test_read_document_reaches_outside_the_workspace(tmp_workspace, tmp_path):
-    """FR-302 as amended: reading your own documents is the point."""
-    from agent import tools
-
-    _docx(tmp_path.parent / "outside.docx", ["a note from elsewhere"])
-    out = tools.TOOLS["read_document"]["fn"](
-        str(tmp_path.parent / "outside.docx"))
-    assert "a note from elsewhere" in out
-
-
-def test_read_document_is_read_risk():
-    from agent import policy
-
-    assert policy.risk_of("read_document") == "read"
-
-
-# ======================================================== todo (tool 3 of 7)
-
-def test_a_todo_added_in_one_session_is_there_in_the_next(tmp_workspace):
-    """The whole point: --tasks tracks the AGENT's queue, and nothing tracked
-    yours. Durable in AGENT_HOME beside tasks.db and memory.db."""
-    from agent import tools
-
-    tools.TOOLS["todo"]["fn"]("add", "call the dentist")
-    tools.TOOLS["todo"]["fn"]("add", "renew the domain")
-    out = tools.TOOLS["todo"]["fn"]("list")
-    assert "call the dentist" in out and "renew the domain" in out
-
-
-def test_listing_an_empty_list_says_so(tmp_workspace):
-    from agent import tools
-
-    out = tools.TOOLS["todo"]["fn"]("list")
-    assert "nothing" in out.lower() or "no " in out.lower()
-
-
-def test_an_item_can_be_finished_and_stops_being_outstanding(tmp_workspace):
-    from agent import tools
-
-    tools.TOOLS["todo"]["fn"]("add", "buy milk")
-    tools.TOOLS["todo"]["fn"]("done", "buy milk")
-    out = tools.TOOLS["todo"]["fn"]("list")
-    assert "buy milk" not in out or "done" in out.lower()
-
-
-def test_finishing_something_that_is_not_there_says_so(tmp_workspace):
-    from agent import tools
-
-    out = tools.TOOLS["todo"]["fn"]("done", "a thing never added")
-    assert "no" in out.lower()
-
-
-def test_a_duplicate_is_not_added_twice(tmp_workspace):
-    """An agent re-reading its own list and re-adding is the obvious failure,
-    and it would grow the list without bound."""
-    from agent import tools
-
-    tools.TOOLS["todo"]["fn"]("add", "one thing")
-    tools.TOOLS["todo"]["fn"]("add", "one thing")
-    out = tools.TOOLS["todo"]["fn"]("list")
-    assert out.count("one thing") == 1
-
-
-def test_an_unknown_action_names_the_ones_that_exist(tmp_workspace):
-    from agent import tools
-
-    out = tools.TOOLS["todo"]["fn"]("obliterate", "everything")
-    assert "add" in out and "list" in out and "done" in out
-
-
-def test_the_content_is_bounded(tmp_workspace):
-    """the reference implementation caps it. An unbounded item is unbounded text on every turn that
-    lists it, and the transcript pays for it repeatedly."""
-    from agent import tools
-
-    tools.TOOLS["todo"]["fn"]("add", "x" * 5000)
-    out = tools.TOOLS["todo"]["fn"]("list")
-    assert len(out) < 2000
-
-
-def test_todo_is_write_risk():
-    """It changes durable state, unlike ask_user and read_document."""
-    from agent import policy
-
-    assert policy.risk_of("todo") == "write"
-
-
-def test_the_store_survives_a_second_open(tmp_workspace):
-    """CREATE TABLE IF NOT EXISTS is not a migration - user_version carries it,
-    and opening twice must not raise or lose rows."""
-    from agent import tools
-
-    tools.TOOLS["todo"]["fn"]("add", "persisted")
-    tools._todos().close()
-    assert "persisted" in tools.TOOLS["todo"]["fn"]("list")
-
-
 # ============================================ start/read_terminal (5-6 of 7)
 
 def test_a_session_keeps_running_between_reads(tmp_workspace):
@@ -3939,9 +3732,9 @@ def test_a_named_tool_is_dropped_from_the_live_set(monkeypatch):
     two different binaries, which is not a control."""
     from agent import config, tools
 
-    monkeypatch.setattr(config, "TOOLS_OFF", frozenset({"todo"}))
+    monkeypatch.setattr(config, "TOOLS_OFF", frozenset({"web_search"}))
     live = tools.builtins()
-    assert "todo" not in live
+    assert "web_search" not in live
     assert "read_file" in live
 
 
@@ -3949,9 +3742,9 @@ def test_several_tools_drop_at_once(monkeypatch):
     from agent import config, tools
 
     monkeypatch.setattr(config, "TOOLS_OFF",
-                        frozenset({"todo", "ask_user", "read_document"}))
+                        frozenset({"web_search", "ask_user", "start_terminal"}))
     live = tools.builtins()
-    assert not {"todo", "ask_user", "read_document"} & set(live)
+    assert not {"web_search", "ask_user", "start_terminal"} & set(live)
     assert len(live) == len(tools.TOOLS) - 3
 
 
@@ -3978,10 +3771,10 @@ def test_the_web_switch_still_works_on_its_own(monkeypatch):
 def test_both_switches_compose(monkeypatch):
     from agent import config, tools
 
-    monkeypatch.setattr(config, "TOOLS_OFF", frozenset({"todo"}))
+    monkeypatch.setattr(config, "TOOLS_OFF", frozenset({"ask_user"}))
     monkeypatch.setattr(config, "WEB_ENABLED", False)
     live = tools.builtins()
-    assert "todo" not in live and "web_search" not in live
+    assert "ask_user" not in live and "web_search" not in live
 
 
 def test_a_name_that_is_not_a_tool_is_ignored(monkeypatch):

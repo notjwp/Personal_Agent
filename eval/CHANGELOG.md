@@ -5,6 +5,60 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Dropped `read_document` and `todo`, and audited what the rest costs (2026-09-10)
+
+**229 tokens off every model call, forever.** Builtin schemas 6,369 -> 5,452
+chars. The first cycle in weeks measured on COST rather than pass rate, because
+pass rate has no headroom left on any split but `real`.
+
+### Why these two
+
+Their control arm (2026-09-09) measured **+0**: `doc-headcount` scored 3/3 with
+`read_document` and 3/3 without it, `todo-outstanding` 2/2 and 3/3. `run_python`
+opens a .docx as a zip and `write_file` persists a list across sessions.
+
+**This reverses the position taken in that entry**, which argued against
+reverting on the grounds that the CASES could not separate the tools rather than
+the tools being useless. That reasoning still stands. What changed is the other
+side of the ledger: 228 tokens on every call of every session, on a provider
+where `cache_read_tokens` is 0. A tool that fires but shows no measurable benefit
+is not neutral at that price.
+
+Removed the way `move_files` was: tool, tests, eval cases and fixtures. Migration
+v4's `todos` table stays - a released migration is never edited.
+
+### The audit of what remains, per model call
+
+| component | tok/call | evidence |
+|---|---|---|
+| 10 builtin schemas | 1,363 | mixed, below |
+| SOUL.md | 798 | naming all tools fixed a prompt that hid seven |
+| MCP `fetch` | 525 | **earned** - see below |
+| CODING.md | 337 | recall/skills 46/52 -> 86/94 |
+| skills index | 306 | 0/18 -> 17/18 |
+
+**`fetch` was nearly cut and should not be.** It costs 525 tokens per call and
+Phase L measured it +58% schema for **-37% tokens and -50% turns**, because it
+removes four discovery calls per run and returns extracted text rather than raw
+HTML. It is the only line item that demonstrably pays its own rent. The
+`web` split scoring 18/18 WITHOUT any fetch tool is a separate fact - the
+capability was derivable, the efficiency was not.
+
+Still unproven, and still charged: `start_terminal` + `read_terminal`, 167
+tokens/call, seven blocked measurement attempts. They are rent until the terminal
+pair produces a scored row.
+
+### Standing lesson this paid for
+
+**Measure the cost side before keeping a tool, not only the pass rate.** Twelve
+correct pass-rate decisions summed to +135% tokens (previous entry). The cost of
+a kept change is deterministic, measurable offline in seconds, and needs no
+quota - there is no excuse for it being the number nobody checked.
+
+1,109 -> 1,090 tests.
+
+---
+
 ## The token climb, explained: nobody added up the rent (2026-09-10)
 
 Not a regression, not drift, and not the model. **Two thirds of it is fixed
