@@ -5,6 +5,99 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Phase R measured: both arms (2026-09-11)
+
+**PRE-REGISTERED, written before either arm finished.** The `revision` split is
+ONE case, `skill-correction`, 4 sessions, `max_turns` 12, empty skill library -
+so both arms is 6 runs, not the 18 this was described as earlier. The
+`skills`/`authoring` guards (~60 runs) run only if R earns them; equal arms
+reverts R whole and there is nothing to guard.
+
+Real arm: `AGENT_SKILL_REVISION` on (the default). Control: `off`, forwarded
+into the container, same build.
+
+Keep if ALL of:
+- real arm beats control by at least 2 rows of 3 - a 1-of-3 is not a pass
+- the real-arm traces show `mark_suspect` FIRED and the skill was REWRITTEN
+  under the suspect's name - the score alone is not evidence for a mechanism
+  that did not run
+
+Revert - R1 through R4, and R0 with them - if EITHER:
+- real <= control
+- real > control but the mechanism did not fire, because then the gain is
+  something else wearing R's name
+
+Results below this line were not known when the above was written.
+
+### Result: KEEP. Real 3/3, control 1/3, and the mechanism is on disk
+
+| | real (`on`) `20260911T140714Z` | control (`off`) `20260911T142806Z` |
+|---|---|---|
+| pass | **3/3** `done` x3 | **1/3** `stuck` x2, `done` x1 |
+| model calls, whole run | 118 | 131 |
+| billed tokens, whole run | 580,328 | 639,641 (+10%) |
+| `conventions` skill at the end | RUNBOOK's checklist, working suffix - 2 of 3 | stale CONVENTIONS text - 3 of 3 |
+
+Both pre-registered conditions met: real beats control by 2 rows, and the
+correction is verifiable in the ARTEFACTS rather than the score. In the real
+arm `conventions/SKILL.md` carries RUNBOOK.md's checklist and the `-zr7k2q`
+suffix under the suspect's name, and there is no `runbook` sibling - which is
+what `learn(name=opened, ...)` does and a plain extraction never would. In the
+control arm `runbook` is a SIBLING, `conventions` is still the stale document,
+and it was injected 19-20 times per run while the agent read the suffix off
+CONVENTIONS.md and hit the cap. That is the failure R0-R4 exist for, reproduced
+twice.
+
+The control's one pass is worth its own sentence: session 3 read RUNBOOK.md
+directly and ignored the stale skill it had been handed twenty times. The case
+is passable by re-reading the source - so R does not make the case winnable, it
+makes it winnable RELIABLY, and cheaper.
+
+**`skill_failures` is empty in both arms and that proves nothing either way.**
+`clear_suspect` deletes the row on correction, so the after-state of a firing
+is identical to a never-fired one. The evidence is the skill's CONTENT, checked
+by hand. The instrumentation gap is recorded below.
+
+### R picked the wrong document once in three, and that is a defect
+
+Real run 1 passed - but `conventions` ended up holding `ship.py`'s docstring
+("Project tooling. Not documentation.") and RUNBOOK.md went to a `runbook`
+sibling. `skills.extract` gives the suspect's name to the FIRST document in its
+loop and then flips `correcting` off. Which document is first is iteration
+order. Run 0 and run 2 got RUNBOOK first; run 1 got the tooling script.
+
+The run still passed because the `runbook` sibling was there to match. R
+therefore fired 3 of 3 and corrected RIGHT 2 of 3, and the pre-registered
+condition said "rewritten under the suspect's name", which the wrong document
+technically satisfies. Held to the spirit and stated plainly: a correction that
+picks by iteration order is a coin toss with good odds. Kept, because the arms
+separate cleanly and the fix is a ranking, not a redesign - its own cycle.
+
+### The guards were not run, on purpose
+
+`skills` and `authoring` are ~60 runs. R only fires on `stuck`/`budget`/three
+failures with a skill open, and those splits pass at 94% and 11/11, so a
+regression there would need R to fire on a run that was going to pass. Possible,
+unmeasured, and the pre-registration said guards only if R earns them. It has.
+They are the next quota spend on this phase, not something to skip.
+
+### Rig defects found while reading these rows
+
+1. **`extraction: false` on every default row.** `harness.record()` re-derives
+   the flag from the env var with default `"off"`; `config.py` defaults it `"on"`.
+   Every scored row since extraction-by-default has claimed extraction was off
+   while the agent extracted. Same shape as `AGENT_EGRESS`.
+2. **No row says which arm it was.** The manifest carries no env and the row has
+   no `revision` field, so these two directories are distinguishable only by
+   reading the skill files. Fixed alongside 1.
+3. **`tokens` and `turns` are the LAST session's.** `inner()` builds a fresh
+   state per session and `record()` receives the final one, so a 4-session run
+   that billed 205,867 tokens reports 25,497. Every multi-session row in
+   `recall`, `skills`, `authoring` and `revision` under-reports the same way.
+   Recorded; the fix is a sum across sessions and is not made here.
+
+---
+
 ## `run_python` was a second door past the DANGER escalation (2026-09-11)
 
 **A defect in the gate, not a tuning cycle.** Found in the `tools` traces the

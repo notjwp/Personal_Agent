@@ -1418,8 +1418,12 @@ def record(out: Path, case: dict, run_index: int, *, passed: bool, verdict: str,
         # what the MODEL chose to keep, the other what the RULE kept.
         "skills_extracted": sorted({t.get("name", "") for t in trace
                                     if t.get("kind") == "skill"}),
-        "extraction": bool(os.environ.get("AGENT_SKILL_EXTRACTION", "off").strip().lower()
-                           not in ("0", "off", "false")),
+        # From config, not re-derived from the env: this line once defaulted "off"
+        # where config.py defaults "on", and every default row claimed extraction
+        # was off while the agent extracted. Two definitions, and the wrong one
+        # is the one that survives in the row.
+        "extraction": settings.SKILL_EXTRACTION,
+        "revision": settings.SKILL_REVISION,
         # Which skill the case NEEDED. Three outcomes, not two: the right one, the
         # WRONG one, or none - and the middle is invisible in a pass rate while
         # being the thing that says the descriptions do not discriminate.

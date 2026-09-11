@@ -631,6 +631,54 @@ def _git_returns(mapping):
     return fake
 
 
+def _recorded(tmp_path, monkeypatch, **env):
+    """One recorded row, with the environment as given and nothing else set."""
+    import json
+
+    import eval.harness as h
+
+    for name in ("AGENT_SKILL_EXTRACTION", "AGENT_SKILL_REVISION"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    import importlib
+
+    from agent import config
+    importlib.reload(config)
+    try:
+        h.record(tmp_path, {"id": "x", "goal": "g"}, 0, passed=True, verdict="done",
+                 seconds=1.0, state={}, note="")
+    finally:
+        for name in env:
+            monkeypatch.delenv(name, raising=False)
+        importlib.reload(config)
+    last = (tmp_path / "summary.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    return json.loads(last)
+
+
+def test_a_row_reports_extraction_as_config_resolves_it(tmp_path, monkeypatch):
+    """Measured 2026-09-11: every default row since extraction-by-default said
+    `extraction: false` while the agent extracted three skills, because record()
+    re-read the env var with a default of "off" and config.py defaults it "on".
+    A row that re-derives a setting has two definitions of it, and the one that
+    is wrong is the one that survives."""
+    from agent import config
+
+    row = _recorded(tmp_path, monkeypatch)
+    assert row["extraction"] == config.SKILL_EXTRACTION
+    assert row["extraction"] is True, "the default arm must not claim it was off"
+
+    row = _recorded(tmp_path, monkeypatch, AGENT_SKILL_EXTRACTION="off")
+    assert row["extraction"] is False
+
+
+def test_a_row_says_which_revision_arm_it_was(tmp_path, monkeypatch):
+    """Two Phase R directories, real and control, were distinguishable only by
+    opening the skill files. A row must carry its own arm."""
+    assert _recorded(tmp_path, monkeypatch)["revision"] is True
+    assert _recorded(tmp_path, monkeypatch, AGENT_SKILL_REVISION="off")["revision"] is False
+
+
 def test_the_manifest_records_which_commit_it_measured(monkeypatch):
     """real-humanize's last measurement could not be attributed to any code: the
     manifest held image, provider, model and egress, and no sha.
