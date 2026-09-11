@@ -5,6 +5,108 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `run_python` was a second door past the DANGER escalation (2026-09-11)
+
+**A defect in the gate, not a tuning cycle.** Found in the `tools` traces the
+day before: `serve-token`'s passing runs got past a denial by switching tools.
+
+### The hole
+
+`classify()` escalated a dangerous command to `destructive` by reading
+`args["command"]`. `run_python`'s argument is named `code`, so it was never
+looked at:
+
+    run_shell   {"command": 'python3 -c "import shutil; shutil.rmtree(...)"'}  -> deny
+    run_python  {"code":    "import shutil; shutil.rmtree(...)"}               -> auto
+
+Same source, two verdicts. An escalation one tool enforces and another ignores
+is not a boundary, and the agent did not need telling: on `serve-token` the runs
+that were refused through `run_shell` simply made the same call through
+`run_python`, and passed.
+
+### The fix
+
+The tools that execute what they are handed, keyed by name because the argument
+names differ:
+
+    EXECUTES = {"run_shell": "command", "start_terminal": "command",
+                "run_python": "code"}
+
+Both halves matter. Adding a tool to that map without its argument name is the
+same hole with a different label.
+
+1,126 -> 1,128 tests. Three mutations, each verified to have applied, each
+failing a named test:
+
+| mutation | caught by |
+|---|---|
+| `run_python` dropped from `EXECUTES` | `test_run_python_is_not_a_second_door_past_the_DANGER_escalation` |
+| wrong argument name for `run_python` | the same test |
+| escalate EVERYTHING `run_python` is handed | `test_ordinary_python_still_runs_unattended`, `test_start_terminal_is_reachable_unattended` |
+
+The third is the one that matters as much as the first two: the escalation must
+not swallow the tool it guards, and a test that only checks the hole is closed
+would let a fix that closes the tool pass.
+
+### Blast radius, replayed before spending quota
+
+151 `run_python` calls recorded across every run on disk, replayed against the
+new rule: **0 escalated.** Caveat, stated because it weakens the claim: the trace
+stores the first 120 characters of each call and most reach that cap, so this is
+a lower bound on what the rule would touch, not a sweep.
+
+### Confirmed live on the split where `run_python` is heaviest
+
+`20260910T184547Z`, `tools`, 3 runs per case. **15 `run_python` calls, all
+`auto`, none denied** - the fix refused nothing the agent tried.
+
+| case | this pass | 173411Z | 173307Z |
+|---|---|---|---|
+| ask-environment | 2/3 | 2/3 | 2/3 |
+| serve-token | 1/3 | 2/3 | 3/3 |
+| watch-build | 2/3 | 3/3 | 2/3 |
+| **total** | **5/9** | 7/9 | 7/9 |
+
+**5/9 against 7/9 twice.** The number went down, and this change is the only
+thing different between the passes. So: did it? The verdict log says no. The
+way this change could hurt is a `run_python` denial, and there were none. The
+two lost rows are `serve-token` ending `budget` twice, and `watch-build-2`
+skipping the terminal pair to drive the pipeline through `run_python` +
+`subprocess.Popen` - allowed, `auto` - and writing an artifact id that did not
+match `build.log`. A wrong answer by a different route, not a refusal.
+
+`watch-build` is now cleanly split on that route across all three passes:
+**5/5 when the run used `start_terminal`, 2/4 when it did not.**
+
+What n=9 cannot do is rule out that 7 -> 5 is anything but variance on a split
+carrying a 100k-token case. That is stated here rather than smoothed over. The
+fix is kept because the hole is real and the mechanism did not fire; the -2 is
+recorded against it, not explained away.
+
+The only denials in the entire pass are `run_shell deny x4`, every one the
+UNCHANGED `_INLINE_SOURCE` false positive - `python3 -c` refused as destructive,
+and on `serve-token` that is the HTTP request that IS the task. Not touched
+here; it is its own cycle.
+
+**`serve-token` has now gone 3/3 -> 2/3 -> 1/3 across three passes with nothing
+changed in the case.** Three samples cannot separate a trend from noise on a
+case that ends `budget` at 100-109k tokens against an 18-turn cap. Recorded so
+the next pass reads it as the fourth point rather than the first.
+
+### Two corrections to the day before
+
+The `ask-environment` failure was described as landing "on the same seed both
+times" because both were `run_index` 1. Wrong framing: `run_index` is not a
+seed and the provider is not deterministic. This pass it was run 2 that stuck.
+The case is stably 2/3 across three passes; WHICH run fails moves.
+
+What did hold: every passing `ask-environment` run called `ask_user` once and
+then `edit_file` once, and neither failing run called either. That is now
+**9 for 9** across three passes - a stronger result than the seed claim it
+replaces.
+
+---
+
 ## `read_terminal` blocked forever, and that is why the `tools` split has no rows (2026-09-10)
 
 **Not a tuning cycle. A defect, found by asking why nine measurement attempts

@@ -3823,6 +3823,42 @@ def test_a_dangerous_command_still_escalates_through_start_terminal():
         assert terminal == shell == "deny", command
 
 
+def test_run_python_is_not_a_second_door_past_the_DANGER_escalation():
+    """MEASURED 2026-09-10, and the agent found it unaided.
+
+    `run_shell("python3 -c X")` escalated to destructive and was denied in every
+    autonomous context. `run_python(X)` ran the SAME source at `auto`, because
+    the escalation read `args["command"]` and run_python's argument is named
+    `code`. On serve-token the passing runs simply switched tools.
+
+    An escalation one tool enforces and another ignores is not a boundary.
+    """
+    from agent import policy
+
+    for source in ("import shutil; shutil.rmtree('/etc/ssl')",
+                   "import os; os.system('rm -rf /')",
+                   "open('/etc/sudoers', 'w').write('x')"):
+        shell, _ = policy.classify("run_shell", {"command": f'python3 -c "{source}"'},
+                                   autonomous=True)
+        inline, _ = policy.classify("run_python", {"code": source}, autonomous=True)
+
+        assert shell == "deny", f"the shell route stopped enforcing: {source}"
+        assert inline == shell, (
+            f"run_python ran at {inline!r} what run_shell refused: {source}")
+
+
+def test_ordinary_python_still_runs_unattended():
+    """The escalation must not swallow the tool it guards. run_python exists so
+    a worker, a cron task and the harness can compute without a person there."""
+    from agent import policy
+
+    for source in ("print(sum(range(10)))",
+                   "import json; print(json.dumps({'a': 1}))",
+                   "import pathlib; print(pathlib.Path('app.py').read_text())"):
+        verdict, _ = policy.classify("run_python", {"code": source}, autonomous=True)
+        assert verdict == "auto", f"refused ordinary code: {source}"
+
+
 # ================================================= AGENT_TOOLS_OFF (ablation)
 
 def test_a_named_tool_is_dropped_from_the_live_set(monkeypatch):

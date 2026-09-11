@@ -56,6 +56,11 @@ SENSITIVE = re.compile(_SENSITIVE_FILE, re.IGNORECASE)
 # `python -c "shutil.rmtree(...)"` and `git clean -fdx` all passed the old list.
 # Categories taken from the reference implementation/tools/approval.py (5,498 lines,
 # not lifted); the regex is ours and much smaller.
+# The tools that RUN what they are given, and the argument carrying it. Both
+# halves matter: adding a tool here without its argument name is the same hole.
+EXECUTES = {"run_shell": "command", "start_terminal": "command",
+            "run_python": "code"}
+
 DANGER = re.compile(
     r"\brm\s+(-\w+\s+)*-\w*[rf]"
     r"|\bgit\s+push\b[^|]*--force"
@@ -195,11 +200,14 @@ def classify(name: str, args: dict, autonomous: bool,
                         f"refused until the plan is accepted. Read and search now; "
                         f"do this once the plan is agreed.")
 
-    # Both tools take `command` and run it. Classifying one `write` and the
-    # other `destructive` gated start_terminal out of every unattended
-    # context - worker, cron, harness - while run_shell ran the same string.
-    if name in ("run_shell", "start_terminal") and DANGER.search(
-            str(args.get("command", ""))):
+    # Every tool that executes what it is handed, and the argument holding it.
+    # Keyed by NAME because the argument names differ - and that difference was
+    # a hole: the escalation read `command`, so `python3 -c X` was refused
+    # through run_shell while run_python ran X at `auto`. Measured 2026-09-10,
+    # and the agent switched tools on its own. An escalation one tool enforces
+    # and another ignores is not a boundary.
+    source = args.get(EXECUTES.get(name, ""), "")
+    if source and DANGER.search(str(source)):
         risk = "destructive"
 
     verdict = VERDICT_BY_RISK[risk]
