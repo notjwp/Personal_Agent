@@ -5,6 +5,64 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `real` re-baselined at 2 runs: 7/12, and the number did not move (2026-09-12)
+
+**Not a tuning cycle. A baseline refresh, at 2 runs per case by instruction.**
+Two runs cannot tell a flaky case from a solid one - a 1/2 is ambiguous where
+a 1/3 is a fail - so this is reported as x/12 against the old x/18, never as a
+percentage that pretends they are the same denominator.
+
+The harness's own delta line compared against `20260905T082544Z`, which is the
+ULTRA run; it picks the newest `real` directory. The right baseline is the
+120B one, `20260903T113255Z`:
+
+| case | 120B, 09-03 | now | tokens med, then -> now |
+|---|---|---|---|
+| real-cachetools | 3/3 | **1/2** | 210k -> 270k |
+| real-click | 1/3 | **2/2** | 337k -> 336k |
+| real-humanize | 0/3 | 0/2 | 409k -> 411k |
+| real-markdown | 3/3 | 2/2 | 128k -> 152k |
+| real-more-itertools | 2/3 | **1/2** | 146k -> 297k |
+| real-rich | 1/3 | 1/2 | 369k -> 383k |
+| **total** | **10/18** | **7/12** | 242k -> 351k |
+
+**Flat.** 56% then, 58% now, on ~17 commits' worth of change - the terminal
+pair, the date, the gate fixes, Phase R, `read_document`/`todo` gone. None of
+it was aimed at `real` and none of it moved `real`. That is the honest reading
+and it settles the question this baseline existed to ask: the loop changes of
+the last two weeks were neutral here.
+
+Three cases came back 1/2 and cannot be read: `cachetools` (was 3/3),
+`more-itertools` (was 2/3), `rich` (was 1/3). `cachetools` is the one worth a
+third run - a solid case that dropped, or one bad seed. `click` 1/3 -> 2/2 is
+the only clear mover, and one case moving on two runs is a hypothesis.
+
+**Median tokens rose 45%, 242k -> 351k, and that IS a finding.** Not the fixed
+prompt rent - that was 3,554 tokens a call and would not do this. `more-itertools`
+doubled (146k -> 297k) on a 1/2 that includes a `budget` failure; `cachetools`
++28% on a `stuck`. Failing runs are the expensive ones, and this pass has more
+of them than its pass count suggests: 2 of 7 PASSES ended `stuck` or `budget`
+- the goal was met and the loop ran on to the cap. The 09-03 baseline had 1.
+
+That last shape - **a pass that does not know it passed** - is the thing to
+look at before touching anything else on this split. `click-1` hit the goal and
+ran to turn 31; `rich-1` hit it and spent the budget. Both scored, both wasted
+the whole cap after the work was done.
+
+### How it ran
+
+The session's background-task manager killed the driver twice for host memory
+(1.8 GB free of 15.8, the driver being ~20 MB and the smallest thing on the
+list). Each time the container kept running and wrote its own row, so nothing
+was lost; the second time the resumed driver would have re-run a row the
+orphan was about to record, because `--continue` computes `already` once at
+start. Finished on a detached OS process that waits for the orphan first.
+
+Rig note, owed: `--continue` should re-read `completed()` before each spawn,
+not once. Not changed here.
+
+---
+
 ## `_INLINE_SOURCE`: an inline interpreter is destructive only when it DELETES (2026-09-11)
 
 **PRE-REGISTERED, written before the change was made.**
