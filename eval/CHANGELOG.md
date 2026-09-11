@@ -5,6 +5,90 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `_INLINE_SOURCE`: an inline interpreter is destructive only when it DELETES (2026-09-11)
+
+**PRE-REGISTERED, written before the change was made.**
+
+The measured problem: every `serve-token` run across four passes had at least
+one `run_shell deny` on a command of the shape
+
+    python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8731/...').read())"
+
+because `_INLINE_SOURCE` escalates the FLAG - `python -c`, `node -e`, `perl -e`
+- to `destructive` regardless of payload, and unattended `destructive` is a
+deny. On `serve-token` that request is the task. 6 of 6 on that case, 1 of 15
+on dev, so concentrated rather than broad.
+
+The reference (`tools/approval.py`) tiers this: `python -c` is DANGEROUS -
+"ask once, remember the approval" - and only the unrecoverable is HARDLINE.
+We have no approval store and unattended `confirm` is `deny`, so that shape
+does not port. Removing the blanket outright loses real coverage: nothing
+else in DANGER matches `rmtree`, and `test_policy.py` pins three inline
+deletions as needing a human.
+
+**The one change:** `_INLINE_SOURCE` fires only when the inline payload
+contains a deletion verb - `rmtree`, `rmSync`, `rmdirSync`, `unlink`,
+`os.remove(`, `os.rmdir(`, `Remove-Item`. The three pinned cases stay
+caught. An `urlopen()` stops being destructive. Our own narrowing, not a port.
+
+Keep if BOTH:
+- the mechanism: denials on inline-interpreter commands carrying NO deletion
+  verb are **0** across the pass, read off the verdict log. Baseline had 4
+  (`20260910T184547Z`) and 6 (`20260910T173411Z`, two of them `start_terminal`)
+- the score: `tools` x 3 at or above **5/9**, the worst of three baselines
+  (7/9, 7/9, 5/9)
+
+Revert if EITHER: any benign inline command is still denied (the change did
+not do its job), or the pass scores 4/9 or below (harm below the worst
+baseline). `serve-token` reported separately as the exposed case, with
+whole-run tokens - fewer refused turns should read as fewer tokens.
+
+Results below this line were not known when the above was written.
+
+### Result: KEEP. Benign inline denials 4 -> 0, pass 5/9 -> 7/9
+
+`20260911T153643Z`, `tools` x 3.
+
+| | this pass | 184547Z | 173411Z |
+|---|---|---|---|
+| benign inline denials (the mechanism) | **0** | 4 | 5 |
+| pass | **7/9** | 5/9 | 7/9 |
+| ask-environment | 3/3 | 2/3 | 2/3 |
+| serve-token | 2/3 | 1/3 | 2/3 |
+| watch-build | 2/3 | 2/3 | 3/3 |
+| serve-token billed tokens, whole run | 272,171 | 276,326 | 281,640 |
+
+Both pre-registered conditions met. The one remaining denial in the pass is
+the gate refusing a tool called `ls` that the model invented - an unknown
+tool, correctly refused, nothing to do with this change.
+
+**What the change did NOT do, said plainly: it did not make `serve-token`
+cheaper.** Whole-run tokens 272k against 276k and 282k - flat. Run 0 passed
+with ZERO denials, the first `serve-token` run in seven to have none, and still
+ended `budget` at 18 turns and 103k tokens. The refused call was costing a
+turn, not the budget; the case is expensive on its own (`run_shell` x10,
+`read_terminal` x4 in that run). Anyone expecting this to reverse the
+3/3 -> 2/3 -> 1/3 -> 1/3 slide should expect the 2/3 here to be variance
+around the same mean until something else changes.
+
+Two cross-pass signals held again, and are now worth acting on:
+
+- `ask-environment`: every run called `ask_user` then `edit_file`, all three
+  passed. **12 for 12** across four passes. The 3/3 is the first clean sweep
+  on that case and it is NOT this change's doing - that case's only prior
+  denial was the `find ... "*.env"` one, which is untouched.
+- `watch-build`: 2 of 3 used `start_terminal` and both passed; run 2 did not
+  and failed. **7/7 with the pair, 2/5 without**, across four passes.
+
+The `\.env` glob false positive was left alone on purpose - one change per
+cycle - and appeared 0 times in this pass anyway.
+
+1,130 -> 1,135 tests. Three mutations in both directions: dropping a verb from
+the list fails the pinned deletion for that interpreter; making the verb
+optional (the blanket back) fails all five recorded false positives.
+
+---
+
 ## Phase R measured: both arms (2026-09-11)
 
 **PRE-REGISTERED, written before either arm finished.** The `revision` split is

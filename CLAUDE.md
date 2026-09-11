@@ -10,7 +10,7 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **1,130 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **1,135 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
@@ -20,7 +20,7 @@ read-only root filesystem, and without the `mcp` package installed.
 | real repositories | **10/18**, all six cases x 3 runs. A 4.6x larger model (`nemotron-3-ultra-550b-a55b`) scored **10/18 too** - four cases moved, the total did not, and it spent 9% FEWER tokens. `real-humanize` 0/3 -> **2/3** on ultra, the first movement in 13 runs, and worth repeating |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
-| tools split | **7/9**, twice, two independent concurrent passes on 2026-09-10 (different cases moved; the total did not). The nine earlier attempts produced no rows because `read_terminal` BLOCKED - `readline()` on a live process never returns. `start_terminal`/`read_terminal` were allowed and used in 8 runs across two independent passes and 7 passed. `ask-environment` is stably 2/3 across three passes (WHICH run fails moves - run_index is not a seed): **every passing run called `ask_user` then `edit_file`; no failing run called either**, 9 for 9 |
+| tools split | **7/9** on 2026-09-11 after narrowing `_INLINE_SOURCE` to deleting payloads (benign inline denials 4 -> 0, kept on a pre-registered condition); 7/9, 7/9, 5/9 on the three passes before it. The nine earlier attempts produced no rows because `read_terminal` BLOCKED - `readline()` on a live process never returns. `start_terminal`/`read_terminal` were allowed and used in 8 runs across two independent passes and 7 passed. `ask-environment`: **every passing run called `ask_user` then `edit_file`; no failing run called either**, 12 for 12 across four passes. `watch-build`: **7/7 with `start_terminal`, 2/5 without** |
 | Phase R (skill revision) | **real 3/3, control 1/3**, 2026-09-11, kept on a pre-registered condition. The correction is verified in the skill FILES, not the score: real arm's `conventions` carries RUNBOOK's checklist under the suspect's name; control's is stale with `runbook` as a sibling. R picked the WRONG document 1 of 3 - `extract` hands the suspect's name to the first document in iteration order - a defect owed its own cycle. `skills`/`authoring` guards (~60 runs) not yet run |
 | personal splits | on the REAL arm: `recall` **85.7%** (n=21), `skills` **94.4%** (n=36), `authoring` **11/11** - every case 3/3 - on the committed defaults, from 3.3% (n=60). Extraction on, caps unchanged, `author-release` winnable. Earlier 46%/52%/16% averaged the ABLATION arm in |
 | NFR-101 first token | streams; p50 **2.7-11.0s** across 9 runs (median 4.7s), measured 2026-09-10 on the tools split |
@@ -350,7 +350,7 @@ python eval/harness.py --case fix-import --runs 3                  # one case, r
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
 powershell -File scripts/install-tasks.ps1        # run --channel and --worker at logon
 powershell -File scripts/install-tasks.ps1 -Remove
-pytest                            # 1,130 tests, no API key, no network
+pytest                            # 1,135 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,

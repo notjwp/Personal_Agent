@@ -31,15 +31,17 @@ _SENSITIVE_FILE = (
     rf"|\.env\b"
 )
 
-# An interpreter given inline source is a shell by another name: `python -c` can
-# do anything `rm -rf` can, and the old pattern list saw none of them. The flags
-# are the reference implementation's table; the shape is ours.
+# An interpreter given inline source is a shell by another name - when the
+# source DELETES. Escalating the flag alone refused serve-token's own urlopen()
+# 6 of 6 (eval/CHANGELOG.md, 2026-09-11). The flags are the reference's table.
+_DELETES = r"(?:rmtree|rmSync|rmdirSync|unlink|os\.remove\(|os\.rmdir\(|Remove-Item)"
 _INLINE_SOURCE = (
-    r"\bpython[\d.]*\s+(?:-\w+\s+)*-c\b"
+    r"(?:\bpython[\d.]*\s+(?:-\w+\s+)*-c\b"
     r"|\bnode\s+(?:-\w+\s+)*(?:-e|--eval|-p|--print)\b"
     r"|\b(?:perl|ruby)\s+(?:-\w+\s+)*-e\b"
     r"|\bphp\s+(?:-\w+\s+)*-r\b"
-    r"|\bpowershell(?:\.exe)?\s+.*?-(?:command|c|file|f)\b"
+    r"|\bpowershell(?:\.exe)?\s+.*?-(?:command|c|file|f)\b)"
+    rf"[\s\S]*?{_DELETES}"
 )
 
 # The same list as a standalone pattern, for PATH arguments. `cat ~/.ssh/id_rsa`

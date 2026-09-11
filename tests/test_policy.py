@@ -142,6 +142,28 @@ def test_a_command_that_reaches_past_the_workspace_needs_a_human(
 
 
 @pytest.mark.parametrize("command", [
+    # Recorded denials, 20260910T184547Z and 20260910T173411Z. Each was the
+    # HTTP request that IS serve-token's task, refused as destructive because
+    # the FLAG was escalated regardless of what followed it.
+    "python3 -c \"import urllib.request; print(urllib.request.urlopen("
+    "'http://127.0.0.1:8731/request-phrase').read().decode())\"",
+    # multi-line payload, as serve-token-2 actually sent it
+    "python3 -c \"import urllib.request, time" + chr(10) +
+    "urllib.request.urlopen('http://127.0.0.1:8731/request-phrase')" + chr(10) +
+    "time.sleep(1)\"",
+    "cd /workspace && python3 -c \"import ledger; print(dir(ledger))\"",
+    "node -e \"console.log(require('./package.json').version)\"",
+    "perl -e 'print 1+1'",
+])
+def test_an_inline_interpreter_that_deletes_nothing_is_not_destructive(
+        tmp_workspace, command):
+    """The blanket on `python -c` denied serve-token's own task 6 of 6. The
+    payload decides now: no deletion verb, no escalation."""
+    verdict, _ = classify("run_shell", {"command": command}, autonomous=True)
+    assert verdict == "auto", f"{command!r} was refused with nothing to refuse"
+
+
+@pytest.mark.parametrize("command", [
     "pytest -q", "python -m pytest", "ls -la", "git status", "git diff",
     "grep -rn parse src", "npm run build", "cat README.md",
     "git commit -m 'fix the parser'",
