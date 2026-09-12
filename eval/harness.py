@@ -1098,6 +1098,13 @@ def outer(args) -> int:
 
     consecutive_blocked = 0
     for position, (case, run_index) in enumerate(todo):
+        # Re-read, not `already` from the top: a driver killed mid-run leaves its
+        # container running, and that container writes its own row. Measured
+        # 2026-09-11 - the resumed driver would have spawned that row again.
+        if (case["id"], run_index) in completed(read_rows(out)):
+            print(f"-> {case['id']} run {run_index}: recorded meanwhile, skipped",
+                  flush=True)
+            continue
         print(f"-> {case['id']} run {run_index}", flush=True)
         for attempt in range(BLOCKED_RETRIES + 1):
             code = spawn(case, run_index, out)

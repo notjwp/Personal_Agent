@@ -566,6 +566,49 @@ def test_the_vanished_run_check_uses_the_same_helpers_the_resume_path_does():
     assert "completed(read_rows(out))" in source
 
 
+def _row_for(out, case_id, run_index, status="ok"):
+    import json
+
+    with (out / "summary.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"id": case_id, "run_index": run_index, "pass": True,
+                             "verdict": "done", "status": status, "turns": 1,
+                             "tokens": 1, "seconds": 1.0, "tool_calls": 0,
+                             "model_calls": 1}) + chr(10))
+
+
+def test_continue_skips_a_row_that_landed_while_it_was_running(monkeypatch,
+                                                                tmp_path):
+    """Measured 2026-09-11: the driver was killed for host memory while a
+    container ran on. The container wrote its own row - and the resumed driver,
+    having read completed() ONCE at start, spawned that same case-run again.
+    A duplicate costs 10-20 minutes of quota on the real split."""
+    import argparse
+
+    import eval.harness as h
+
+    cases = [{"id": "a", "goal": "g", "split": "x"}, {"id": "b", "goal": "g", "split": "x"}]
+    spawned = []
+
+    def fake_spawn(case, run_index, out):
+        spawned.append((case["id"], run_index))
+        _row_for(out, case["id"], run_index)
+        if (case["id"], run_index) == ("a", 0):
+            _row_for(out, "b", 0)                 # the orphan lands meanwhile
+        return h.COMPLETED
+
+    monkeypatch.setattr(h, "load_cases", lambda: cases)
+    monkeypatch.setattr(h, "NETWORK", "bridge")
+    monkeypatch.setattr(h, "run_dir", lambda args, cases: tmp_path)
+    monkeypatch.setattr(h, "spawn", fake_spawn)
+    monkeypatch.setattr(h, "previous_run", lambda out: None)
+    args = argparse.Namespace(case=None, split="x", runs=1, pace=0,
+                              no_preflight=True, continue_=True)
+
+    assert h.outer(args) == 0
+    assert ("b", 0) not in spawned, "re-ran a case-run whose row was already on disk"
+    assert spawned == [("a", 0)]
+
+
 def test_the_harness_runs_as_a_script_not_only_as_an_import():
     """A module-level `from agent import ...` works under pytest, which sets the
     path, and fails under `python eval/harness.py`, which puts eval/ on sys.path
