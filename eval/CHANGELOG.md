@@ -5,6 +5,91 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## SOUL.md: if looking does not settle it, ask (2026-09-12)
+
+**PRE-REGISTERED, written before the change was made.**
+
+### The signal
+
+`ask-environment` across four `tools` passes, 12 rows: every run that called
+`ask_user` then `edit_file` passed, and no failing run called either. 12 for
+12. The goal says "for my environment" and there are four; the harness scripts
+the answer ("gamma") so an asked question is answered.
+
+The failing runs did not guess wrong. They LOOKED - twelve calls of `find`,
+`search_files`, `read_file` for an indicator that does not exist - and then
+ended with "I cannot determine which specific environment is 'my
+environment'". That sentence is the moment the tool exists for, and SOUL.md's
+line on it stops one clause short: "look first, ask second" says when NOT to
+ask and never says what to do when looking has not settled it.
+
+### The one change
+
+SOUL.md, the `ask_user` line, one clause added:
+
+    ... look first, ask second - and if looking does not settle it, ask.
+    Never end a run by saying you could not tell.
+
+~20 tokens a call. A prompt change, measured like a code change.
+
+### Keep / revert
+
+Primary: `tools` x 3 against `20260911T153643Z` (7/9; `ask-environment` 3/3
+there, 2/3 on the three passes before). Guard: `dev` x 3 against 15/15, run
+ONLY if the primary keeps - the guard is 45 runs and a day of quota.
+
+Keep if ALL of:
+- mechanism: `ask_user` fires in **3 of 3** `ask-environment` runs (9 of 12
+  across the four baseline passes)
+- `ask-environment` **3/3** and `tools` **>= 7/9**
+- guard: `dev` **>= 14/15**, and `ask_user` fires **at most 2 times in 45
+  dev runs** - an ask on an unambiguous task costs a turn for NOBODY_THERE
+
+Revert if ANY of: `ask_user` does not fire 3/3 (the clause changed nothing),
+`tools` below 7/9, `dev` below 14/15, or `ask_user` firing 3+ times on dev
+(the clause made it ask when it should have looked).
+
+Results below this line were not known when the above was written.
+
+### Result: REVERTED. The clause was in the prompt and the model ended the run anyway
+
+`20260912T115219Z`, `ask-environment` x 3, then stopped:
+
+| run | asked | edited | result |
+|---|---|---|---|
+| 0 | yes | yes | PASS |
+| 1 | yes | yes | PASS |
+| 2 | **no** | no | FAIL, `stuck` at 12 |
+
+`ask_user` fired 2 of 3. The pre-registered condition was 3 of 3, and 2 of 3
+is the baseline rate (9 of 12). The run that did not ask did what the new
+clause forbids in so many words: twelve read-only calls, zero edits, and a
+final message that there was "no file or symlink indicating which environment
+is currently active". The instruction was on every turn's system prompt and
+changed nothing about the one run it existed for.
+
+The pass was stopped after those three rows rather than spending six more on
+a decision already made; `serve-token-0` was killed by name. Prompt reverted.
+
+### What this is the fourth confirmation of
+
+**Deterministic injection works; agent choice does not.** `learn` fired 3 of
+117 where extraction fired 12 of 12; `write_episode -> context_for` went
+0/18 -> 15/18 while the tool went unused; `_noop_nudge` fired 0 in 30. A line
+in SOUL.md asking the model to ask is a request. The signal it was built on
+is now **15 for 15** across five passes - every run that asked passed, every
+run that did not ask failed - and the remedy has to be a rule the loop
+applies, not a sentence the model may or may not read at turn twelve.
+
+What that rule is, is not obvious, and this cycle did not design it. The
+shape of the failure is specific: a goal that asks for a CHANGE, a run that
+makes no write, ends in words, and the words say it could not tell. A rule
+keyed on that shape risks being a fixture-shaped guard - the `profile-*`
+lesson - so it goes on the list as a design item with that warning attached,
+not as the next cycle.
+
+---
+
 ## `read_file` gets a floor on `limit` (2026-09-12)
 
 **PRE-REGISTERED, written before the change was made.**
