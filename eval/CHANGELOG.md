@@ -5,6 +5,41 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Three rig defects, each found by reading a row it had mis-described (2026-09-12)
+
+None of these touch the loop, the prompt or the gate; no measurement.
+1,135 -> 1,138 tests, each fix behind a test that failed first and a mutation
+verified to have applied.
+
+**1. `--continue` re-runs a row that landed while it waited.** `outer()` read
+`completed()` once at start. A driver killed mid-run leaves its container
+alive, and that container writes its own row - so the resumed driver would
+spawn the case-run the orphan had just recorded. Seen 2026-09-11 on `real`,
+where a duplicate is 10-20 minutes of quota. Now re-read before each spawn;
+`test_continue_skips_a_row_that_landed_while_it_was_running` drives `outer()`
+with an orphan landing mid-loop. Mutation: check the stale set instead.
+
+**2. A multi-session row reported the last session only.** `inner()` builds a
+fresh state per session and `record()` received the final one, so a 4-session
+run that billed 205,867 tokens said 25,497. Every row in `recall`, `skills`,
+`authoring` and `revision` under-reported this way - which means every
+per-row token figure quoted for those splits before today was one session's.
+Now summed across sessions. Single-session rows are unchanged. Mutation:
+assign instead of accumulate.
+
+**3. `extract` wrote a skill from a one-line file.** The `version` skill on
+skill-correction run 0 was `2.0` plus the loop's repeat notice - "[This exact
+read_file call has now returned the same result 2 times ...]" - which
+`_repeat_notice` appends to a repeated tool result and which carried a
+3-character file over the 80-character floor. `_undecorate` now strips that
+trailing notice before the floor is applied. A notice the loop wrote to the
+model is not part of what the file says. Mutation: strip nothing - and this
+one had to be applied with Edit, because the heredoc ate the regex and the
+first "mutation run" tested unmutated code. The APPLIED check is what caught
+it.
+
+---
+
 ## `real` re-baselined at 2 runs: 7/12, and the number did not move (2026-09-12)
 
 **Not a tuning cycle. A baseline refresh, at 2 runs per case by instruction.**

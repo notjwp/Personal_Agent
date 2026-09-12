@@ -477,6 +477,9 @@ def _undecorate(content: str) -> str:
     read `     1\t# The one rule` instead of `# The one rule`. Numbers are how the
     tool shows a file to the model, not part of what the file says.
     """
+    # The loop's repeat notice (graph.py, `_repeat_notice`) rides on the END of a
+    # tool result. It carried a one-line file over the floor once.
+    content = re.sub(r"\n\n\[This exact \w+ call has now returned[^\]]*\]\s*$", "", content)
     lines = content.split("\n")
     if lines and re.match(r"^\S.*\(lines \d+-\d+ of \d+\)", lines[0]):
         lines = lines[1:]

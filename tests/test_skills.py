@@ -461,6 +461,30 @@ def test_the_extracted_body_has_no_line_number_gutter(monkeypatch):
     assert "     1" not in body
 
 
+def test_the_loops_repeat_notice_is_not_knowledge(monkeypatch):
+    """Measured 2026-09-11, skill-correction run 0: the `version` skill's body
+    was `2.0` plus "[This exact read_file call has now returned the same result
+    2 times ...]". The loop appends that notice to a repeated tool result, and
+    it carried a one-line file over the 80-char floor. A notice the loop wrote
+    to the model is not part of what the file says."""
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", True)
+    notice = ("[This exact read_file call has now returned the same result 2 "
+              "times. Use the result you already have - repeating it unchanged "
+              "will end the run.]")
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "a", "name": "read_file",
+             "input": {"path": "VERSION"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a",
+             "content": "VERSION (lines 1-1 of 1)" + chr(10) + "     1" + chr(9)
+                        + "2.0" + chr(10) + chr(10) + notice}]},
+    ]
+    assert skills._undecorate(messages[1]["content"][0]["content"]) == "2.0"
+    assert skills.extract(messages, "cut a release") == [], (
+        "a one-line file became a skill on the strength of a loop notice")
+
+
 def test_the_description_says_WHEN_not_what_the_agent_happened_to_be_doing(monkeypatch):
     """The description is all a later session sees until it opens the skill, so it
     must describe a CLASS of work. Derived from the goal it named one specific task
