@@ -5,6 +5,72 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `read_file` floor of 100 lines, second attempt, on top of the summary bound (2026-09-12)
+
+**PRE-REGISTERED, written before the change was re-applied.**
+
+The first attempt (below, same day) was reverted on a reads bar of 100 that
+was a guess, and found that bigger windows can push a run into a runaway
+compaction summary. The bound above closes that. Same change, same code,
+measured against the pass the bound was kept on.
+
+Baseline `20260912T120638Z`: 8/12, **139** `read_file` calls, median 353k.
+
+The reads bar is DERIVED this time: the first attempt cut reads 136 -> 108,
+-21%. The mechanism is real if it does at least that again.
+
+Keep if ALL of:
+- mechanism: `read_file` calls **<= 111** (0.8 x 139)
+- pass **>= 7/12** - the floor of the last three passes (7, 7, 8)
+- no compaction grows the context - the bound has to hold under bigger windows
+
+Tokens are REPORTED, not a condition. Four passes have put this split's
+median at 242k, 351k, 278k, 353k with nothing aimed at cost; a +/-10% cap on
+n=12 would fail on noise half the time, and the first attempt's -21% was
+inside that band. A cost claim on this split needs 3 runs and a bigger n.
+
+Revert if reads stay above 111, pass falls below 7/12, or any compaction
+grows.
+
+Results below this line were not known when the above was written.
+
+### Result: KEEP. All three met, and the bound fired under the floor's load
+
+`20260912T141935Z`, `real` x 2, against `20260912T120638Z`:
+
+| | condition | baseline | floor | met |
+|---|---|---|---|---|
+| mechanism | reads <= 111 | 139 | **105** (-24%) | yes |
+| score | pass >= 7/12 | 8/12 | **8/12** | yes |
+| guard | no compaction grows | 0 of 9 | **0 of 11** | yes |
+
+**The bound fired once, live.** `humanize-0` under 100-line windows produced
+a runaway summary - the failure the first floor attempt died on - and the
+bound cut it to 4,067 chars; that compaction removed 61% instead of growing
+the context by 48%. Cycle 2's mechanism, proven offline the pass before, has
+now run on the load it was built for. The sequencing - bound first, floor
+second - was the right call and this row is the evidence.
+
+Per case, pass / reads / median tokens:
+
+| case | bound only | floor on bound |
+|---|---|---|
+| cachetools | 2/2, 25, 177k | 2/2, **11**, 142k |
+| click | 1/2, 27, 403k | 1/2, 22, 392k |
+| humanize | 0/2, 24, 383k | 0/2, 17, 308k |
+| markdown | 2/2, 9, 119k | 2/2, 8, 114k |
+| more-itertools | 1/2, 24, 261k | **2/2**, 21, 225k |
+| rich | 2/2, 30, 381k | 1/2, 26, 414k |
+
+Tokens, REPORTED as pre-registered, not claimed: median 353k -> **236k**,
+-33%. Across the five `real` passes - 242k, 351k, 278k, 353k, 236k - the two
+with the floor are the two lowest. That is n=2 passes on a split with +/-25%
+noise, and it is said no more strongly than that. Zero tampers this pass.
+
+1,140 -> 1,142 tests. Mutation: floor removed - red.
+
+---
+
 ## `compact` accepts a summary of any length, and 7% of them are bigger than what they replace (2026-09-12)
 
 **PRE-REGISTERED, written before the change was made.**

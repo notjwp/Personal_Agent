@@ -196,10 +196,35 @@ def test_finish_records_the_terminal_verdict(tmp_workspace):
 # ======================================================================= tools
 
 def test_read_file_honours_offset_and_limit(tmp_workspace):
-    (tmp_workspace / "a.py").write_text("\n".join(f"line{i}" for i in range(100)))
-    out = read_file("a.py", offset=10, limit=5)
-    assert "line10" in out and "line14" in out
-    assert "line15" not in out and "line9" not in out
+    (tmp_workspace / "a.py").write_text("\n".join(f"line{i}" for i in range(400)))
+    out = read_file("a.py", offset=10, limit=150)
+    assert "\tline10\n" in out and out.endswith("\tline159")
+    assert "\tline160" not in out and "\tline9\n" not in out
+
+
+def test_read_file_will_not_return_a_window_smaller_than_the_floor(tmp_workspace):
+    """Measured on `real`, 20260911T162249Z: 136 read_file calls in 12 runs,
+    74% of them new 10-to-50-line windows onto a file already read - click-1
+    paid 8 calls to see 245 lines of one file. Each call re-sends the whole
+    context on a provider that caches nothing. A rule beats a request: asking
+    for 10 lines returns READ_MIN_LINES, and the docstring says so."""
+    (tmp_workspace / "a.py").write_text("\n".join(f"line{i}" for i in range(600)))
+    out = read_file("a.py", offset=380, limit=10)
+    assert "line380" in out
+    assert f"line{380 + config.READ_MIN_LINES - 1}" in out, "the floor was not applied"
+    assert "line379" not in out, "the floor must extend forward, not move the offset"
+    assert str(config.READ_MIN_LINES) in read_file.__doc__, (
+        "the model must be told the floor exists, or it will keep asking for 10")
+
+
+def test_the_floor_never_breaches_the_result_cap(tmp_workspace):
+    """The floor is in lines; the cap is in characters. Long lines must still
+    narrow to fit, floor or no floor."""
+    body = [f"line{i:04d} " + "x" * 200 for i in range(400)]
+    (tmp_workspace / "wide.py").write_text("\n".join(body), encoding="utf-8")
+    out = read_file("wide.py", offset=0, limit=10)
+    assert len(out) <= config.TOOL_CAPS["read_file"]
+    assert "narrowed to fit" in out
 
 
 def test_read_file_returns_a_contiguous_window_under_the_cap(tmp_workspace):
@@ -1917,8 +1942,10 @@ def test_git_commit_has_an_identity(tmp_workspace):
 
 HAND_WRITTEN_SCHEMAS = {'read_file': {'name': 'read_file',
                'description': 'Read a text file from the workspace. Returns numbered '
-                              'lines. Use offset and limit to page through a large '
-                              'file.',
+                              'lines. Every call costs a turn, so read a whole region '
+                              'at once: the window is never smaller than 100 lines, '
+                              'and a small file is best read in one call with no '
+                              'limit.',
                'input_schema': {'type': 'object',
                                 'properties': {'path': {'type': 'string',
                                                         'description': 'Path relative '
@@ -1935,7 +1962,9 @@ HAND_WRITTEN_SCHEMAS = {'read_file': {'name': 'read_file',
                                                                         'lines to '
                                                                         'return. '
                                                                         'Default '
-                                                                        '500.'}},
+                                                                        '500, '
+                                                                        'minimum '
+                                                                        '100.'}},
                                 'required': ['path']}},
  'search_files': {'name': 'search_files',
                   'description': 'Find where something appears in the workspace. '

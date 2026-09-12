@@ -97,14 +97,16 @@ def _nearby(target) -> str:
 
 @tool(risk="read")
 def read_file(path: str, offset: int = 0, limit: int = 500) -> str:
-    """Read a text file from the workspace. Returns numbered lines. Use offset
-    and limit to page through a large file.
+    """Read a text file from the workspace. Returns numbered lines. Every call
+    costs a turn, so read a whole region at once: the window is never smaller
+    than 100 lines, and a small file is best read in one call with no limit.
 
     path: Path relative to the workspace root.
     offset: First line to return, 0-based. Default 0.
-    limit: How many lines to return. Default 500.
+    limit: How many lines to return. Default 500, minimum 100.
     """
-    offset, limit = _int(offset, 0), _int(limit, 500)
+    offset = _int(offset, 0)
+    limit = max(_int(limit, 500), config.READ_MIN_LINES)
     target = config.resolve(path)
     if target.is_dir():
         # FR-201's "list directories": read_file on a directory returns the listing

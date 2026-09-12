@@ -226,6 +226,10 @@ PLAN_MAX_STEPS = 6
 # conservative 3:1 so the check needs no tokeniser and no API key (NFR-602).
 MAX_RESULT_CHARS = 6_000
 TOOL_CAPS = {"read_file": 6_000, "write_file": 400, "run_shell": 6_000}
+# The smallest window read_file will return. Measured on `real`: 74% of reads
+# were 10-50-line windows onto a file already read, each a full model call on a
+# provider that caches nothing. Just under what the char cap allows anyway.
+READ_MIN_LINES = 100
 HEAD_LINES = 30
 TAIL_LINES = 20
 

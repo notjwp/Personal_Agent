@@ -10,14 +10,14 @@ table). Read those when you need history; do not copy history back into here.
 ## State
 
 `act -> gate -> execute -> reflect` over a two-provider adapter, kernel-enforced sandbox, CLI and
-Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **1,138 offline tests**, green with no API key, no network, a
+Textual TUI, task queue, cron scheduler, email channel, web search, measurement rig. **1,142 offline tests**, green with no API key, no network, a
 read-only root filesystem, and without the `mcp` package installed.
 
 | | |
 |---|---|
 | dev baseline | **15/15**, 3 runs per case, `nvidia/nemotron-3-super-120b-a12b`, at `MAX_TURNS=30`. Re-measured 2026-09-05 after gte-base and extraction-by-default. `add-endpoint` does not flap at the old cap of 12 - it scores **0/3, `stuck` x3**, because its first edit lands on call 13 |
 | held out | **30/30**, re-measured 2026-09-05, `done` x30 and zero tamper. The +1 over 29/30 is `float-division` landing on a good seed, NOT a gain: nothing shipped that day is in the graph's path |
-| real repositories | **7/12** at 2 runs per case, twice (2026-09-11 and -12), against **10/18** at 3 runs on 2026-09-03 - FLAT across ~20 commits, none aimed here. `cachetools` 1/2 then 2/2: a seed, not a regression. Median tokens swung 242k -> 351k -> 278k with nothing aimed at cost - a +/-20% move on n=12 is this split's noise. A `read_file` floor of 100 lines was REVERTED on a pre-registered condition (reads 136 -> 108, bar was 100) and found that bigger windows push runs into the compaction cap. The 2 of 7 passes that ended `stuck`/`budget` met the goal on the LAST turn - starved, not wasteful. Earlier: **10/18**, all six cases x 3 runs. A 4.6x larger model (`nemotron-3-ultra-550b-a55b`) scored **10/18 too** - four cases moved, the total did not, and it spent 9% FEWER tokens. `real-humanize` 0/3 -> **2/3** on ultra, the first movement in 13 runs, and worth repeating |
+| real repositories | **8/12** at 2 runs per case, twice (2026-09-12), after a bound on the compaction summary (4,000 chars, derived from 87 recorded) and a floor on `read_file` (100 lines). Both kept on pre-registered conditions; the bound fired live once under the floor's load and turned a -48% compaction into +61%. Five 2-run passes: 7, 7, 8, 8 of 12 - FLAT on pass rate since 10/18 on 2026-09-03. Median tokens 242k, 351k, 278k, 353k, 236k - the two floor passes are the two lowest, n=2, no claim. `humanize` 0 in every pass on this model; `cachetools` 2/2 four passes running. Earlier: **10/18** at 3 runs; ultra also 10/18, and its four `MAX_COMPACTIONS` deaths were runaway summaries, not caps |
 | Definition of Done | **9/9** · must-have requirements **35/35** |
 | search split | **9/9** with `web_search`, **0/9** with it removed |
 | tools split | **7/9** on 2026-09-11 after narrowing `_INLINE_SOURCE` to deleting payloads (benign inline denials 4 -> 0, kept on a pre-registered condition); 7/9, 7/9, 5/9 on the three passes before it. The nine earlier attempts produced no rows because `read_terminal` BLOCKED - `readline()` on a live process never returns. `start_terminal`/`read_terminal` were allowed and used in 8 runs across two independent passes and 7 passed. `ask-environment`: **every passing run called `ask_user` then `edit_file`; no failing run called either**, 12 for 12 across four passes. `watch-build`: **7/7 with `start_terminal`, 2/5 without** |
@@ -194,6 +194,12 @@ Ordered by how often they have caught something.
 - **A 30-run scored pass costs ~1.1M tokens and saturates the free tier for the day.** Budget one
   scored run per day; after that the tier rejects ~2 of 3 requests.
 
+- **A summary the model writes has no length until you give it one.** `compact` accepted
+  whatever came back; 6 of 87 were over 20,000 chars and one was 49,496 for 24 messages -
+  larger than the context it was rescuing - so the run compacted twice more against a head
+  it never touches and died. p90 of the healthy ones was 3,045. Bound it at 4,000, derived.
+  Four of the six runaways were the ULTRA run's "caps confound": the diagnosis was wrong,
+  the advice (re-derive before reading a swapped model's score) still holds.
 - **A capability with no measurement may be BROKEN, not merely unproven.**
   `start_terminal`/`read_terminal` shipped with seven passing tests and were described for
   two weeks as "unmeasured, endpoint trouble". They were unusable: `read_terminal` blocked
@@ -350,7 +356,7 @@ python eval/harness.py --case fix-import --runs 3                  # one case, r
 scripts/reset.sh <case-id>        # restore /workspace to a fixture's state (idempotent)
 powershell -File scripts/install-tasks.ps1        # run --channel and --worker at logon
 powershell -File scripts/install-tasks.ps1 -Remove
-pytest                            # 1,138 tests, no API key, no network
+pytest                            # 1,142 tests, no API key, no network
 ```
 
 Tests run in the container, which is the measured environment: read-only root, `--network none`,
