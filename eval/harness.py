@@ -1256,6 +1256,9 @@ def inner(args) -> int:
                                  not in ("0", "off", "false")),
                   "sessions": len(goals)})
     started = time.monotonic()
+    # Summed across sessions. Each session starts a fresh state, so the last
+    # one alone said 25,497 for a run that billed 205,867 (2026-09-11).
+    spent = {"turns": 0, "spent_tokens": 0}
     try:
         for index, goal in enumerate(goals):
             if index:
@@ -1270,6 +1273,8 @@ def inner(args) -> int:
                 "autonomous": True,  # every `confirm` becomes `deny`; nothing blocks
                 "trace": trace,
             }})
+            for key in spent:
+                spent[key] += int(final.get(key) or 0)
         note = ""
     except ProviderMisconfigured as exc:
         # No row at all. Nothing was measured, and writing a row would imply
@@ -1305,8 +1310,8 @@ def inner(args) -> int:
     code, check_out, after = run_check(case)
     return record(out, case, args.run_index, passed=code == 0,
                   verdict=final.get("verdict") or "none", seconds=seconds,
-                  state=final, note=note or check_out[-2000:], trace=trace,
-                  failures_before=before, failures_after=after)
+                  state={**final, **spent}, note=note or check_out[-2000:],
+                  trace=trace, failures_before=before, failures_after=after)
 
 
 def tool_exposure() -> dict:

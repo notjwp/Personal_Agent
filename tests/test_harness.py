@@ -1097,6 +1097,51 @@ def test_a_multi_session_case_ends_on_its_own_goal():
             assert case["goal"] == case["sessions"][-1], case["id"]
 
 
+def test_a_multi_session_row_reports_the_WHOLE_run_not_the_last_session(
+        monkeypatch, tmp_path):
+    """Measured 2026-09-11: a 4-session skill-correction run billed 205,867
+    tokens and its row said 25,497 - the last session's - because inner()
+    builds a fresh state per session and record() receives the final one.
+    Every multi-session row in recall, skills, authoring and revision
+    under-reported the same way."""
+    import argparse
+    import json
+    import types
+
+    import eval.harness as h
+    from agent import graph, mcp, memory, skills
+
+    case = {"id": "multi", "split": "x", "goal": "third", "setup": "true",
+            "check": "true", "budget": 100_000, "max_turns": 12,
+            "sessions": ["first", "second", "third"]}
+
+    class App:
+        def invoke(self, state, cfg):
+            return {**state, "turns": 4, "spent_tokens": 1_000, "verdict": "done"}
+
+    monkeypatch.setattr(h, "load_cases", lambda: [case])
+    monkeypatch.setattr(h.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(h, "run_check", lambda c: (0, "", 0))
+    monkeypatch.setattr(h, "restore_protected_tests", lambda c: [])
+    monkeypatch.setattr(graph, "get_app", lambda: App())
+    monkeypatch.setattr(memory, "activate", lambda: None)
+    monkeypatch.setattr(memory, "deactivate", lambda: None)
+    monkeypatch.setattr(skills, "activate", lambda: None)
+    monkeypatch.setattr(skills, "deactivate", lambda: None)
+    monkeypatch.setattr(mcp, "activate", lambda: [])
+    monkeypatch.setattr(mcp, "shutdown", lambda: None)
+    monkeypatch.delenv("AGENT_BUDGET", raising=False)
+    monkeypatch.delenv("AGENT_MAX_TURNS", raising=False)
+
+    args = argparse.Namespace(run_case="multi", run_index=0, out=str(tmp_path))
+    assert h.inner(args) == h.COMPLETED
+
+    row = json.loads((tmp_path / "summary.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert row["turns"] == 12, f"turns is one session's, not the run's: {row['turns']}"
+    assert row["tokens"] == 3_000, f"tokens is one session's, not the run's: {row['tokens']}"
+
+
 def test_scripted_answers_reach_the_ask_hook(monkeypatch, tmp_path):
     """A scored run is unattended, so ask_user returns NOBODY_THERE and the tool
     cannot be measured at all. `answers` is the stand-in person; if it stops
