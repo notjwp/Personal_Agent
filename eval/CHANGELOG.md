@@ -5,6 +5,33 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Cycle opened on `20260912T141935Z`, closed at step 3: no signal survived a second pass (2026-09-12)
+
+Four failures, bucketed: `click-1` first edit at call 26 of 30, wrong;
+`humanize-0` zero edits in 25 calls; `rich-0` zero edits landed, two
+ambiguity errors; `humanize-1` zero edits and `done` at call 11 on a paragraph
+of analysis. One bucket - **no working edit** - whose table prescription, a
+plan node, was measured at +30% cost for +0 passes and reverted.
+
+Two candidate rules were checked against the record before anything was built:
+
+1. **`done` with the tests failing and no edit** (`humanize-1`'s shape).
+   22 of 374 failing rows ever; 20 of them before 2026-09-01. Since then, two
+   rows, both `real-humanize`, which is 0 in six passes on this model and 2/3
+   on ultra. A residual on a capability-limited case, not a bucket.
+
+2. **First edit by call 12 separates pass from fail** - 7/7 passes vs 4/4
+   failures on this pass, the `add-endpoint` signal again. Checked against
+   the pass before: passing first-edits there were 14, 14, 25 and 31, and a
+   FAILING run edited at 11. On `dev`, passes edit at 16 and 18. One pass's
+   coincidence. Not built.
+
+No change. The split's remaining failures are one case at its model's ceiling
+and three runs that read 14-17 times before editing, with no threshold that
+holds across two passes to key a rule on.
+
+---
+
 ## `read_file` floor of 100 lines, second attempt, on top of the summary bound (2026-09-12)
 
 **PRE-REGISTERED, written before the change was re-applied.**
