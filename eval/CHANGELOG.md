@@ -5,6 +5,124 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `read_file` gets a floor on `limit` (2026-09-12)
+
+**PRE-REGISTERED, written before the change was made.**
+
+### The bucket, and a retraction first
+
+This cycle was queued as "a pass that does not know it passed" - 2 of 7 `real`
+passes ending `stuck`/`budget` with the goal already met. The traces say
+otherwise: `click-1`'s final successful edit is call 31 of 31 and `rich-1`'s is
+call 30 of 31. Both met the goal on the LAST turn. They were starved, not
+wasteful after success. That framing was inferred from `pass=True` +
+`stuck` without reading the traces, which is the thing the cycle discipline
+exists to prevent, and it is retracted here.
+
+What the 12 rows of `20260911T162249Z` actually show, bucketed:
+
+| | |
+|---|---|
+| `read_file` calls | 136 across 12 runs |
+| identical repeats (same args) | 5 - **4%**, so not thrashing |
+| new windows onto a file already read | 101 - **74%** |
+| windows that overlapped what was already seen | 1-7% - so not re-reading either |
+| windows asked for | `limit` of 10, 15, 30, 50 - `click-1` paid 8 calls to see 245 lines of one file |
+| reads elided by `shrink()` | **0** - the small windows are not learned from truncation |
+
+The agent reads big files ten to fifty lines at a time. On a provider that
+caches nothing, every window is a full model call re-sending the whole
+context - ~10-13k tokens a call at that point in a run - and the capped runs
+carry the most of them (11-15 vs 1-7 for the clean `done`s). Turns spent on
+windows are turns not available to finish.
+
+### The change
+
+The reference defaults `read_file` to 2,000 lines (`tools/file_tools.py`,
+`READ_FILE_SCHEMA`) and caps on characters, not lines. Ours defaults to 500
+and the model asks for 10. Telling it to read bigger is a request; the lesson
+this project has paid for three times is that a rule beats a request. So:
+
+**`read_file` enforces `limit >= 100`.** Ask for 10 lines at offset 380 and
+you get 380-480. The docstring says so, and says why: each call is a turn.
+The default stays 500. That is the one change.
+
+### Keep / revert, against `20260911T162249Z` (7/12, 136 reads, median 351k)
+
+`real` x 2 runs, because the only like-for-like baseline is the 2-run one.
+
+Keep if ALL of:
+- the mechanism: `read_file` calls fall to **100 or fewer** across the 12 rows
+- pass **>= 7/12**
+- median tokens **not more than 10% up** - bigger windows grow the context,
+  and fewer calls have to pay for that
+
+Revert if ANY of: reads do not fall (the floor did not change behaviour),
+pass below 7/12, or tokens +10% without a pass gain. Reported per case
+against the 2-run baseline; a 1/2 stays ambiguous.
+
+Results below this line were not known when the above was written.
+
+### Result: REVERTED. One of three conditions missed, and the bar stays where it was written
+
+`20260912T093944Z`, `real` x 2, against `20260911T162249Z`:
+
+| | condition | baseline | floor | met |
+|---|---|---|---|---|
+| mechanism | `read_file` calls <= 100 | 136 | **108** | **no** |
+| score | pass >= 7/12 | 7/12 | 7/12 | yes |
+| cost | median tokens <= +10% | 350,685 | 278,032 (-21%) | yes |
+
+Reads fell 21% and tokens fell 21%. The written condition said 100 or fewer
+and the number is 108. The rule was "keep only if ALL three", so this is a
+revert - and it is a revert BECAUSE the result is flattering, which is the
+case the lesson of 2026-09-10 was written for. The 100 was not derived; it
+was a guess at what "changed behaviour" would look like. A guess that is
+missed by 8 does not get re-guessed after the fact.
+
+There is also a substantive reason not to let -21% carry a keep on its own:
+the two `real` passes before this one swung **+45%** on median tokens with
+nothing aimed at the split. -21% on n=12 is inside this split's own noise.
+
+Per case, pass / reads / median tokens:
+
+| case | baseline | floor |
+|---|---|---|
+| cachetools | 1/2, 25, 270k | **2/2, 8, 122k** |
+| click | 2/2, 26, 336k | 2/2, 20, 333k |
+| humanize | 0/2, 24, 411k | 0/2, 18, 356k |
+| markdown | 2/2, 10, 152k | 2/2, 7, 129k |
+| more-itertools | 1/2, 22, 297k | 1/2, 23, 295k |
+| rich | 1/2, 29, 383k | **0/2, 32, 403k** |
+
+The floor helps where the agent was nibbling (`cachetools`: 25 reads -> 8,
+tokens halved) and hurts where more context per turn meets the caps (`rich`:
+reads UP, tokens UP, 1/2 -> 0/2).
+
+### What it found, and why the next attempt is two changes, not one
+
+**A new failure shape.** `humanize-0` ended `stuck` at turn 19 through the
+COMPACTION cap - three compactions and still over `COMPACT_AT_CHARS`. Peak
+context 73k chars against the baseline's 47k on the same case. Zero runs in
+the baseline ended that way. Bigger windows grow the context faster, and
+`COMPACT_AT_CHARS` / `MAX_COMPACTIONS` were sized against 10-to-50-line
+windows. This is the "caps derived against one shape are a confound when you
+change the shape" lesson, in the read tool instead of the model. A floor on
+`limit` needs the compaction cap re-derived alongside it, and that is two
+changes - its own cycle, with the cap derived first.
+
+**A tamper.** `more-itertools-0` edited a test it is judged by. The harness
+restored the file before the check and the run failed anyway, so the score is
+unaffected; the row carries `tamper=1`. First tamper on `real` in 42 rows.
+
+**`cachetools` answers item 3 of the list.** 2/2 here after 1/2 yesterday: the
+1/2 was a seed, not a regression. No third run needed.
+
+Code reverted: `agent/config.py`, `agent/tools.py`, `tests/test_nodes.py`
+back to `5a9f42a`. Test count back to 1,138.
+
+---
+
 ## Three rig defects, each found by reading a row it had mis-described (2026-09-12)
 
 None of these touch the loop, the prompt or the gate; no measurement.
