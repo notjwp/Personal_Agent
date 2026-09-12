@@ -2291,6 +2291,44 @@ def test_a_failed_summariser_does_not_lose_the_run(
     assert pairs_ok(out["messages"])
 
 
+def test_a_runaway_summary_is_bounded_so_compaction_still_shrinks(
+        fresh_app, tmp_workspace, monkeypatch):
+    """Measured 2026-09-12, real-humanize-0: the summariser returned 49,496
+    chars for 24 removed messages - larger than the whole context it was
+    rescuing - and the run compacted twice more against a head it never
+    touches, then ended `stuck`. 6 of 87 recorded summaries were over 20,000
+    chars; nothing healthy is over ~3,000. A summary bigger than what it
+    replaces is not a summary, and the node must not accept one."""
+    from agent.graph import compact
+
+    monkeypatch.setattr("agent.graph.call_model",
+                        lambda *a, **k: text_turn("the summary " * 5_000))   # ~60k chars
+    s = state(messages=_history(40))
+    before = context_chars(s["messages"])
+
+    out = compact(s, {"configurable": {"trace": []}})
+
+    after = context_chars(out["messages"])
+    assert after < before, f"compaction GREW the context: {before:,} -> {after:,}"
+    text = json.dumps(out["messages"])
+    assert "truncated" in text, "a cut summary must say it was cut"
+    assert pairs_ok(out["messages"])
+
+
+def test_a_healthy_summary_is_not_touched(fresh_app, tmp_workspace, monkeypatch):
+    """The bound must sit above every summary that ever worked - p90 of the
+    recorded 87 is 3,045 chars - or it trades one defect for another."""
+    from agent.graph import compact
+
+    healthy = "Decisions made: fixed the rounding. Files touched: src/x.py. " * 40  # ~2.5k
+    monkeypatch.setattr("agent.graph.call_model", lambda *a, **k: text_turn(healthy))
+    out = compact(state(messages=_history(40)), {"configurable": {"trace": []}})
+
+    text = json.dumps(out["messages"])
+    assert "truncated" not in text
+    assert healthy.strip()[:200] in text
+
+
 def test_a_missing_prompt_file_fails_loudly(tmp_workspace, monkeypatch):
     """The bug this test exists for was live for one run: prompts/STEPS.md did
     not exist, the broad except swallowed the FileNotFoundError, and the node

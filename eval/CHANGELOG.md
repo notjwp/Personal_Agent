@@ -5,6 +5,96 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## `compact` accepts a summary of any length, and 7% of them are bigger than what they replace (2026-09-12)
+
+**PRE-REGISTERED, written before the change was made.**
+
+### Not the cap the floor cycle pointed at
+
+Queued as "re-derive `COMPACT_AT_CHARS` / `MAX_COMPACTIONS` for bigger read
+windows". The traces say the cap was not the problem. `humanize-0` in the
+floor pass compacted three times and ended `stuck`, and the first of those
+compactions reads `before 49,054, after 72,631, removed_pct -48.1`. The
+summary that REPLACED 24 messages was 49,496 characters - larger than the
+whole context it was rescuing. The next two compactions removed 9% and 10%,
+because the runaway summary sat in the head where compaction never looks.
+
+Across every recorded run: **87 compactions, 4 grew the context**, and 6
+summaries over 20,000 chars. `compact()` is the third model node, the model
+writes the summary, `MAX_TOKENS` is 16,000, and nothing bounds what comes back.
+
+The 87 summaries, by size: min 77, median 928, p75 1,368, p90 3,045 - then
+p95 26,184, max 53,110. Nothing healthy is over ~3,000; every runaway is over
+20,000. **The bound is 4,000 characters**: above p90 of what works, an order
+of magnitude under what does not.
+
+### The one change
+
+`compact()` truncates the summary to `COMPACT_SUMMARY_MAX_CHARS = 4_000`
+with a marker, before `compact_messages` places it. Deterministic; no second
+model call, no judgement. The reference bounds its summariser too
+(`agent/conversation_compression.py`) - the shape ports, the number is ours.
+
+### Keep / revert
+
+This is a defect fix, held to the `read_terminal` / `run_python` standard:
+mechanism proven, harm measured.
+
+Mechanism, OFFLINE and on real data: replay the 6 recorded runaway summaries
+through the bound and show each compaction would have REMOVED context
+(positive `removed_pct`) instead of growing it. Plus the unit test and a
+mutation.
+
+Harm guard, LIVE: `real` x 2 against `20260912T093944Z` (7/12). Keep if pass
+**>= 7/12** and **no compaction grows the context**. If no runaway occurs in
+the pass the bound never fires, and that is reported as "proven offline,
+unexercised live" - not as a live result.
+
+Revert if `real` below 7/12, or any compaction in the pass still grows.
+
+Results below this line were not known when the above was written.
+
+### Result: KEEP, as a defect fix. Proven offline on eight recorded runaways; unexercised live
+
+Offline replay of every recorded summary over the cap, through the bound:
+
+| run | row | before | after | removed% | summary | after, bounded | removed% |
+|---|---|---|---|---|---|---|---|
+| 20260830T151246Z | humanize-0 | 48,953 | 76,290 | -55.8 | 53,110 | 27,228 | **44** |
+| 20260905T082544Z | cachetools-2 | 46,785 | 49,199 | -5.2 | 32,632 | 20,615 | **56** |
+| 20260905T082544Z | click-2 | 46,585 | 37,226 | 20.1 | 26,184 | 15,090 | 68 |
+| 20260905T082544Z | humanize-2 | 45,868 | 64,385 | -40.4 | 40,944 | 27,489 | **40** |
+| 20260905T082544Z | rich-0 | 48,926 | 42,930 | 12.3 | 23,031 | 23,947 | 51 |
+| 20260912T093944Z | humanize-0 | 49,054 | 72,631 | -48.1 | 49,496 | 27,183 | **45** |
+
+Every one removes context under the bound; the three that grew become +40 to
++45%. Four of the six are from the ULTRA run - the pass recorded in CLAUDE.md
+as "ultra reached MAX_COMPACTIONS in 4 runs and each ended stuck, a caps
+confound". The cause was runaway summaries, not caps. That lesson's diagnosis
+is corrected here; its advice - re-derive before reading a swapped model's
+score - still stands.
+
+Live, `20260912T120638Z`, `real` x 2 against `20260912T093944Z`:
+
+| | condition | result | met |
+|---|---|---|---|
+| harm | pass >= 7/12 | **8/12** | yes |
+| harm | no compaction grows | 0 of 9 | yes |
+| mechanism | bound fires | **0 times** | - |
+
+No runaway occurred in this pass, so the bound never ran. The +1 (`rich` 0/2
+-> 2/2, `click` 2/2 -> 1/2) is not this change's doing and is not claimed.
+Median tokens 278k -> 353k is inside the +/-25% this split has shown across
+four passes with nothing aimed at cost.
+
+`more-itertools-0` edited a protected test for the second pass running.
+Restored before the check, failed anyway. Two of two on that row now; it is
+the case to look at if tamper starts costing.
+
+1,138 -> 1,140 tests. Mutation: bound disabled - red.
+
+---
+
 ## SOUL.md: if looking does not settle it, ask (2026-09-12)
 
 **PRE-REGISTERED, written before the change was made.**

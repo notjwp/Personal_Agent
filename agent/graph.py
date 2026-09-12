@@ -600,6 +600,11 @@ def compact(state: AgentState, config: RunnableConfig) -> dict:
         summary = " ".join(b.get("text", "") for b in reply.blocks
                            if b.get("type") == "text").strip()
         billed = reply.billed_tokens
+        # A summary larger than what it replaces is not one. Measured: 49,496
+        # chars for 24 messages, and the run compacted twice more and died.
+        if len(summary) > settings.COMPACT_SUMMARY_MAX_CHARS:
+            summary = (summary[:settings.COMPACT_SUMMARY_MAX_CHARS].rstrip()
+                       + " ...[summary truncated so compaction can shrink]")
     except Exception as exc:                       # noqa: BLE001
         # A failed summariser must not lose the run. It is already in trouble -
         # that is why it is compacting - and dying in the recovery is worse than

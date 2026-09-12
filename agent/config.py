@@ -171,6 +171,11 @@ COMPACT_AT_CHARS = int(_env("AGENT_COMPACT_AT", "45000"))
 # budget faster than the problem it solves.
 MAX_COMPACTIONS = int(_env("AGENT_MAX_COMPACTIONS", "3"))
 
+# The model writes the summary and MAX_TOKENS lets it write ~48k chars. Of 87
+# recorded summaries p90 is 3,045 and six are over 20,000; one was 49,496 for
+# 24 messages and the run compacted three times and died. Derived, not chosen.
+COMPACT_SUMMARY_MAX_CHARS = 4_000
+
 # Refuse to finish on an edit that was never verified. Bounded at two nudges,
 # past which it is nagging.
 #
