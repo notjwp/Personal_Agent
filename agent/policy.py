@@ -28,7 +28,9 @@ _SENSITIVE_FILE = (
     rf"{_HOME}/\.ssh(?:/|\b)"
     rf"|{_HOME}/\.(?:bashrc|zshrc|profile|bash_profile|zprofile)\b"
     rf"|{_HOME}/\.(?:netrc|pgpass|npmrc|pypirc|aws|config/gh)\b"
-    rf"|\.env\b"
+    # A FILE called .env: at the start, or after a space, slash or quote. Not
+    # the suffix of a glob - `find -name "*.env"` was refused for naming it.
+    r"|(?:^|[\s/'\"=])\.env\b"
 )
 
 # An interpreter given inline source is a shell by another name - when the

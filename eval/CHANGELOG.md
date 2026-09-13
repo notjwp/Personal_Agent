@@ -21,6 +21,14 @@ Containerfile and LICENSE. The ranking test's side-assertion that `ship` still
 extracts was the old behaviour pinned; it now asserts the rule. Mutation:
 accept everything - red.
 
+**`\.env` matched inside `*.env`.** Recorded 2026-09-10, ask-environment-1:
+`find env/ -name "*.txt" -o -name "*.md" -o -name "*.env"` refused as
+destructive, unattended, for naming a pattern. A credential is a FILE called
+`.env` - at the start, or after a space, slash, quote or `=` - not a suffix in
+a glob. Three glob shapes now `auto`; seven real credential shapes (`cat
+.env`, `cp app/.env`, `source .env`, `.env.local`, `config/.env.production`)
+still `confirm`. Mutation: the old pattern back - the three globs red.
+
 ---
 
 ## The terminal cases: a race fixed, and "leave it running" stated and checked (2026-09-13)

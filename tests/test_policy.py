@@ -53,6 +53,29 @@ def test_a_credential_asks_even_to_be_READ(tmp_workspace, path):
     assert "credential" in reason
 
 
+@pytest.mark.parametrize("command", [
+    'find env/ -type f -name "*.txt" -o -name "*.md" -o -name "*.env"',   # recorded, ask-environment-1
+    "ls env/*.env",
+    "grep -rn workers env/ --include=*.env",
+])
+def test_a_glob_that_merely_NAMES_dot_env_is_not_a_credential(tmp_workspace, command):
+    """The old pattern matched .env inside `*.env`. Recorded 2026-09-10: a `find` that
+    listed extensions was refused as destructive, unattended, for naming a
+    pattern. A credential is a FILE called .env - at the start, after a space,
+    a slash or a quote - not a suffix in a glob."""
+    verdict, _ = classify("run_shell", {"command": command}, autonomous=True)
+    assert verdict == "auto", f"{command!r} refused for naming a pattern"
+
+
+@pytest.mark.parametrize("command", [
+    "cat .env", "cat ./.env", "cp app/.env /tmp/", "source .env", "cat '.env'",
+    "cat .env.local", "cat config/.env.production",
+])
+def test_the_actual_dot_env_file_still_asks(tmp_workspace, command):
+    verdict, _ = classify("run_shell", {"command": command}, autonomous=False)
+    assert verdict == "confirm", f"{command!r} read a credential unreviewed"
+
+
 @pytest.mark.parametrize("path", OUTSIDE)
 def test_writing_outside_the_workspace_asks_first(tmp_workspace, path):
     verdict, reason = classify("write_file", {"path": path}, autonomous=False)
