@@ -674,6 +674,58 @@ def test_a_suspect_skill_is_REPLACED_by_the_method_that_worked(monkeypatch):
     assert 'runbook' not in skills.authored(), 'corrected in place, not duplicated'
 
 
+def _read_several(*docs):
+    """Several documents read and never written, in the order given. The result
+    carries read_file's real header, which _undecorate strips - without it the
+    first line of every body is the PATH and nothing distinguishes them."""
+    out = []
+    for i, (path, text) in enumerate(docs):
+        cid = f"r{i}"
+        n = text.count(chr(10)) + 1
+        out += [
+            {'role': 'assistant', 'content': [
+                {'type': 'tool_use', 'id': cid, 'name': 'read_file',
+                 'input': {'path': path}}]},
+            {'role': 'user', 'content': [
+                {'type': 'tool_result', 'tool_use_id': cid,
+                 'content': f"{path} (lines 1-{n} of {n})" + chr(10) + text}]},
+        ]
+    return out
+
+
+def test_the_replacement_is_the_document_that_describes_the_SAME_work(monkeypatch):
+    """Measured 2026-09-11, skill-correction run 1: the suspect `conventions`
+    (a release checklist) was replaced by ship.py's docstring - "Project
+    tooling. Not documentation." - because extract handed the suspect's name to
+    the FIRST document in iteration order, and RUNBOOK.md went to a sibling.
+    Right 2 of 3. The replacement for a skill is the candidate that describes
+    the same class of work, ranked by overlap with the suspect's own
+    description - the words best_match already scores on."""
+    from agent import memory, skills
+
+    _revising(monkeypatch)
+    skills.learn(name='conventions',
+                 description='Use when release checklist applies to the work in '
+                             'hand - project conventions, formats and rules '
+                             'recorded in CONVENTIONS.md.',
+                 body='# Release checklist' + chr(10) + 'Write VERSION with the -old suffix. ' * 8)
+    memory.mark_suspect('conventions', goal='Cut release 2.2', verdict='stuck')
+
+    written = skills.extract(_read_several(
+        ('ship.py', '"""Project tooling. Not documentation.' + chr(10)
+                    + 'import hashlib' + chr(10) + 'ACCEPTED = "abc" ' * 12),
+        ('RUNBOOK.md', '# Release checklist' + chr(10)
+                       + 'Write VERSION with the -zr7k2q suffix, then run ship.py. ' * 6),
+        ('VERSION', '2.0 ' * 40),
+    ), goal='Cut release 2.2', verdict='done', opened='conventions')
+
+    body = skills.load_skill('conventions')
+    assert 'zr7k2q' in body, 'the checklist should have replaced the checklist'
+    assert 'Project tooling' not in body, 'the first-read document won by order'
+    assert 'runbook' not in skills.authored(), 'corrected in place, not duplicated'
+    assert 'ship' in skills.authored(), 'the other documents still extract normally'
+
+
 def test_a_skill_that_is_not_suspect_is_never_overwritten(monkeypatch):
     """The guard. Without it every successful run rewrites whatever was injected,
     which is churn and not correction."""

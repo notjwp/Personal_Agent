@@ -531,26 +531,48 @@ def extract(messages: list[dict], goal: str, verdict: str = "",
     # gap, not the missing permission: `learn` has always allowed a rewrite.
     correcting = bool(config.SKILL_REVISION and verdict == "done" and opened
                       and memory.is_suspect(opened))
-    written = []
+    usable = []
     for path, content in read_but_not_edited(messages):
         body = _undecorate(content)[:config.EXTRACT_MAX_CHARS]
-        if len(body) < config.EXTRACT_MIN_CHARS:
-            continue
+        if len(body) >= config.EXTRACT_MIN_CHARS:
+            usable.append((path, body))
+    # The replacement is the document that describes the SAME work, not the
+    # first one read: by order, a tooling script's docstring replaced a release
+    # checklist 1 time in 3 (2026-09-11).
+    replacement = _closest(opened, usable) if correcting else None
+    written = []
+    for path, body in usable:
         stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        corrects = correcting and path == replacement
         try:
-            learn(name=opened if correcting else stem,
+            learn(name=opened if corrects else stem,
                   description=_when(path, body), body=body)
         except ValueError:
             # The library cap, or a name that slugs to nothing. Both are ordinary
             # outcomes here, not failures of the run.
             continue
-        if correcting:
+        if corrects:
             memory.clear_suspect(opened)
             written.append(_slug(opened))
             correcting = False           # one correction per session
             continue
         written.append(_slug(stem))
     return written
+
+
+def _closest(name: str, candidates: list[tuple[str, str]]) -> str:
+    """The candidate path whose derived description best overlaps the skill's
+    own. Words of three letters or more, the same cut best_match uses; the
+    template words every _when() shares cancel out. Ties keep read order."""
+    current = catalogue().get(_slug(name), {}).get("description", "")
+    words = lambda t: {w for w in "".join(c if c.isalnum() else " " for c in t).lower().split() if len(w) > 2}
+    have = words(current)
+    best, score = candidates[0][0] if candidates else "", -1
+    for path, body in candidates:
+        n = len(have & words(_when(path, body)))
+        if n > score:
+            best, score = path, n
+    return best
 
 
 LEARN_SCHEMA = {

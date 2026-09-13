@@ -5,6 +5,68 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## R's replacement document is ranked, not first-read (2026-09-13)
+
+**PRE-REGISTERED, written before the run.**
+
+On 2026-09-11 the real arm scored 3/3 but wrote the RIGHT document under the
+suspect's name only 2 of 3 times: run 1 replaced the `conventions` release
+checklist with `ship.py`'s docstring, "Project tooling. Not documentation.",
+because `extract` handed the suspect's name to the first usable document in
+iteration order and RUNBOOK.md went to a sibling. The run passed because the
+sibling was there to match.
+
+The change: `_closest()` ranks the usable documents by word overlap between
+each one's derived `_when()` description and the suspect's OWN description -
+the words `best_match` already scores on. The replacement is the document
+that describes the same class of work. Ties keep read order; no catalogue
+entry falls back to first. One correction per session, unchanged.
+
+The test's fixture had to change to be fair: the old helper built tool
+results as `path + newline + text`, but real `read_file` output opens with
+`path (lines 1-N of N)`, which `_undecorate` strips. Without that header the
+first line of every body is the PATH, every derived description reads "Use
+when ship.py applies", and there is nothing to rank on. The fixture now
+carries the real header.
+
+Keep if BOTH, `revision` x 3 against `20260911T140714Z`:
+- right document under `conventions` in **3 of 3** - RUNBOOK's checklist
+  with the working suffix, checked in the skill files, no `runbook` sibling
+- pass **3/3**
+
+Revert if the right-document count is not 3/3 or pass drops. The trigger
+defect the guards found is NOT addressed here and is not this cycle's
+question.
+
+Results below this line were not known when the above was written.
+
+### Result: KEEP. Right document 3 of 3, pass 3/3
+
+`20260913T043018Z`, `revision` x 3, against the real arm `20260911T140714Z`:
+
+| | real arm 09-11 | ranked |
+|---|---|---|
+| pass | 3/3 | **3/3** |
+| `conventions` = RUNBOOK's checklist, working suffix | 2 of 3 | **3 of 3** |
+| `runbook` sibling written | 0 | 0 |
+
+Run index 1 - the one that got `ship.py`'s docstring by read order last time -
+now carries the checklist. Verified in the skill files, all three.
+
+The harness's delta line compared against `20260911T142806Z`, which is the
+CONTROL arm; it picks the newest `revision` directory. The +2 it prints is
+the control's 1/3, not a change here. And "tokens +172%" is the 2026-09-12
+rig fix: 67k was one session of four, 183k is the whole run (the real arm
+billed ~193k a run whole).
+
+1,142 -> 1,143 tests. Mutation: first-by-order restored - red.
+
+R now corrects with the right document when it corrects. It still decides
+WHEN to correct on a trigger that fired on passes 6 times in 7 (the entry
+below). That is the open question on this phase.
+
+---
+
 ## Phase R guards: `skills` and `authoring` with revision ON (2026-09-13)
 
 **PRE-REGISTERED, written before either split ran.**
