@@ -5,6 +5,83 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Phase R guards: `skills` and `authoring` with revision ON (2026-09-13)
+
+**PRE-REGISTERED, written before either split ran.**
+
+R was kept on 2026-09-11 (real 3/3, control 1/3) with the guards deferred.
+The guards ask one question: does a mechanism that marks a skill suspect on
+`stuck`/`budget`/three failures, and REPLACES it on the next `done`, damage
+splits where the skills are already right? The harm shape: a good skill gets
+marked on a bad-luck failure and replaced by whatever document the next
+passing run read first.
+
+Sized from `tasks.jsonl`, not memory: `skills` is 6 cases x 3 = 18 runs;
+`authoring` is 4 cases x 3 sessions x 3 = 12. Thirty runs, one day - the
+"~60, two days" quoted earlier counted a control arm, which runs only if a
+drop needs attributing.
+
+Baselines: `skills` **17/18** (`20260822T050707Z`, three weeks and ~30 commits
+old); `authoring` **11/11** (`20260904T123553Z`, one row blocked of 12).
+
+Keep R if BOTH:
+- `skills` **>= 16/18** - no more than one row below baseline
+- `authoring` **>= 10/12** - no more than one row below 11
+
+Revert R (R0-R4) if EITHER split drops by two or more rows AND the control
+arm (`AGENT_SKILL_REVISION=off`, same split, same day) does NOT show the same
+drop. If the control drops too, the loss is the 30 commits, not R, and R
+stays - the stale baseline is why the control exists.
+
+Mechanism, reported either way: how many runs R FIRED on (a skill was open
+when the run ended `stuck`/`budget` or hit three failures) and how many
+corrections landed (a skill rewritten under a name already present).
+
+Results below this line were not known when the above was written.
+
+### Result: both bars met, R stays - and the guards found R's real defect
+
+| split | baseline | with R | bar | met |
+|---|---|---|---|---|
+| `skills` `20260913T031751Z` | 17/18 | **18/18** | >= 16 | yes |
+| `authoring` `20260913T034324Z` | 11/11 | **10/12** | >= 10 | yes, exactly |
+
+No control arm needed: neither split dropped two rows. The two `authoring`
+failures were checked individually - `author-testname-0` never had a skill
+injected at all (`skill_opened` empty, so R never ran), and `author-errors-2`
+was marked AFTER it had already failed with its skill written once and never
+rewritten. Neither is R's doing.
+
+**The mechanism count: R marked a skill suspect on 7 runs, and 6 of them
+PASSED.** `skill-testname` x3, `skill-errors-2`, `author-errors-0`,
+`author-errors-1` - each met its goal, ran to the 12-turn cap, ended `stuck`,
+and `finish` filed its correct skill as suspect. One mark in seven was on an
+actual failure. In the harness every case-run starts with a fresh home so no
+mark carried; in real use, with a persistent home, the next `done` session
+replaces a GOOD skill with whatever document it read first. That is the
+self-improving agent making itself worse.
+
+The trigger - `stuck`/`budget` with a skill open, or three consecutive
+failures - reads "the run hit a cap" as "the skill was wrong". On these splits
+passing runs hit caps most of the time: `authoring` verdicts were `done` x6,
+`stuck` x6, with 10 passes. On `skill-correction` the same `stuck` DID mean
+the skill was wrong. The loop has no outcome signal to tell the two apart -
+the check that knows is the harness's, outside the loop. This is not a
+threshold to tune; it is R1's premise, and it needs a decision before
+anything more is built on R.
+
+Two cost numbers not to over-read. `authoring` median tokens 42,725 ->
+103,131, "+141%": the baseline row held ONE session of three and the new row
+holds all three (the 2026-09-12 rig fix). `skills` +29%, 28.5k -> 36.8k, is
+single-session and real, with ~30 commits and the read floor between the two
+passes - not attributable to R alone.
+
+Item 2 as queued - ranking the replacement document - still stands, but the
+trigger now outranks it: a correction that picks the right document 3 of 3
+times is still wrong 6 times in 7 if it fires on passes.
+
+---
+
 ## Cycle opened on `20260912T141935Z`, closed at step 3: no signal survived a second pass (2026-09-12)
 
 Four failures, bucketed: `click-1` first edit at call 26 of 30, wrong;
