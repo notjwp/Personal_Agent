@@ -5,6 +5,95 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## The terminal cases: a race fixed, and "leave it running" stated and checked (2026-09-13)
+
+**PRE-REGISTERED, written before the run.**
+
+### What "7/7 with the pair, 2/5 without" actually was
+
+Queued as "tighten the tools cases so they require the pair". The traces say
+the split was a race, not a requirement. `pipeline.py` announced the artifact
+id and THEN appended it to `build.log`; the check greps the log. Every
+non-pair solution drove the build from a script that `break`s on the
+announcement and `terminate()`s at once - `20260911T153643Z` watch-build-2 got
+`ARTIFACT-11D68E`, wrote it to answer.txt, and lost because the process died
+between the print and the log write. With the pair, the process lives until
+`stop_terminals()` at the end of the run and the log is always there. Three
+runs had the right answer and were scored wrong for a reason the goal never
+stated.
+
+And the pair cannot honestly be REQUIRED: `python server.py > out.log &`
+inside one `run_shell` leaves a process running as legitimately as
+`start_terminal` does, and no outcome check can tell them apart. What a fair
+fixture can require is that the process be left running - stated in the
+goal, checked by outcome.
+
+### The changes, fixture and case rows only - no loop code
+
+- `pipeline.py` writes `build.log` BEFORE announcing the id. The race is gone.
+- Both processes write a `heartbeat` file every 2s once their work is done.
+- Both goals gain one sentence: "Leave the build/service running when you
+  are done." NOTES.md says it too.
+- Both checks gain: heartbeat mtime within 15s of the check. The harness
+  kills terminal sessions immediately before the check, so a `start_terminal`
+  process is seconds stale; a process killed by its driver is minutes stale.
+
+Verified three ways in the container, both cases: untouched FAILS; the right
+answer with the process killed 17s earlier FAILS; the right answer with the
+process running PASSES. The bind mount's mtime and `date` agree to the second.
+
+### Keep / revert, `tools` x 3 against `20260911T153643Z` (7/9)
+
+This changes what the two cases ASK, so the number is not comparable to the
+old one and no pass-rate bar is set on it. What is pre-registered:
+
+- every failing `watch-build` or `serve-token` row fails on a STATED reason -
+  the heartbeat, or a wrong answer - and never on the log race
+- `ask-environment` >= 2/3 (unchanged case, the usual)
+- the split is reported as a NEW baseline for these two cases, with which
+  route each passing run took
+
+Revert the fixture change if a run with the right answer AND the process
+still running at the end fails the check - that would be the rig, not the
+agent.
+
+Results below this line were not known when the above was written.
+
+### Result: 9/9, every terminal run took the pair, and a goal sentence did what a SOUL rule could not
+
+`20260913T060340Z`, `tools` x 3:
+
+| case | pass | route |
+|---|---|---|
+| ask-environment | 3/3 | - |
+| serve-token | **3/3** | PAIR, 3 of 3 (`start_terminal` x1, `read_terminal` x3-5 each) |
+| watch-build | **3/3** | PAIR, 3 of 3 (`start_terminal` x1, `read_terminal` x4-5 each, zero `run_shell`) |
+
+The first clean sweep on this split (7, 7, 5, 7, then 5/8 stopped). Every
+pre-registered condition met - no row failed at all, so none failed on the
+race; `ask-environment` 3/3; routes recorded. The harness's delta line is
+against the stopped `ask_user` run and the OLD goals; not comparable. This is
+the new baseline for the two rewritten cases.
+
+**Six of six chose the pair.** Across the four passes before this one the
+terminal cases were solved without it 5 times in 12 - `python server.py >
+out.log &` in one `run_shell`, `Popen` inside `run_python`, a bash driver -
+and those routes are still open. The one thing that changed in what the model
+sees is a sentence in the goal: "Leave the build running when you are done."
+Twelve hours earlier a sentence in SOUL.md - "if looking does not settle it,
+ask" - changed nothing 1 of 3. The difference worth recording: a requirement
+stated in the GOAL steered the choice of tool six of six; a rule in the system
+prompt about when to use a tool did not. n=6, one case pair, and no more is
+claimed than that. It is a hypothesis about where instructions land, not a
+finding.
+
+`serve-token` still ends `budget` 2 of 3 with the right answer - the case's
+cost, unchanged by any of this.
+
+No loop code. Fixtures, two goal sentences, two check clauses.
+
+---
+
 ## R's trigger: off by default, because the loop has no signal to fix it with (2026-09-13)
 
 **PRE-REGISTERED, written before the run.**

@@ -1,9 +1,14 @@
-"""A service that will not hand out a token in one step. It does not exit."""
+"""A service that will not hand out a token in one step. It does not exit, and
+it is meant to be left running."""
 import http.server
+import pathlib
 import secrets
+import threading
+import time
 
 PORT = 8731
 STATE = {"phrase": None}
+HERE = pathlib.Path(__file__).resolve().parent
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -34,5 +39,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def _heartbeat():
+    # Still running is part of the job, and this is how the check knows.
+    while True:
+        (HERE / "heartbeat").write_text(str(time.time()), encoding="utf-8")
+        time.sleep(2)
+
+
+threading.Thread(target=_heartbeat, daemon=True).start()
 print("serving on", PORT, flush=True)
 http.server.HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
