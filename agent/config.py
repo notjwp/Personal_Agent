@@ -386,10 +386,11 @@ SKILL_EXTRACTION = _env("AGENT_SKILL_EXTRACTION", "on").strip().lower() not in (
     "0", "off", "false")
 
 # Phase R: a skill open when a run failed is replaced by the next run that works.
-# `off` is the control arm, and it has to change the MECHANISM rather than a
-# number - two arms of the same build are two controls.
-SKILL_REVISION = _env("AGENT_SKILL_REVISION", "on").strip().lower() not in (
-    "0", "off", "false")
+# OFF by default: the trigger fired on 6 passing runs of 7 (2026-09-13), and the
+# loop has no signal that tells a capped pass from a capped failure. The harness
+# turns it on where it is measured; `off` is also the control arm.
+SKILL_REVISION = _env("AGENT_SKILL_REVISION", "off").strip().lower() in (
+    "1", "on", "true")
 
 # The floor rejects a file carrying no procedure; the ceiling refuses a whole
 # source file, which would eventually overflow the index and brick a run.

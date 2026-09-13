@@ -4156,14 +4156,16 @@ def test_the_injected_skill_is_named_not_just_counted(tmp_workspace, monkeypatch
     assert opened[0]["name"] == "qz-release"
 # =============================== finish marks a failed skill suspect (Phase R)
 
-def _finished(monkeypatch, verdict, matched="deploy-guide", failures=0):
+def _finished(monkeypatch, verdict, matched="deploy-guide", failures=0, revision=True):
     """Run `finish` with a named skill matching this goal, and return nothing.
 
     `skills.matched` is patched rather than a library staged: what is under test is
-    the RULE finish applies, not the matcher, which test_skills covers.
+    the RULE finish applies, not the matcher, which test_skills covers. `revision`
+    is explicit because the default is OFF since 2026-09-13.
     """
-    from agent import graph, skills
+    from agent import config, graph, skills
 
+    monkeypatch.setattr(config, "SKILL_REVISION", revision)
     monkeypatch.setattr(skills, "matched", lambda goal: matched)
     monkeypatch.setattr(skills, "extract",
                         lambda *a, **k: [])          # R2 is a separate rule
@@ -4221,10 +4223,9 @@ def test_a_bad_run_with_NO_skill_open_marks_nothing(tmp_workspace, monkeypatch):
 def test_the_control_arm_marks_nothing(tmp_workspace, monkeypatch):
     """AGENT_SKILL_REVISION=off must change the mechanism, or the two eval arms are
     the same build measured twice."""
-    from agent import config, memory
+    from agent import memory
 
-    monkeypatch.setattr(config, "SKILL_REVISION", False)
-    _finished(monkeypatch, "stuck")
+    _finished(monkeypatch, "stuck", revision=False)
 
     assert memory.is_suspect("deploy-guide") is False
 

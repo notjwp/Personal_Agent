@@ -5,6 +5,77 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## R's trigger: off by default, because the loop has no signal to fix it with (2026-09-13)
+
+**PRE-REGISTERED, written before the run.**
+
+### Both narrowings checked against the record first
+
+The guards found R marking a skill suspect on 7 runs, 6 of them passes. Two
+candidate fixes were tested against those rows and the true failures
+(`author-errors-2`, the control-arm `skill-correction` runs) before anything
+was built:
+
+| candidate signal | false marks (6) | true failures (3) | separates? |
+|---|---|---|---|
+| last shell/python exit code | 0 in 5 of 6 | **0 in 3 of 3** | no |
+| max consecutive tool errors | 0-1 | **0-1** | no |
+
+Gating on the exit code would suppress the true marks with the false ones.
+Narrowing to tool failures would make R never fire, on its own case
+included. The loop's transcript does not carry the difference between "hit
+the cap and was right" and "hit the cap and was wrong"; the check that knows
+is the harness's, outside the loop.
+
+### The change
+
+`SKILL_REVISION` defaults **off**. The harness turns it on where it is
+measured (`AGENT_SKILL_REVISION=on` is forwarded). A good skill is never
+replaced on the strength of a cap in real use. The design that could bring R
+back - correcting on SUCCESS with a better source, rather than on a failure
+verdict - is a redesign of R1+R2 and is listed as one, not done here.
+
+Three `finish` tests that pinned R1's rule relied on the old default; they
+now set the flag explicitly, and the control-arm test passes `revision=False`
+to the same helper. New test: the default is off.
+
+### Keep / revert
+
+- `revision` x 3 with the flag ON, against `20260913T043018Z` (3/3, right
+  document 3/3): must hold **3/3 and 3/3** - this checks the flag plumbing,
+  nothing else
+- `skills` x 3 at the DEFAULT (off), against this morning's `20260913T031751Z`
+  (18/18 with R on): pass **>= 16/18** and **zero** `skill_failures` rows.
+  This doubles as the control arm the morning's guard did not need: if 18/18
+  holds with R off, R's +1 over the August baseline was never R's.
+
+Results below this line were not known when the above was written.
+
+### Result: KEEP. Both bars met, and the control arm answers a question the morning left open
+
+| | condition | result | met |
+|---|---|---|---|
+| `revision` x 3, flag ON, `20260913T051316Z` | 3/3 and right document 3/3 | **3/3, 3/3**, rows record `revision: True` | yes |
+| `skills` x 3, DEFAULT, `20260913T053217Z` | >= 16/18 and zero marks | **18/18, 0 marks**, rows record `revision: False` | yes |
+
+`skill-testname-0` - the row falsely marked this morning - passed on `stuck`
+again and its `skill_failures` is empty. That is the change doing what it is
+for.
+
+The `skills` pass at the default is also the control arm the morning's guard
+did not need: 18/18 with R off against 18/18 with R on. The +1 over the
+August 17/18 was never R's. Tokens 36.8k -> 35.0k, -5%, noise.
+
+R is now: off in real use, on in the harness where its case is measured,
+correct in WHICH document it writes when it fires, and wrong in WHEN it fires
+on a signal the loop does not have. The redesign that could earn it back -
+correct on success with a better source, never on a failure verdict - is a
+list item.
+
+1,143 -> 1,144 tests. Mutation: default flipped back to on - red.
+
+---
+
 ## R's replacement document is ranked, not first-read (2026-09-13)
 
 **PRE-REGISTERED, written before the run.**
