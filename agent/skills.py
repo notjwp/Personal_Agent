@@ -534,7 +534,7 @@ def extract(messages: list[dict], goal: str, verdict: str = "",
     usable = []
     for path, content in read_but_not_edited(messages):
         body = _undecorate(content)[:config.EXTRACT_MAX_CHARS]
-        if len(body) >= config.EXTRACT_MIN_CHARS:
+        if _is_document(path) and len(body) >= config.EXTRACT_MIN_CHARS:
             usable.append((path, body))
     # The replacement is the document that describes the SAME work, not the
     # first one read: by order, a tooling script's docstring replaced a release
@@ -558,6 +558,19 @@ def extract(messages: list[dict], goal: str, verdict: str = "",
             continue
         written.append(_slug(stem))
     return written
+
+
+# A skill is a procedure written for people. A source file's first line is a
+# docstring or an import, and a skill made from it out-matched the document the
+# case existed to test - ship.py on 2026-09-09, calc.py on 2026-09-13.
+DOCUMENT_SUFFIXES = frozenset({"", ".md", ".markdown", ".rst", ".txt", ".adoc"})
+NOT_DOCUMENTS = frozenset({"makefile", "dockerfile", "containerfile", "license", "licence"})
+
+
+def _is_document(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    suffix = name[name.rfind("."):].lower() if "." in name[1:] else ""
+    return suffix in DOCUMENT_SUFFIXES and name.lower() not in NOT_DOCUMENTS
 
 
 def _closest(name: str, candidates: list[tuple[str, str]]) -> str:

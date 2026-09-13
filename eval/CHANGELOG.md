@@ -5,6 +5,24 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Two defects with no quota to spend: source files as skills, and a glob as a credential (2026-09-13)
+
+Neither touches a measured number; both are behind a test that failed first
+and a mutation verified to have applied. 1,145 -> 1,155 tests.
+
+**`extract` wrote skills from source files.** `ship.py` became a skill on
+skill-correction (2026-09-09, worked around by neutralising its docstring) and
+`calc.py` on author-testname (2026-09-13). A source file's first line is a
+docstring or an import, and a skill made from it out-matches the document the
+case exists to test. A skill is a procedure written for people, so the source
+has to be a document: `.md`, `.markdown`, `.rst`, `.txt`, `.adoc`, or
+extensionless (`RUNBOOK`, `CONVENTIONS`) - minus Makefile, Dockerfile,
+Containerfile and LICENSE. The ranking test's side-assertion that `ship` still
+extracts was the old behaviour pinned; it now asserts the rule. Mutation:
+accept everything - red.
+
+---
+
 ## The terminal cases: a race fixed, and "leave it running" stated and checked (2026-09-13)
 
 **PRE-REGISTERED, written before the run.**

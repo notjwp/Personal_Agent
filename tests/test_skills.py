@@ -388,6 +388,33 @@ def test_extract_skips_a_document_too_short_to_carry_a_procedure(monkeypatch):
     assert skills.extract(messages, "goal") == []
 
 
+def test_extract_writes_skills_from_documents_not_from_source(monkeypatch):
+    """A skill is a procedure written for people. `ship.py` became a skill on
+    skill-correction (2026-09-09, worked around by neutralising its docstring)
+    and `calc.py` became one on author-testname (2026-09-13). A source file's
+    first line is its docstring or an import, and a skill made from it
+    out-matches the document the case exists to test."""
+    monkeypatch.setattr(config, "SKILL_EXTRACTION", True)
+    procedure = "Write VERSION with the suffix, then run the script. " * 6
+    docs = [("ship.py", '"""Cut a release."""' + chr(10) + "import hashlib" + chr(10) + procedure),
+            ("config.toml", "[release]" + chr(10) + procedure),
+            ("RUNBOOK.md", "# Release checklist" + chr(10) + procedure),
+            ("CONVENTIONS", "Conventions" + chr(10) + procedure),
+            ("notes.txt", "Notes" + chr(10) + procedure)]
+    messages = []
+    for i, (path, text) in enumerate(docs):
+        n = text.count(chr(10)) + 1
+        messages += [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": f"r{i}", "name": "read_file", "input": {"path": path}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"r{i}",
+                 "content": f"{path} (lines 1-{n} of {n})" + chr(10) + text}]},
+        ]
+    written = skills.extract(messages, "cut a release")
+    assert set(written) == {"runbook", "conventions", "notes"}, written
+
+
 def test_extract_truncates_rather_than_overflowing_the_index(monkeypatch):
     """An unbounded extract would eventually breach SKILLS_INDEX_CHARS, which is
     fatal by design - so the bound belongs here, before the file is written."""
@@ -723,7 +750,7 @@ def test_the_replacement_is_the_document_that_describes_the_SAME_work(monkeypatc
     assert 'zr7k2q' in body, 'the checklist should have replaced the checklist'
     assert 'Project tooling' not in body, 'the first-read document won by order'
     assert 'runbook' not in skills.authored(), 'corrected in place, not duplicated'
-    assert 'ship' in skills.authored(), 'the other documents still extract normally'
+    assert 'ship' not in skills.authored(), 'a source file is not a document'
 
 
 def test_a_skill_that_is_not_suspect_is_never_overwritten(monkeypatch):
