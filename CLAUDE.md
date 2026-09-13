@@ -128,6 +128,11 @@ Ordered by how often they have caught something.
   hanging tool; tools take 9s of a 950s run and it was ending working runs instead.
   Re-derive a cap when the thing it bounds changes shape.
 
+- **A task requirement binds; advice about a tool does not, wherever it sits.** "Leave the
+  build running" in the GOAL moved `start_terminal` 6 of 6; "if looking does not settle it,
+  ask" in SOUL.md moved `ask_user` 0 of 1 with the same advice already in the tool's own
+  description. `edit_file`'s wording worked because it changed what the model believed the
+  tool DID. Put requirements in the goal or the check; do not expect a rule to be obeyed.
 - **Deterministic injection works; agent choice does not.** THIRD confirmation:
   extraction at session end fired 12 of 12 where the `learn` TOOL fired 3 of 117, and
   took `authoring` from 3.3% to 9/12. Before that, `write_episode` -> `context_for`

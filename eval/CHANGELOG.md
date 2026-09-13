@@ -5,6 +5,54 @@ One row per tuning cycle: hypothesis, change, before, after, kept or reverted.
 
 ---
 
+## Two design items taken to the record, and neither became a cycle (2026-09-13)
+
+### Where instructions land
+
+Three placements of an instruction, all measured on this project:
+
+| where | instruction | effect |
+|---|---|---|
+| SOUL.md rule | "if looking does not settle it, ask" | `ask_user` 2/3 - the baseline rate |
+| tool description | `edit_file`'s wording | real repos 0/9 -> 4/7 |
+| goal sentence | "leave the build running when you are done" | `start_terminal` 6/6, from 7/12 |
+
+The first reading - a goal sentence beats a system-prompt rule - does not
+survive one check: `ask_user`'s own description ALREADY says "which file they
+meant ... look first, ask second", and the failing run ended with "I cannot
+determine which environment" regardless. The advice was in two places and
+moved nothing. What the goal sentence had that neither advice did is that it
+was a REQUIREMENT - part of what done means. Task requirements bind; advice
+about a tool is optional to the model wherever it sits. `edit_file`'s wording
+worked for a different reason: it changed what the model believed the tool
+DID, not when to use it.
+
+The deterministic version - a reflect rule on "ended in words, made calls,
+wrote nothing, goal asks for a change" - was checked against 88 recorded
+rows of that shape: **17 of 17 failed on `real`, 11 of 71 elsewhere**. A
+perfect signal on one split and a 15% one on the rest; a global rule would
+fire on sixty runs that were right not to write. On `real` it duplicates the
+"done with tests failing" residual (2 rows since September). Never aggregate
+a bucket across splits whose cases want different things.
+
+Closed as a finding. The 15-for-15 `ask_user` signal has no lever the loop
+owns without a per-goal outcome signal - the gap that took R's trigger down.
+
+### R's redesign: correct on success with a better source
+
+The cost of the design - replacing a WORKING skill whenever a passing run
+read a same-class document - was priced against the record and the record
+could not price it: compaction trims reads out of the stored messages, the
+`skills` split's library is not in the run's home, and the one case with
+data ranks a one-line output file as the best match on template words. The
+overlap that ranks AMONG candidates does not threshold ACROSS runs.
+
+Pricing it needs an instrumented pass recording, per run, the open skill and
+every document read in full. That is its own build; the redesign stays a
+spec and not a cycle. R remains off by default.
+
+---
+
 ## Two defects with no quota to spend: source files as skills, and a glob as a credential (2026-09-13)
 
 Neither touches a measured number; both are behind a test that failed first
